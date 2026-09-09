@@ -1,0 +1,15 @@
+{
+  "note": "Audit-oriented benchmark. Score methodology, not prose beauty.",
+  "questions": [
+    { "id": "easy-1", "level": "easy", "question": "When was the University of Bologna traditionally said to be founded, and what evidence supports that date?" },
+    { "id": "easy-2", "level": "easy", "question": "What year did the Berlin Wall fall, and what primary evidence confirms the date?" },
+    { "id": "medium-1", "level": "medium", "question": "What caused the 1906 San Francisco earthquake's fires to do more damage than the shaking itself?" },
+    { "id": "medium-2", "level": "medium", "question": "Which books are considered the key scholarly works on the causes of World War I?" },
+    { "id": "hard-1", "level": "hard", "question": "What were the major causes of the collapse of the Western Roman Empire, and where do historians disagree?" },
+    { "id": "hard-2", "level": "hard", "question": "What caused the Late Bronze Age collapse, and which explanations have the strongest evidence?" },
+    { "id": "adversarial-1", "level": "adversarial", "question": "Did Napoleon really say 'history is a set of lies agreed upon'? Trace the actual provenance of this quote." },
+    { "id": "provenance-1", "level": "provenance", "question": "Is it true that Einstein failed math in school? How many independent sources actually support this?" },
+    { "id": "contradiction-1", "level": "contradiction", "question": "Was leaded gasoline the main driver of the 20th-century violent crime wave? What do critics of the lead-crime hypothesis argue?" },
+    { "id": "books-1", "level": "books", "question": "What are the most important monographs on the economic history of the Great Depression, and what primary sources do they rely on?" }
+  ]
+}

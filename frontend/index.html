@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evidence Researcher — Gemini Deep Research</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">◉ Evidence Researcher</div>
+  <div class="top-actions">
+    <button id="historyBtn" class="ghost">History</button>
+    <button id="keyBtn" class="ghost">API key</button>
+  </div>
+</header>
+
+<main>
+  <section id="askView" class="card">
+    <h1>Deep Researcher</h1>
+    <p class="sub">An evidence-first research assistant powered by Gemini. It searches broadly, checks sources, hunts contradictions, and shows its work.</p>
+    <label class="lbl">Research question
+      <textarea id="q" rows="3" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
+    </label>
+    <div class="grid2">
+      <fieldset><legend>Research mode</legend>
+        <label><input type="radio" name="mode" value="quick"> Quick <span class="hint">fast, basic verification</span></label>
+        <label><input type="radio" name="mode" value="standard" checked> Standard <span class="hint">balanced</span></label>
+        <label><input type="radio" name="mode" value="deep"> Deep <span class="hint">slower, more API use</span></label>
+        <label><input type="radio" name="mode" value="exhaustive"> Exhaustive <span class="hint">documentary-grade, heavy</span></label>
+      </fieldset>
+      <fieldset><legend>Research stance</legend>
+        <label><input type="radio" name="stance" value="neutral" checked> Neutral</label>
+        <label><input type="radio" name="stance" value="lean"> Lean toward hypothesis</label>
+        <label><input type="radio" name="stance" value="adversarial"> Adversarial <span class="hint">try to disprove it</span></label>
+        <label><input type="radio" name="stance" value="steelman"> Steelman <span class="hint">strongest case + weaknesses</span></label>
+        <label><input type="radio" name="stance" value="comparative"> Compare hypotheses</label>
+      </fieldset>
+    </div>
+    <label class="lbl">Optional hypothesis / motive
+      <input id="hyp" type="text" placeholder="e.g. I suspect economic decline was primary — test it (never manufactures evidence)">
+    </label>
+    <label class="check"><input id="docu" type="checkbox"> Documentary mode <span class="hint">chronology, myths-vs-evidence, source notes</span></label>
+    <button id="start" class="primary">Start Research</button>
+    <p id="costNote" class="hint"></p>
+    <p id="modeHint" class="hint"></p>
+  </section>
+
+  <section id="progressView" class="card hidden">
+    <h2>Researching…</h2>
+    <div id="steps" class="steps"></div>
+    <div id="liveStats" class="hint"></div>
+  </section>
+
+  <section id="resultView" class="hidden">
+    <nav class="tabs">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="claims">Claims</button>
+      <button data-tab="sources">Sources</button>
+      <button data-tab="books">Books</button>
+      <button data-tab="academic">Academic</button>
+      <button data-tab="primary">Primary</button>
+      <button data-tab="contra">Contradictions</button>
+      <button data-tab="graph">Source graph</button>
+      <button data-tab="process">Process</button>
+      <button data-tab="report">Final report</button>
+    </nav>
+    <div id="tabBody" class="card"></div>
+    <div class="exports">
+      <button data-exp="md">Export Markdown</button>
+      <button data-exp="html">Export HTML</button>
+      <button data-exp="json">Export JSON</button>
+      <button id="printBtn">Print / PDF</button>
+      <button id="again">New research</button>
+    </div>
+  </section>
+
+  <section id="historyView" class="card hidden">
+    <h2>Research history</h2>
+    <div id="histList"></div>
+    <button id="clearHist" class="ghost">Clear local history</button>
+    <button id="backAsk" class="ghost">Back</button>
+  </section>
+</main>
+
+<dialog id="keyDialog">
+  <h3>Gemini API key</h3>
+  <p id="serverKeyNote"></p>
+  <input id="keyInput" type="password" placeholder="AIza…" autocomplete="off">
+  <p class="hint">Private mode: stored in <b>this browser only</b> (localStorage), sent to <b>your own backend</b> with each run, never persisted server-side or sent anywhere else. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key</a>.</p>
+  <div class="row">
+    <button id="saveKey" class="primary">Save</button>
+    <button id="forgetKey" class="ghost">Forget</button>
+    <button id="closeKey" class="ghost">Close</button>
+  </div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
