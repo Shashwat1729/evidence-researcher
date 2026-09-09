@@ -10,7 +10,7 @@
 import { MODES, MODEL_CONFIG, estimateCost } from '../config.js';
 import { getKeys, urlContext } from '../gemini.js';
 import { createTask, createPlan, createSource, validateTask } from '../schemas.js';
-import { planResearch, templatePlan } from './planner.js';
+import { planResearch } from './planner.js';
 import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount, templateQueries } from './queries.js';
 import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
@@ -89,9 +89,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
 
   // ---- PLAN ----
   ev('progress', 'Creating research plan…');
-  const planData = task.mode === 'quick'
-    ? templatePlan(task.question)
-    : await phase('plan', () => call(() => D.plan({ key, model: MODEL_CONFIG.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent })));
+  // Quick keeps the model planner (1 call): the classification gate must run
+  // before any search budget burns. Query generation uses templates in quick.
+  const planData = await phase('plan', () => call(() => D.plan({ key, model: MODEL_CONFIG.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent })));
   // Classification gate: non-questions abort before burning search budget.
   if (planData.valid === false) {
     throw Object.assign(new Error('Not a research question. ' + (planData.clarify || 'Please ask something to investigate.')), { status: 400 });
