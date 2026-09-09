@@ -33,6 +33,23 @@ The repo ships `vercel.json` + `api/index.js` (Express-as-function adapter):
 `npm install && npm start` with env `GEMINI_API_KEY`, `PORT`, `DATA_DIR`
 (persistent volume for history). No build step — the frontend is static files.
 
+## Free-tier quotas (observed 2026-09-09)
+
+Free API keys may carry a `generate_content_free_tier_requests` limit as low as
+**5 requests**. Quick mode needs ~4–6 model calls, so even one run can exhaust it.
+The system handles this gracefully and automatically:
+
+- per-key transient retries honoring Google's `RetryInfo` delay (≤60s),
+- immediate failover to `GEMINI_API_KEY_FALLBACK` on 429/invalid-key,
+- one `rate-wait` + final retry round when all keys are limited,
+- quick mode uses zero-model planning/queries, staggered sequential searches,
+  skips enrichment/provenance-model/verification to minimize calls,
+- clean failure messages (never crash dumps) when quota is truly exhausted.
+
+If runs fail with HTTP 429 persistently: enable billing on the Google project,
+use a fresh project key, or wait for the quota window reset. Check key health
+without burning quota: `npm run keys` (read-only models-list call).
+
 ## Security notes
 
 - `.env` is gitignored; only `.env.example` is committed. Never paste a real key

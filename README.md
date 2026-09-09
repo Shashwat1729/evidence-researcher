@@ -67,7 +67,7 @@ manufactured to fit.
 ## Testing & evaluation
 
 ```bash
-npm test        # 40 tests: units (classifier, dedup, provenance, claims, budgets, failures)
+npm test        # 51 tests: units (classifier, dedup, provenance, claims, budgets, failures)
                 # + offline full-pipeline E2E with deterministic fakes (14/14 audit)
                 # + live HTTP/SSE plumbing tests — no API key or network needed
 node eval/run.js  # audit-score heuristic over eval/questions.json (needs GEMINI_API_KEY for live runs)
