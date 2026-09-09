@@ -16,7 +16,7 @@ export function splitEnrichment(text, count) {
   }
   if (cur.trim()) segs.push(cur.trim());
   if (!segs.length) return [t];
-  const out = segs.slice(0, count);
-  while (out.length < count) out.push('');
-  return out;
+  // No padding: callers guard on truthiness, so missing sections stay absent
+  // rather than becoming empty passages.
+  return segs.slice(0, count);
 }
