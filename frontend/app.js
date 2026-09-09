@@ -6,8 +6,8 @@ let current = null;
 let serverKey = false;
 
 const MODE_BLURB = {
-  quick: 'Quick: ~4 searches, seconds. Basic verification.',
-  standard: 'Standard: ~10 searches, a few minutes. Cross-checking + contradiction search.',
+  quick: 'Quick: ~2 searches, ~1 min. Basic verification (escalates on disagreement).',
+  standard: 'Standard: ~10 searches + academic/books, a few minutes. Cross-checking + contradiction search.',
   deep: 'Deep: ~24 searches, up to ~15 min. Books, academic + primary sources, provenance.',
   exhaustive: 'Exhaustive: ~50 searches, up to ~30 min. Documentary-grade. Heavy API use.',
 };
@@ -42,9 +42,13 @@ async function init() {
 
 function val(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
 
+let running = false;
 $('#start').addEventListener('click', () => {
+  if (running) return; // one run at a time — parallel runs would burn quota
   const question = $('#q').value.trim();
   if (question.length < 3) return alert('Enter a research question.');
+  running = true;
+  $('#start').disabled = true;
   run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked });
 });
 
@@ -61,6 +65,7 @@ function run(body) {
     return d;
   };
   const key = localStorage.getItem('gemini_key') || '';
+  const finish = () => { running = false; $('#start').disabled = false; };
   fetch('/api/research', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(key ? { 'x-gemini-key': key } : {}) },
@@ -69,25 +74,35 @@ function run(body) {
     if (!res.ok && res.headers.get('content-type')?.includes('json')) {
       const e = await res.json();
       step('warn', 'Error: ' + (e.error || res.status));
+      finish();
       return;
     }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split('\n\n');
-      buf = parts.pop();
-      for (const p of parts) {
-        const line = p.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-        try { handleEvent(JSON.parse(line.slice(5)), step); }
-        catch { /* keep-alive */ }
-      }
+    if (!res.ok || !res.body) {
+      step('warn', 'Error: server returned status ' + res.status);
+      finish();
+      return;
     }
-  }).catch((e) => step('warn', 'Network error: ' + e.message));
+    try {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop();
+        for (const p of parts) {
+          const line = p.split('\n').find((l) => l.startsWith('data:'));
+          if (!line) continue;
+          try { handleEvent(JSON.parse(line.slice(5)), step); }
+          catch { /* keep-alive */ }
+        }
+      }
+    } finally {
+      finish();
+    }
+  }).catch((e) => { step('warn', 'Network error: ' + e.message); finish(); });
 }
 
 function handleEvent(ev, step) {
@@ -240,18 +255,20 @@ $('#historyBtn').addEventListener('click', async () => {
   $('#historyView').classList.remove('hidden');
   let server = [];
   try { server = (await (await fetch('/api/history')).json()).items || []; } catch { /* no server */ }
-  const local = JSON.parse(localStorage.getItem('er_history') || '[]');
+  let local = [];
+  try { local = JSON.parse(localStorage.getItem('er_history') || '[]'); } catch { local = []; }
   $('#histList').innerHTML = '<h3>Server</h3>' + (server.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode} · ${h.sources} sources</span> <button data-open="${h.id}">Open</button></div>`).join('') || '<p class="hint">none</p>')
     + '<h3>This browser</h3>' + (local.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode}</span></div>`).join('') || '<p class="hint">none</p>');
   $$('#histList [data-open]').forEach((b) => b.addEventListener('click', async () => {
     const r = await (await fetch('/api/history/' + b.dataset.open)).json();
+    if (!r || !r.id || !r.task) { alert('Could not open that run (missing or corrupt).'); return; }
     $('#historyView').classList.add('hidden');
     showResult(r);
   }));
 });
 $('#backAsk').addEventListener('click', () => { $('#historyView').classList.add('hidden'); $('#askView').classList.remove('hidden'); });
 $('#clearHist').addEventListener('click', () => { localStorage.removeItem('er_history'); alert('Local history cleared.'); });
-$('#keyBtn').addEventListener('click', () => $('#keyDialog').showModal());
+$('#keyBtn').addEventListener('click', () => { if (!$('#keyDialog').open) $('#keyDialog').showModal(); });
 $('#closeKey').addEventListener('click', () => $('#keyDialog').close());
 $('#saveKey').addEventListener('click', () => {
   const v = $('#keyInput').value.trim();

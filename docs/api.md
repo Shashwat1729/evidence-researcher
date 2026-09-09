@@ -38,7 +38,8 @@ Streams `text/event-stream` frames (`data: {...}\n\n`):
 | `error` | fatal (rate-limit / invalid key / budget exhausted — safe messages only) |
 
 Error status codes before streaming starts: `400` (bad question/mode/stance),
-`401` (no key).
+`401` (no key), `503` (too many concurrent runs — see `MAX_CONCURRENT_RUNS`,
+default 8; quota is per project, so parallel runs would 429 everyone).
 
 ### `GET /api/history` · `GET /api/history/:id` · `DELETE /api/history/:id`
 Local run persistence (file store; `DATA_DIR`). List returns summaries;

@@ -16,7 +16,12 @@ function file(id) {
 
 export async function saveResult(result) {
   await ensureDir();
-  await fs.writeFile(file(result.id), JSON.stringify(result, null, 2), 'utf8');
+  const dest = file(result.id);
+  // Atomic write: crash mid-write leaves the previous file intact, never a
+  // half-written JSON that breaks history/export.
+  const tmp = `${dest}.tmp.${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
+  await fs.rename(tmp, dest);
   return result.id;
 }
 
