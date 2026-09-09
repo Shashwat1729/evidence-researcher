@@ -15,10 +15,18 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   const MODES_LIST = ['quick', 'standard', 'deep', 'exhaustive'];
   const STANCES_LIST = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
 
-  r.get('/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+  r.get('/health', (_req, res) => res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: process.env.npm_package_version || '1.0.0',
+    memory: process.memoryUsage(),
+    model: process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  }));
 
   r.get('/config', (_req, res) => res.json({
     serverKey: !!process.env.GEMINI_API_KEY,
+    hasFallback: !!process.env.GEMINI_API_KEY_FALLBACK,
     modes: ['quick', 'standard', 'deep', 'exhaustive'],
     stances: ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'],
   }));

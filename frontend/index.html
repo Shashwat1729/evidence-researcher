@@ -7,11 +7,12 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">◉ Evidence Researcher</div>
+<a href="#askView" class="skip-link">Skip to main content</a>
+<header class="topbar" role="banner">
+  <div class="brand" aria-label="Evidence Researcher home">◉ Evidence Researcher</div>
   <div class="top-actions">
-    <button id="historyBtn" class="ghost">History</button>
-    <button id="keyBtn" class="ghost">API key</button>
+    <button id="historyBtn" class="ghost" aria-label="View research history">History</button>
+    <button id="keyBtn" class="ghost" aria-label="Manage API key">API key</button>
   </div>
 </header>
 
@@ -46,26 +47,28 @@
     <p id="modeHint" class="hint"></p>
   </section>
 
-  <section id="progressView" class="card hidden">
+  <section id="progressView" class="card hidden" aria-live="polite" aria-busy="true">
     <h2>Researching…</h2>
-    <div id="steps" class="steps"></div>
-    <div id="liveStats" class="hint"></div>
+    <div id="steps" class="steps" role="log" aria-live="polite"></div>
+    <div id="liveStats" class="hint" role="status"></div>
+    <div class="skeleton hidden" id="skeleton" aria-hidden="true"><div class="sk-line"></div><div class="sk-line"></div><div class="sk-line short"></div></div>
   </section>
 
   <section id="resultView" class="hidden">
-    <nav class="tabs">
-      <button data-tab="overview" class="active">Overview</button>
-      <button data-tab="claims">Claims</button>
-      <button data-tab="sources">Sources</button>
-      <button data-tab="books">Books</button>
-      <button data-tab="academic">Academic</button>
-      <button data-tab="primary">Primary</button>
-      <button data-tab="contra">Contradictions</button>
-      <button data-tab="graph">Source graph</button>
-      <button data-tab="process">Process</button>
-      <button data-tab="report">Final report</button>
+    <nav class="tabs" role="tablist" aria-label="Research results">
+      <button data-tab="overview" class="active" role="tab" aria-selected="true" tabindex="0">Overview</button>
+      <button data-tab="claims" role="tab" aria-selected="false" tabindex="-1">Claims</button>
+      <button data-tab="sources" role="tab" aria-selected="false" tabindex="-1">Sources</button>
+      <button data-tab="books" role="tab" aria-selected="false" tabindex="-1">Books</button>
+      <button data-tab="academic" role="tab" aria-selected="false" tabindex="-1">Academic</button>
+      <button data-tab="primary" role="tab" aria-selected="false" tabindex="-1">Primary</button>
+      <button data-tab="contra" role="tab" aria-selected="false" tabindex="-1">Contradictions</button>
+      <button data-tab="graph" role="tab" aria-selected="false" tabindex="-1">Source graph</button>
+      <button data-tab="process" role="tab" aria-selected="false" tabindex="-1">Process</button>
+      <button data-tab="report" role="tab" aria-selected="false" tabindex="-1">Final report</button>
     </nav>
-    <div id="tabBody" class="card"></div>
+    <div id="tabBody" class="card" role="tabpanel"></div>
+    <div id="errorBanner" class="card hidden" role="alert" style="border-color: var(--bad); background: #2a1a1a;"></div>
     <div class="exports">
       <button data-exp="md">Export Markdown</button>
       <button data-exp="html">Export HTML</button>

@@ -57,6 +57,8 @@ function run(body) {
   $('#resultView').classList.add('hidden');
   $('#progressView').classList.remove('hidden');
   $('#steps').innerHTML = '';
+  $('#errorBanner').classList.add('hidden');
+  $('#skeleton').classList.remove('hidden');
   const step = (cls, text) => {
     const d = document.createElement('div');
     d.className = 'step';
@@ -65,7 +67,7 @@ function run(body) {
     return d;
   };
   const key = localStorage.getItem('gemini_key') || '';
-  const finish = () => { running = false; $('#start').disabled = false; };
+  const finish = () => { running = false; $('#start').disabled = false; $('#skeleton').classList.add('hidden'); $('#progressView').setAttribute('aria-busy', 'false'); };
   fetch('/api/research', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(key ? { 'x-gemini-key': key } : {}) },
@@ -105,8 +107,14 @@ function run(body) {
   }).catch((e) => { step('warn', 'Network error: ' + e.message); finish(); });
 }
 
+function showError(msg) {
+  const b = $('#errorBanner');
+  b.textContent = msg;
+  b.classList.remove('hidden');
+  b.focus?.();
+}
 function handleEvent(ev, step) {
-  if (ev.type === 'error') return step('warn', 'Error: ' + ev.message);
+  if (ev.type === 'error') { step('warn', 'Error: ' + ev.message); showError(ev.message); return; }
   if (ev.type === 'result') return showResult(ev.result);
   if (ev.type === 'plan') {
     step('ok', 'Research plan created');
@@ -119,11 +127,26 @@ function handleEvent(ev, step) {
 }
 
 // ---------- dashboard ----------
-$$('.tabs button').forEach((b) => b.addEventListener('click', () => {
-  $$('.tabs button').forEach((x) => x.classList.remove('active'));
-  b.classList.add('active');
-  renderTab(b.dataset.tab);
-}));
+function activateTab(btn) {
+  $$('.tabs button').forEach((x) => { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); x.tabIndex = -1; });
+  btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); btn.tabIndex = 0; btn.focus();
+  renderTab(btn.dataset.tab);
+}
+$$('.tabs button').forEach((b) => b.addEventListener('click', () => activateTab(b)));
+// Keyboard: ArrowLeft/Right, Home/End cycle through tabs
+document.querySelector('.tabs').addEventListener('keydown', (e) => {
+  const tabs = $$('.tabs button');
+  const cur = tabs.indexOf(document.activeElement);
+  if (cur === -1) return;
+  let next = -1;
+  if (e.key === 'ArrowRight') next = (cur + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft') next = (cur - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  activateTab(tabs[next]);
+});
 
 function showResult(r) {
   current = r;
