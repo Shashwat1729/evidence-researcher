@@ -24,7 +24,7 @@ const REPORT_SCHEMA = {
   required: ['executiveSummary', 'findings', 'uncertainty', 'methodology'],
 };
 
-export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent }) {
+export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192 }) {
   const srcIndex = sources.map((s) => ({
     id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
     verified: s.verified, accessibility: s.accessibility,
@@ -49,6 +49,6 @@ Rules:
 - If evidence is insufficient, SAY SO explicitly.
 - findings[].cite must contain only source ids from the list above.
 Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
-  const { data } = await generateJson({ key, model, prompt, schema: REPORT_SCHEMA, maxTokens: 8192, temperature: 0.3, onKeyEvent });
+  const { data } = await generateJson({ key, model, prompt, schema: REPORT_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
   return data;
 }

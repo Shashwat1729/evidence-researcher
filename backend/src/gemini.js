@@ -56,7 +56,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // primary fails over to the fallback; rotation is announced via onKeyEvent
 // even when every key is exhausted. Timeouts/bad requests fail fast. When all
 // keys hit 429, honors RetryInfo once before giving up (free-tier 5 RPM).
-// onKeyEvent receives { type:'rotated', keyIndex, reason } — never key values.
+// onKeyEvent receives { type:'rotated'|'rate-wait', ... } — never key values.
 async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent } = {}) {
   if (!keys.length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
   const order = keys.map((_, i) => (preferredIdx + i) % keys.length);
@@ -78,11 +78,14 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
       throw e; // bad request etc: key-independent, fail fast
     }
   }
-  // All keys hit 429 with RetryInfo — honor it once, then retry one more round.
+  // All keys hit 429 with RetryInfo — honor the per-minute bucket once
+  // (capped at 60s), then retry one more round across keys.
   if (firstErr?.status === 429) {
     const wait = retryDelayMs(firstErr, 0);
     if (wait > 0) {
-      await sleep(Math.min(wait, 15000));
+      const capped = Math.min(wait, 60000);
+      onKeyEvent?.({ type: 'rate-wait', waitMs: capped });
+      await sleep(capped);
       // One more attempt across keys after waiting
       for (const ki of order) {
         try {

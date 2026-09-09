@@ -67,4 +67,18 @@ describe('API key rotation', () => {
     await assert.rejects(generate({ key: '', model: 'm', prompt: 'hi', timeoutMs: 50 }), /aborted/);
     assert.equal(calls, 1);
   });
+
+  it('honors RetryInfo per-minute wait when all keys are limited, then retries', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK; // single key forces the wait path
+    const events = [];
+    let calls = 0;
+    const limited = () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '1s' }] } });
+    mockFetch(async () => { calls++; return calls === 1 ? limited() : jsonResponse(200, okPayload); });
+    const t0 = Date.now();
+    const r = await generate({ key: '', model: 'm', prompt: 'hi', onKeyEvent: (e) => events.push(e) });
+    assert.equal(r.text, 'hi');
+    assert.ok(Date.now() - t0 >= 900, 'should have waited out the per-minute bucket hint');
+    assert.ok(events.some((e) => e.type === 'rate-wait' && e.waitMs === 1000));
+    assert.ok(!JSON.stringify(events).includes('KEY_'));
+  });
 });

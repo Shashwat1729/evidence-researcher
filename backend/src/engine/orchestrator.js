@@ -67,6 +67,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
     if (info?.type === 'rotated') {
       stats.keyRotations++;
       ev('progress', `API key ${info.reason === 'rate-limit' ? 'rate-limited' : 'rejected'} — switched to fallback key`);
+    } else if (info?.type === 'rate-wait') {
+      ev('progress', `Quota limited — waiting ~${Math.ceil((info.waitMs || 0) / 1000)}s for the per-minute bucket, then retrying`);
     }
   };
   // Phase timing (observability): accumulates wall-clock ms per pipeline stage.
@@ -396,6 +398,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   const report = await phase('synthesis', () => call(() => D.synthesize({
     key, model: MODEL_CONFIG.synthesis, task, plan, claims, sources,
     contradictions, provenance, stats: { ...stats, ...cost, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
+    maxTokens: budget.reportTokens,
   })));
 
   // citation-integrity: strip cites pointing at unknown ids

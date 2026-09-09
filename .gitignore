@@ -2,6 +2,11 @@ node_modules/
 .env
 .env.local
 data/
+live-result-*.json
+live*.txt
+full.txt
+t2.txt
+testout.txt
 coverage/
 .DS_Store
 *.log

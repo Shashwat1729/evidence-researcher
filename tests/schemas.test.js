@@ -13,7 +13,7 @@ describe('schemas, budgets, planning fallbacks', () => {
   });
   it('every mode has finite budgets (loop cannot run forever)', () => {
     for (const [name, m] of Object.entries(MODES)) {
-      for (const k of ['maxIterations', 'maxSearches', 'maxSources', 'maxModelCalls', 'maxRuntimeMs', 'maxTokensOut']) {
+      for (const k of ['maxIterations', 'maxSearches', 'maxSources', 'maxModelCalls', 'maxRuntimeMs', 'maxTokensOut', 'reportTokens']) {
         assert.ok(Number.isFinite(m[k]) && m[k] > 0, `${name}.${k} must be a positive finite budget`);
       }
     }
