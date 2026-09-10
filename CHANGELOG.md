@@ -1,10 +1,11 @@
 # Changelog
 
 ## Unreleased
-- Shared CLI runner (`scripts/run.js`) behind both CLIs, with arg parsing + exit codes tested
-- Graceful shutdown (SIGTERM/SIGINT drain) + unhandled-rejection logging in server entry
-- Process tab surfaces phase timings, fetch-issue breakdown, key rotations
-- Eval `--all [dir]` batch scoring; API docs cover OpenAPI/singleflight/attachments
+- Cooperative cancellation: disconnecting all clients stops new model/search work
+- Rate limiter scoped to research runs; request IDs echoed; Vercel middleware parity
+- History `?limit=` (1–200); health exposes academic cache stats
+- `.dockerignore` + non-root Docker user; working cross-platform `npm run lint`
+- Scorer requires states AND rationale; shared CLI runner tested
 - Singleflight: identical concurrent runs share one execution (no extra quota)
 - Export downloads as attachments; markdown link text sanitized; valid `<ul>` HTML
 - Follow-up sources keep grounding excerpts + related copies (parity with initial batch)

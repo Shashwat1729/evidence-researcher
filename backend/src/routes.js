@@ -5,6 +5,8 @@
 import { Router } from 'express';
 import { runResearch } from './engine/orchestrator.js';
 import { getKeys } from './gemini.js';
+import { academicCache } from './cache.js';
+import { createRateLimiter } from './middleware/security.js';
 import * as defaultStore from './store.js';
 
 export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
@@ -12,6 +14,9 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   // Per-router concurrency guard: quota is per project, so unbounded parallel
   // runs would 429 everyone. Env-tunable, defaults to 8.
   let activeRuns = 0;
+  // Per-IP rate limit scoped to research runs only (history/export polling
+  // must never 429). Env-tunable via RATE_LIMIT_MAX, default 30/min.
+  const researchLimiter = createRateLimiter({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT_MAX || 30) });
   const inflight = new Map(); // identical-body → in-flight result promise
   const MODES_LIST = ['quick', 'standard', 'deep', 'exhaustive'];
   const STANCES_LIST = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
@@ -23,6 +28,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     version: process.env.npm_package_version || '1.0.0',
     memory: process.memoryUsage(),
     model: process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
+    cache: { academicEntries: academicCache.size },
   }));
 
   r.get('/config', (_req, res) => res.json({
@@ -33,7 +39,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   }));
 
   // SSE research run. Query/body: question, mode, stance, hypothesis, documentary.
-  r.post('/research', async (req, res) => {
+  r.post('/research', researchLimiter, async (req, res) => {
     const key = (req.header('x-gemini-key') || '').trim() || (process.env.GEMINI_API_KEY || '').trim();
     const input = {
       question: req.body?.question || '',
@@ -85,14 +91,24 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       send({ type: 'error', message: msg });
     };
     const finish = () => { try { if (!res.writableEnded) res.end(); } catch { /* ignore */ } };
+    // Client refcount: the shared run is cancelled only when EVERY attached
+    // client has gone (owner + joiners). Each response decrements once.
+    const trackClient = (entry) => {
+      let left = false;
+      const leave = () => { if (!left) { left = true; entry.clients--; } };
+      res.on('close', leave);
+      return leave;
+    };
     if (shared) {
       beginStream();
+      shared.clients++;
+      const leave = trackClient(shared);
       send({ type: 'progress', message: 'Joined an identical run already in progress — sharing its result (no extra quota used).' });
       try {
-        const result = await shared;
+        const result = await shared.task;
         send({ type: 'result', message: 'Done', result });
       } catch (e) { sendError(e); }
-      finally { finish(); }
+      finally { leave(); finish(); }
       return;
     }
     if (activeRuns >= cap) {
@@ -103,8 +119,22 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     // the req stream closes as soon as the body is consumed, long before we
     // finish streaming. res 'close' with an unfinished body = client gone.
     beginStream();
-    const task = runFn(input, { key, emit: send });
-    inflight.set(bk, task);
+    const entry = { task: null, clients: 1 };
+    const leave = trackClient(entry);
+    // Defensive: a synchronously-throwing runFn must 400/500 the request,
+    // never hang it or crash the process via unhandled rejection.
+    let task;
+    try {
+      task = runFn(input, { key, emit: send, isCancelled: () => entry.clients <= 0 });
+    } catch (e) {
+      sendError(e);
+      activeRuns--;
+      leave();
+      finish();
+      return;
+    }
+    entry.task = task;
+    inflight.set(bk, entry);
     if (inflight.size > 100) inflight.delete(inflight.keys().next().value); // bounded
     try {
       const result = await task;
@@ -114,12 +144,17 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     finally {
       inflight.delete(bk);
       activeRuns--;
+      leave();
       finish();
     }
   });
 
-  r.get('/history', async (_req, res) => {
-    try { res.json({ items: await store.listResults() }); }
+  r.get('/history', async (req, res) => {
+    try {
+      const raw = Number(req.query.limit);
+      const limit = Number.isFinite(raw) ? Math.min(200, Math.max(1, Math.floor(raw))) : 50;
+      res.json({ items: await store.listResults(limit) });
+    }
     catch (e) { res.status(500).json({ error: String(e.message) }); }
   });
 

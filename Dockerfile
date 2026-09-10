@@ -1,9 +1,13 @@
 FROM node:20-slim
 WORKDIR /srv/evidence-researcher
 COPY package.json package-lock.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm install --omit=dev --no-audit --no-fund \
+  && npm cache clean --force
 COPY backend/ backend/
 COPY frontend/ frontend/
+# Run as non-root; DATA_DIR must stay writable.
+RUN chown -R node:node /srv/evidence-researcher && mkdir -p /data && chown node:node /data
+USER node
 ENV NODE_ENV=production PORT=8787 DATA_DIR=/data
 EXPOSE 8787
 VOLUME ["/data"]

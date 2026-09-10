@@ -9,22 +9,22 @@ if (!keys.length) {
   console.log('No keys configured. Set GEMINI_API_KEY in .env (see .env.example).');
   process.exitCode = 2;
 } else {
-let ok = 0;
-for (let i = 0; i < keys.length; i++) {
-  const label = i === 0 ? 'primary ' : 'fallback';
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15_000);
-    let res, data = {};
+  let ok = 0;
+  for (let i = 0; i < keys.length; i++) {
+    const label = i === 0 ? 'primary ' : 'fallback';
     try {
-      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(keys[i])}`, { signal: ctrl.signal });
-      data = await res.json().catch(() => ({}));
-    } finally { clearTimeout(t); }
-    if (res.ok) { ok++; console.log(`${label}: VALID (${(data.models || []).length} models visible)`); }
-    else console.log(`${label}: INVALID (HTTP ${res.status}: ${(data?.error?.message || '').slice(0, 100)})`);
-  } catch (e) {
-    console.log(`${label}: ERROR (${(e.message || '').slice(0, 80)})`);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 15_000);
+      let res, data = {};
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(keys[i])}`, { signal: ctrl.signal });
+        data = await res.json().catch(() => ({}));
+      } finally { clearTimeout(t); }
+      if (res.ok) { ok++; console.log(`${label}: VALID (${(data.models || []).length} models visible)`); }
+      else console.log(`${label}: INVALID (HTTP ${res.status}: ${(data?.error?.message || '').slice(0, 100)})`);
+    } catch (e) {
+      console.log(`${label}: ERROR (${(e.message || '').slice(0, 80)})`);
+    }
   }
-}
-process.exitCode = ok ? 0 : 1;
+  process.exitCode = ok ? 0 : 1;
 }

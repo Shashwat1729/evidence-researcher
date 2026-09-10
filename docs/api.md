@@ -12,7 +12,7 @@ Base URL locally: `http://localhost:8787`. All JSON unless noted.
 ## Endpoints
 
 ### `GET /api/health`
-Liveness + ops telemetry → `{ ok, time, uptime, version, memory, model }`.
+Liveness + ops telemetry → `{ ok, time, uptime, version, memory, model, cache }`.
 Wire your orchestrator/load-balancer checks here.
 
 ### `GET /api/openapi.json`
@@ -47,7 +47,7 @@ default 8; quota is per project, so parallel runs would 429 everyone).
 
 ### `GET /api/history` · `GET /api/history/:id` · `DELETE /api/history/:id`
 Local run persistence (file store; `DATA_DIR`). List returns summaries;
-get returns the full `ResearchResult`.
+`?limit=` clamps to 1–200 (default 50). Get returns the full `ResearchResult`.
 
 ### `GET /api/export/:id?format=md|html|json`
 Download the report **as a file attachment** (`research-<id>.md/html/json`).
@@ -57,7 +57,8 @@ Report tab → **Print / PDF** → Save as PDF (print stylesheet included).
 
 Identical concurrent `POST /api/research` bodies share one execution
 (singleflight): joiners receive a `progress` note plus the same `result`
-event, burning quota only once.
+event, burning quota only once. Disconnecting all clients cancels the run
+cooperatively (no new model/search work starts; in-flight calls drain).
 
 ## Core schemas
 

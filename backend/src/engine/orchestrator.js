@@ -46,8 +46,10 @@ function domainOf(url) {
   try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
 }
 
-export async function runResearch(input, { key, emit = () => {}, deps = {} } = {}) {
+export async function runResearch(input, { key, emit = () => {}, deps = {}, isCancelled = () => false } = {}) {
   const D = { ...defaultDeps, ...deps };
+  const cancelledErr = () => Object.assign(new Error('client disconnected — run cancelled'), { status: 499, code: 'CANCELLED' });
+  const throwIfCancelled = () => { if (isCancelled()) throw cancelledErr(); };
   const started = Date.now();
   const task = createTask(input);
   const errors = validateTask(task);
@@ -59,7 +61,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   const track = (u) => { if (u) { stats.tokensIn += u.in || 0; stats.tokensOut += u.out || 0; } };
   const overTokenCap = () => stats.tokensOut >= budget.maxTokensOut;
   // usage auto-tracked: every model-returning dep reports { usage } with real API counts
-  const call = async (fn) => { stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
+  // Cancellation is cooperative: checked before every model call and loop —
+  // a disconnected client stops burning quota within seconds.
+  const call = async (fn) => { throwIfCancelled(); stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
   const deadline = started + budget.maxRuntimeMs;
 
   const ev = (type, message, data = {}) => emit({ type, message, ...data, at: new Date().toISOString() });
@@ -105,6 +109,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   let allResults = [];
   const doSearch = async (q, category, explicitKey = key) => {
     // check+reserve is synchronous (no await between) → race-free under pool()
+    throwIfCancelled();
     if (!alive() || overTokenCap()) return [];
     stats.searchCalls++;
     ev('progress', `Searching: ${q.q || q}`, { category });
@@ -255,7 +260,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
     }
   };
   await phase('fetch', () => pool(allowed, 4, async (s) => {
-    if (Date.now() > deadline || overTokenCap()) return;
+    if (isCancelled() || Date.now() > deadline || overTokenCap()) return;
     stats.fetches++;
     try {
       applyFetch(s, await D.fetch(s.url));
@@ -312,6 +317,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
 
   const tAnalyze = Date.now();
   for (let i = 1; i <= maxIter; i++) {
+    throwIfCancelled();
     if (Date.now() > deadline) break;
     if (overTokenCap()) { ev('progress', 'Token budget reached — synthesizing from gathered evidence'); break; }
     ev('progress', `Analysis pass ${i}/${maxIter}…`);
@@ -402,10 +408,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
 
   // ---- SYNTHESIS ----
   ev('progress', 'Synthesizing final report…');
-  const cost = estimateCost(stats.modelCalls, stats.searchCalls, stats.tokensIn, stats.tokensOut, stats.keyRotations);
   const report = await phase('synthesis', () => call(() => D.synthesize({
     key, model: MODEL_CONFIG.synthesis, task, plan, claims, sources,
-    contradictions, provenance, stats: { ...stats, ...cost, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
+    contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
     maxTokens: budget.reportTokens,
   })));
 
@@ -425,6 +430,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   }
   report.verification = verification;
 
+  // Cost snapshot LAST: estimateCost's keys overlap stats', so spreading it
+  // earlier would freeze modelCalls/searchCalls/tokens at pre-synthesis values
+  // and silently drop the synthesis (+verification) usage from the report.
+  const cost = estimateCost(stats.modelCalls, stats.searchCalls, stats.tokensIn, stats.tokensOut, stats.keyRotations);
   const result = {
     id: task.id,
     task, plan, report,

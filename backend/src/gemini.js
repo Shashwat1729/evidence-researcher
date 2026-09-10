@@ -221,7 +221,25 @@ export async function generateJson({ key, model, prompt, system = '', schema, te
     } else throw e;
   }
   const text = extractText(data);
-  return { data: parseJsonLenient(text), usage: extractUsage(data), raw: data };
+  const usage = extractUsage(data);
+  try {
+    return { data: parseJsonLenient(text), usage, raw: data };
+  } catch {
+    // Repair pass (1 extra call max): show the model its broken output and
+    // demand strict JSON. Fixes the common "prose + JSON" drift that would
+    // otherwise kill a whole run at synthesis time.
+    const fix = await post((k) => endpoint(model, k), {
+      contents: [{ parts: [{ text: `Your previous response was not valid JSON. Re-emit ONLY the JSON value — no prose, no fences, no commentary.\n\nPrevious response:\n${text.slice(0, 6000)}` }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
+    }, { timeoutMs, keys, onKeyEvent });
+    const text2 = extractText(fix);
+    const usage2 = extractUsage(fix);
+    return {
+      data: parseJsonLenient(text2),
+      usage: { in: usage.in + usage2.in, out: usage.out + usage2.out },
+      raw: fix,
+    };
+  }
 }
 
 /** Grounded search: one Gemini call with the google_search tool.

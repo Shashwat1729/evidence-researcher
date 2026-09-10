@@ -1,6 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseJsonLenient, extractText, extractGrounding } from '../backend/src/gemini.js';
+import { parseJsonLenient, extractText, extractGrounding, generateJson, resetKeyState } from '../backend/src/gemini.js';
 import { cleanText, fetchPage } from '../backend/src/providers/fetcher.js';
 
 describe('gemini client resilience', () => {
@@ -29,6 +29,31 @@ describe('gemini client resilience', () => {
   it('handles empty/error responses without throwing', () => {
     assert.equal(extractText({}), '');
     assert.deepEqual(extractGrounding({}).chunks, []);
+  });
+
+  it('repairs non-JSON output with one bounded retry, still throwing if unfixable', async () => {
+    const realFetch = globalThis.fetch;
+    const savedPrimary = process.env.GEMINI_API_KEY;
+    const savedFallback = process.env.GEMINI_API_KEY_FALLBACK;
+    process.env.GEMINI_API_KEY = 'K1';
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    resetKeyState();
+    const payload = (text) => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text }] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 } }) });
+    try {
+      let calls = 0;
+      globalThis.fetch = async () => (++calls === 1 ? payload('Here is my analysis in prose, no JSON at all !!!') : payload('{"a":1}'));
+      const r = await generateJson({ key: '', model: 'm', prompt: 'hi' });
+      assert.deepEqual(r.data, { a: 1 });
+      assert.equal(calls, 2);
+      assert.deepEqual(r.usage, { in: 2, out: 2 });
+      globalThis.fetch = async () => payload('still just prose nth time !!!');
+      await assert.rejects(generateJson({ key: '', model: 'm', prompt: 'hi' }), /valid JSON/);
+    } finally {
+      globalThis.fetch = realFetch;
+      resetKeyState();
+      if (savedPrimary === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = savedPrimary;
+      if (savedFallback === undefined) delete process.env.GEMINI_API_KEY_FALLBACK; else process.env.GEMINI_API_KEY_FALLBACK = savedFallback;
+    }
   });
 });
 

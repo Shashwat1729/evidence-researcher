@@ -8,7 +8,7 @@
     "start": "NODE_ENV=production node backend/src/index.js",
     "test": "node --test tests/*.test.js",
     "test:coverage": "node --experimental-test-coverage --test tests/*.test.js",
-    "lint": "node --check backend/src/**/*.js frontend/app.js scripts/*.js eval/*.js 2>&1 | head -n 50",
+    "lint": "node scripts/lint.js",
     "keys": "node scripts/validate-keys.js",
     "live": "node scripts/live-research.js",
     "research": "node scripts/research.js",

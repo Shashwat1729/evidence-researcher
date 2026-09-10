@@ -1,0 +1,19 @@
+# Keep secrets, junk, and heavies out of the Docker build context.
+# NOTE: .env (real API keys) must NEVER reach the image — config comes from
+# runtime env / secret mounts only.
+.env
+.env.local
+.git
+.gitignore
+node_modules
+data
+coverage
+dist
+*.log
+live-result-*.json
+live*.txt
+full*.txt
+t*.txt
+testout.txt
+.DS_Store
+.vscode
