@@ -1,11 +1,15 @@
 // Central configuration: models, research modes, budgets, stance.
 // All Gemini model names are configurable via env; no other provider is required.
+// Browser-safe: `process` is guarded so these modules also run in the
+// GitHub-Pages static build (see frontend/direct.js).
+
+const env = (typeof process !== 'undefined' && process.env) || {};
 
 export const MODEL_CONFIG = {
-  planner: process.env.PLANNER_MODEL || process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  research: process.env.RESEARCH_MODEL || process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  analysis: process.env.ANALYSIS_MODEL || process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  synthesis: process.env.SYNTHESIS_MODEL || process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
 };
 
 export const MODES = {
@@ -95,7 +99,7 @@ export function applyBudgetOverrides(modes, patch) {
 }
 
 try {
-  if (process.env.RESEARCH_BUDGETS_JSON) applyBudgetOverrides(MODES, JSON.parse(process.env.RESEARCH_BUDGETS_JSON));
+  if (env.RESEARCH_BUDGETS_JSON) applyBudgetOverrides(MODES, JSON.parse(env.RESEARCH_BUDGETS_JSON));
 } catch { /* fail-open to compiled defaults */ }
 
 export const DOMAINS = [

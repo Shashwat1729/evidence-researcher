@@ -9,12 +9,14 @@ export function getKey(explicit) {
   return getKeys(explicit)[0] || '';
 }
 
-/** Ordered key list: explicit/BYOK → server primary → server fallback (deduped). */
+/** Ordered key list: explicit/BYOK → server primary → server fallback (deduped).
+ *  Browser-safe (`process` guarded) for the static Pages build. */
 export function getKeys(explicit) {
+  const penv = (typeof process !== 'undefined' && process.env) || {};
   const list = [
     (explicit || '').trim(),
-    (process.env.GEMINI_API_KEY || '').trim(),
-    (process.env.GEMINI_API_KEY_FALLBACK || '').trim(),
+    (penv.GEMINI_API_KEY || '').trim(),
+    (penv.GEMINI_API_KEY_FALLBACK || '').trim(),
   ].filter(Boolean);
   return [...new Set(list)];
 }

@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Static Pages mode: full pipeline runs in-browser (shared engine, BYOK), client-side exports, local history reopen
+- Pages deploy workflow with static import-integrity gate; local `site/` staging via `scripts/build-pages.js`
+- Exporters moved to dependency-free `backend/src/export.js`; fixed re-export binding crash
+- Browser-safe guards (`process`, ArrayBuffer decoding) across config/gemini/orchestrator/fetcher
 - Result cache: identical repeats served from disk (zero quota), `{ fresh: true }` bypass + UI checkbox
 - History reads all summaries (no lost newest runs), skips cache files, cleans stale tmp leftovers
 - OpenAPI covers metrics/openapi/fresh/limit; package version read from package.json

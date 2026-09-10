@@ -170,10 +170,10 @@ async function attemptFetch(url, timeoutMs) {
     if (!res.ok) { result.reason = `HTTP ${res.status}`; return result; }
     const ctype = res.headers.get('content-type') || '';
     if (!/html|text/i.test(ctype)) { result.reason = `unsupported content-type ${ctype}`; return result; }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_BYTES) { result.reason = 'page too large'; return result; }
+    const ab = await res.arrayBuffer();
+    if (ab.byteLength > MAX_BYTES) { result.reason = 'page too large'; return result; }
     const finalUrl = res.url || url;
-    const html = decodeBody(buf, ctype);
+    const html = decodeBody(ab, ctype);
     const title = (html.match(/<title[^>]*>([\s\S]{1,300})<\/title>/i) || [])[1] || '';
     result.title = decodeHtml(title.replace(/\s+/g, ' ').trim());
     result.author = extractMeta(html, 'author') || extractMeta(html, 'article:author') || '';

@@ -4,6 +4,7 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 let current = null;
 let serverKey = false;
+let staticMode = false;
 
 const MODE_BLURB = {
   quick: 'Quick: ~2 searches, ~1 min. Basic verification (escalates on disagreement).',
@@ -24,11 +25,15 @@ function recommendMode(q) {
 
 async function init() {
   let hasFallback = false;
+  let apiOk = false;
   try {
     const cfg = await (await fetch('/api/config')).json();
     serverKey = !!cfg.serverKey;
     hasFallback = !!cfg.hasFallback;
-  } catch { /* offline */ }
+    apiOk = Array.isArray(cfg.modes);
+  } catch { /* offline → static mode */ }
+  staticMode = !apiOk;
+  $('#staticBanner').classList.toggle('hidden', !staticMode);
   $('#costNote').textContent = MODE_BLURB.standard;
   $$('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
     $('#costNote').textContent = MODE_BLURB[document.querySelector('input[name=mode]:checked').value];
@@ -36,9 +41,11 @@ async function init() {
   const updateHint = () => { $('#modeHint').textContent = recommendMode($('#q').value); };
   $('#q').addEventListener('input', updateHint);
   updateHint();
-  $('#serverKeyNote').textContent = serverKey
-    ? `Server has a Gemini key configured${hasFallback ? ' (+ fallback key for rate limits)' : ''}. You can still override with your own below (used for this browser only).`
-    : 'No server-side key configured. Enter your Gemini key to run research in private mode.';
+  $('#serverKeyNote').textContent = staticMode
+    ? 'Static demo mode: this page runs 100% in your browser with your own key — no server needed. Some page fetches may be limited by site CORS policies; grounding excerpts are still cited.'
+    : serverKey
+      ? `Server has a Gemini key configured${hasFallback ? ' (+ fallback key for rate limits)' : ''}. You can still override with your own below (used for this browser only).`
+      : 'No server-side key configured. Enter your Gemini key to run research in private mode.';
   if (localStorage.getItem('gemini_key')) $('#keyInput').value = '•••••• (saved)';
 }
 
@@ -70,6 +77,7 @@ function run(body) {
   };
   const key = localStorage.getItem('gemini_key') || '';
   const finish = () => { running = false; $('#start').disabled = false; $('#skeleton').classList.add('hidden'); $('#progressView').setAttribute('aria-busy', 'false'); };
+  if (staticMode) { runDirectFlow(body, key, step, finish); return; }
   fetch('/api/research', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(key ? { 'x-gemini-key': key } : {}) },
@@ -115,6 +123,32 @@ function showError(msg) {
   b.classList.remove('hidden');
   b.focus?.();
 }
+// Static-mode run: same engine, executed in-page via frontend/direct.js.
+async function runDirectFlow(body, key, step, finish) {
+  if (!key) {
+    const msg = 'Static mode needs a Gemini API key — click "API key" above to enter one (stored in this browser only).';
+    step('warn', msg);
+    showError(msg);
+    finish();
+    if (!$('#keyDialog').open) $('#keyDialog').showModal();
+    return;
+  }
+  try {
+    const { runDirect, saveLocalResult } = await import('./direct.js');
+    step('run', 'Static mode: running the full pipeline in your browser…');
+    const result = await runDirect(body, { key, emit: (ev) => handleEvent(ev, step) });
+    saveLocalResult(result);
+    showResult(result);
+  } catch (e) {
+    const raw = e.message || 'research failed';
+    const msg = /quota|rate|429/i.test(raw) ? 'Gemini rate limit reached. Wait a minute and retry, or use a shallower mode.' : raw;
+    step('warn', 'Error: ' + msg);
+    showError(msg);
+  } finally {
+    finish();
+  }
+}
+
 function handleEvent(ev, step) {
   if (ev.type === 'error') { step('warn', 'Error: ' + ev.message); showError(ev.message); return; }
   if (ev.type === 'result') return showResult(ev.result);
@@ -154,7 +188,7 @@ function showResult(r) {
   current = r;
   try {
     const hist = JSON.parse(localStorage.getItem('er_history') || '[]');
-    hist.unshift({ id: r.id, question: r.task.question, mode: r.task.mode, at: r.completedAt });
+    hist.unshift({ id: r.id, question: r.task.question, mode: r.task.mode, at: r.completedAt, ...(staticMode ? { direct: true } : {}) });
     localStorage.setItem('er_history', JSON.stringify(hist.slice(0, 100)));
   } catch { /* private mode */ }
   $('#progressView').classList.add('hidden');
@@ -263,9 +297,19 @@ function drawGraph() {
 }
 
 // ---------- export / history / key ----------
-$$('.exports [data-exp]').forEach((b) => b.addEventListener('click', () => {
+$$('.exports [data-exp]').forEach((b) => b.addEventListener('click', async () => {
   if (!current) return;
-  window.open(`/api/export/${current.id}?format=${b.dataset.exp}`, '_blank');
+  if (!staticMode) { window.open(`/api/export/${current.id}?format=${b.dataset.exp}`, '_blank'); return; }
+  // Static mode: render client-side and download via Blob (no server).
+  const { exportMarkdown, exportHtml } = await import('../backend/src/export.js');
+  const fmt = b.dataset.exp;
+  const text = fmt === 'json' ? JSON.stringify(current, null, 2) : fmt === 'html' ? exportHtml(current) : exportMarkdown(current);
+  const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = `research-${current.id}.${fmt === 'html' ? 'html' : fmt === 'json' ? 'json' : 'md'}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }));
 $('#printBtn').addEventListener('click', () => {
   if (!current) return;
@@ -285,10 +329,17 @@ $('#historyBtn').addEventListener('click', async () => {
   let local = [];
   try { local = JSON.parse(localStorage.getItem('er_history') || '[]'); } catch { local = []; }
   $('#histList').innerHTML = '<h3>Server</h3>' + (server.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode} · ${h.sources} sources</span> <button data-open="${h.id}">Open</button></div>`).join('') || '<p class="hint">none</p>')
-    + '<h3>This browser</h3>' + (local.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode}</span></div>`).join('') || '<p class="hint">none</p>');
+    + '<h3>This browser</h3>' + (local.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode}</span>${h.direct ? ` <button data-local="${escapeAttr(h.id)}">Open</button>` : ''}</div>`).join('') || '<p class="hint">none</p>');
   $$('#histList [data-open]').forEach((b) => b.addEventListener('click', async () => {
     const r = await (await fetch('/api/history/' + b.dataset.open)).json();
     if (!r || !r.id || !r.task) { alert('Could not open that run (missing or corrupt).'); return; }
+    $('#historyView').classList.add('hidden');
+    showResult(r);
+  }));
+  $$('#histList [data-local]').forEach((b) => b.addEventListener('click', async () => {
+    const { loadLocalResult } = await import('./direct.js');
+    const r = loadLocalResult(b.dataset.local);
+    if (!r || !r.id || !r.task) { alert('Saved result not found in this browser (storage may have been cleared).'); return; }
     $('#historyView').classList.add('hidden');
     showResult(r);
   }));

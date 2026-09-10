@@ -155,7 +155,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // free-tier quick mode, keep it sequential to avoid bursting past per-minute
   // quotas even with 2-key rotation (10 RPM effective).
   const searchConcurrency = task.mode === 'quick' ? 2 : task.mode === 'standard' ? 3 : 5;
-  const searchStagger = Math.max(0, Number(process.env.SEARCH_STAGGER_MS || 350));
+  const penv = (typeof process !== 'undefined' && process.env) || {};
+  const searchStagger = Math.max(0, Number(penv.SEARCH_STAGGER_MS || 350));
   const batch = queries.slice(0, Math.max(0, budget.maxSearches - stats.searchCalls));
   let searchIdx = 0;
   const doSearchWithKey = async (q, cat) => {
