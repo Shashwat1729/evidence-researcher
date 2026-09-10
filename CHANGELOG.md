@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Shared CLI runner (`scripts/run.js`) behind both CLIs, with arg parsing + exit codes tested
+- Graceful shutdown (SIGTERM/SIGINT drain) + unhandled-rejection logging in server entry
+- Process tab surfaces phase timings, fetch-issue breakdown, key rotations
+- Eval `--all [dir]` batch scoring; API docs cover OpenAPI/singleflight/attachments
 - Cooperative cancellation: disconnecting all clients stops new model/search work
 - Rate limiter scoped to research runs; request IDs echoed; Vercel middleware parity
 - History `?limit=` (1–200); health exposes academic cache stats
