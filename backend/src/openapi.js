@@ -38,6 +38,7 @@ export const openapiSpec = {
                   stance: { type: 'string', enum: ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'], default: 'neutral' },
                   hypothesis: { type: 'string', maxLength: 2000 },
                   documentary: { type: 'boolean', default: false },
+                  fresh: { type: 'boolean', default: false, description: 'Skip the recent-result cache and force a new run' },
                 },
               },
             },
@@ -53,7 +54,25 @@ export const openapiSpec = {
         },
       },
     },
-    '/api/history': { get: { summary: 'List recent runs', responses: { '200': { description: 'OK' } } } },
+    '/api/history': {
+      get: {
+        summary: 'List recent runs',
+        parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }],
+        responses: { '200': { description: 'OK' } },
+      },
+    },
+    '/api/metrics': {
+      get: {
+        summary: 'Run counters (started/completed/failed/cancelled/byMode)',
+        responses: { '200': { description: 'OK' } },
+      },
+    },
+    '/api/openapi.json': {
+      get: {
+        summary: 'This spec',
+        responses: { '200': { description: 'OK' } },
+      },
+    },
     '/api/history/{id}': {
       get: { summary: 'Get a run by id', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' }, '404': { description: 'Not found' } } },
       delete: { summary: 'Delete a run', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } },

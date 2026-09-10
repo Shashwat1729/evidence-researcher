@@ -33,9 +33,14 @@ describe('logger redaction', () => {
 describe('openapi spec', () => {
   it('covers all routes with a version', () => {
     assert.equal(openapiSpec.openapi, '3.0.3');
-    for (const p of ['/api/health', '/api/research', '/api/history', '/api/export/{id}']) {
+    for (const p of ['/api/health', '/api/research', '/api/history', '/api/history/{id}', '/api/export/{id}', '/api/metrics', '/api/openapi.json']) {
       assert.ok(openapiSpec.paths[p], `missing ${p}`);
     }
+    const research = openapiSpec.paths['/api/research'].post;
+    const props = research.requestBody.content['application/json'].schema.properties;
+    assert.ok(props.fresh, 'fresh bypass documented');
+    assert.ok(research.parameters.some((p) => p.name === 'x-gemini-key'));
+    assert.ok(research.responses['503'], 'concurrency cap documented');
   });
 });
 

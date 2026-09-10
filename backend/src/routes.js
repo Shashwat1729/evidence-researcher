@@ -3,11 +3,26 @@
 // Otherwise server uses GEMINI_API_KEY env (hosted server mode).
 
 import { Router } from 'express';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { runResearch } from './engine/orchestrator.js';
 import { getKeys } from './gemini.js';
 import { academicCache } from './cache.js';
 import { createRateLimiter } from './middleware/security.js';
 import * as defaultStore from './store.js';
+
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')).version || '1.0.0';
+  } catch { return '1.0.0'; }
+})();
+
+function cacheTtl() {
+  const raw = Number(process.env.RESULT_CACHE_TTL_MS);
+  if (!Number.isFinite(raw)) return 2 * 3600_000; // 2h default; 0 disables
+  return Math.max(0, raw);
+}
 
 export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   const r = Router();
@@ -28,7 +43,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     ok: true,
     time: new Date().toISOString(),
     uptime: process.uptime(),
-    version: process.env.npm_package_version || '1.0.0',
+    version: PKG_VERSION,
     memory: process.memoryUsage(),
     model: process.env.DEFAULT_MODEL || 'gemini-2.5-flash',
     cache: { academicEntries: academicCache.size },
@@ -50,6 +65,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       stance: req.body?.stance || 'neutral',
       hypothesis: req.body?.hypothesis || '',
       documentary: !!req.body?.documentary,
+      fresh: req.body?.fresh === true,
     };
     if (!input.question || input.question.trim().length < 3) {
       return res.status(400).json({ error: 'A research question is required.' });
@@ -94,6 +110,18 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       send({ type: 'error', message: msg });
     };
     const finish = () => { try { if (!res.writableEnded) res.end(); } catch { /* ignore */ } };
+    // Result cache: identical repeats served from disk (zero quota, zero wait).
+    // Checked before singleflight/cap so hits consume no slots. Bypass: { fresh: true }.
+    if (!input.fresh && typeof store.findCached === 'function' && cacheTtl() > 0) {
+      const hit = await store.findCached(input, cacheTtl()).catch(() => null);
+      if (hit?.id) {
+        beginStream();
+        send({ type: 'progress', message: 'Served from a recent identical run — no quota used. Send { fresh: true } to force a new run.' });
+        send({ type: 'result', message: 'Done', result: hit });
+        finish();
+        return;
+      }
+    }
     // Client refcount: the shared run is cancelled only when EVERY attached
     // client has gone (owner + joiners). Each response decrements once.
     const trackClient = (entry) => {
@@ -144,6 +172,9 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     try {
       const result = await task;
       await store.saveResult(result).catch(() => {});
+      if (typeof store.saveCacheEntry === 'function' && cacheTtl() > 0) {
+        await store.saveCacheEntry(input, result).catch(() => {});
+      }
       metrics.runsCompleted++;
       send({ type: 'result', message: 'Done', result });
     } catch (e) {

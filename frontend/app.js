@@ -51,7 +51,7 @@ $('#start').addEventListener('click', () => {
   if (question.length < 3) return alert('Enter a research question.');
   running = true;
   $('#start').disabled = true;
-  run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked });
+  run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked, fresh: $('#fresh').checked });
 });
 
 function run(body) {

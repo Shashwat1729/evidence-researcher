@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Result cache: identical repeats served from disk (zero quota), `{ fresh: true }` bypass + UI checkbox
+- History reads all summaries (no lost newest runs), skips cache files, cleans stale tmp leftovers
+- OpenAPI covers metrics/openapi/fresh/limit; package version read from package.json
 - Charset-aware page decoding (kills U+FFFD mojibake from latin-1 pages); hex/astral/common-named entities
 - Relative canonical resolution + final-URL citation; single polite 429 retry honoring Retry-After
 - Redirect-aware domain counting (title hints) so diversity top-ups fire on merit, not redirect-host clustering

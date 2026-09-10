@@ -15,5 +15,7 @@ describe('validation', () => {
   it('accepts valid bodies', () => {
     assert.equal(validateResearchBody({ question: 'What caused X?', mode: 'quick', stance: 'neutral' }).length, 0);
     assert.equal(validateResearchBody({ question: 'Explain X?', hypothesis: 'maybe Y', documentary: true }).length, 0);
+    assert.equal(validateResearchBody({ question: 'Explain X?', fresh: true }).length, 0);
+    assert.ok(validateResearchBody({ question: 'Explain X?', fresh: 'yes' }).some(m => /fresh/i.test(m)));
   });
 });
