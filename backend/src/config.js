@@ -40,6 +40,7 @@ export const MODES = {
     maxTokensOut: 150_000,
     reportTokens: 4096,
     contradictionPasses: 1,
+    bookLimit: 6,
     academic: true,
     books: true,
   },
@@ -55,6 +56,7 @@ export const MODES = {
     maxTokensOut: 500_000,
     reportTokens: 8192,
     contradictionPasses: 2,
+    bookLimit: 10,
     academic: true,
     books: true,
   },
@@ -70,12 +72,27 @@ export const MODES = {
     maxTokensOut: 1_200_000,
     reportTokens: 8192,
     contradictionPasses: 3,
+    bookLimit: 14,
     academic: true,
     books: true,
   },
 };
 
 export const STANCES = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
+
+// Curated Gemini models offered in the UI picker (alongside the API key).
+// Free-tier limits differ per model: flash = most headroom, pro = deepest
+// reasoning but much tighter free limits. Served via /api/config; a per-run
+// override applies to all four model roles (planner/research/analysis/synthesis).
+export const AVAILABLE_MODELS = [
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', blurb: 'Default — best balance of depth and free-tier quota.' },
+  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', blurb: 'Lighter and faster; generous limits, slightly less depth.' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', blurb: 'Deepest reasoning; much lower free-tier limits — prefer paid keys.' },
+];
+
+export function isKnownModel(id) {
+  return AVAILABLE_MODELS.some((m) => m.id === id);
+}
 
 export const STANCE_GUARDRAIL =
   'A user research stance changes the research OBJECTIVE, never the truth conditions. ' +

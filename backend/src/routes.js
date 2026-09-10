@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { runResearch } from './engine/orchestrator.js';
 import { getKeys } from './gemini.js';
+import { AVAILABLE_MODELS, isKnownModel } from './config.js';
 import { academicCache } from './cache.js';
 import { createRateLimiter } from './middleware/security.js';
 import { exportMarkdown, exportHtml } from './export.js';
@@ -56,11 +57,24 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     hasFallback: !!process.env.GEMINI_API_KEY_FALLBACK,
     modes: ['quick', 'standard', 'deep', 'exhaustive'],
     stances: ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'],
+    models: AVAILABLE_MODELS,
+    maxKeysPerRequest: 5,
   }));
 
-  // SSE research run. Query/body: question, mode, stance, hypothesis, documentary.
+  // SSE research run. Query/body: question, mode, stance, hypothesis, documentary, model, fresh.
   r.post('/research', researchLimiter, async (req, res) => {
-    const key = (req.header('x-gemini-key') || '').trim() || (process.env.GEMINI_API_KEY || '').trim();
+    // Multi-key: x-gemini-key (single) and/or x-gemini-keys (JSON array, max 5).
+    // All supplied keys rotate on 429 — N keys multiply effective quota.
+    let explicit = [];
+    const single = (req.header('x-gemini-key') || '').trim();
+    if (single) explicit.push(single);
+    try {
+      const arr = JSON.parse(req.header('x-gemini-keys') || '[]');
+      if (Array.isArray(arr)) explicit.push(...arr);
+    } catch { /* malformed header ignored; single key still works */ }
+    const key = (process.env.GEMINI_API_KEY || '').trim();
+    // Model can come from body or header (UI sends both for static/server parity)
+    const headerModel = (req.header('x-gemini-model') || '').trim();
     const input = {
       question: req.body?.question || '',
       mode: req.body?.mode || 'standard',
@@ -68,6 +82,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       hypothesis: req.body?.hypothesis || '',
       documentary: !!req.body?.documentary,
       fresh: req.body?.fresh === true,
+      model: (req.body?.model || headerModel || '').trim(),
     };
     if (!input.question || input.question.trim().length < 3) {
       return res.status(400).json({ error: 'A research question is required.' });
@@ -78,15 +93,22 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     if (!STANCES_LIST.includes(input.stance)) {
       return res.status(400).json({ error: `Unknown research stance "${input.stance}".` });
     }
-    if (!getKeys(key).length) {
+    if (input.model && !isKnownModel(input.model)) {
+      return res.status(400).json({ error: 'Unknown model. Use one offered by GET /api/config.' });
+    }
+    if (!getKeys(explicit).length && !key) {
       return res.status(401).json({ error: 'GEMINI_API_KEY is required — enter it in the UI or set it server-side.' });
     }
+    // Effective keys for this run (user keys first, then server keys).
+    const runKeys = getKeys(explicit.length ? explicit : key);
     const rawCap = Number(process.env.MAX_CONCURRENT_RUNS);
     const cap = Number.isFinite(rawCap) ? Math.max(0, rawCap) : 8;
     // Singleflight: identical concurrent bodies share ONE run (fresh result,
     // zero extra quota). Joiners get a note + the final result event.
-    const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary]);
-    const shared = inflight.get(bk);
+    // `fresh: true` never joins (explicit new work) but still publishes.
+    // Model is part of the key: different models may return different work.
+    const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary, input.model]);
+    const shared = input.fresh ? null : inflight.get(bk);
     // SSE preamble shared by owner + joiner paths.
     const beginStream = () => {
       res.writeHead(200, {
@@ -160,7 +182,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     // never hang it or crash the process via unhandled rejection.
     let task;
     try {
-      task = runFn(input, { key, emit: send, isCancelled: () => entry.clients <= 0 });
+      task = runFn(input, { key: runKeys, emit: send, isCancelled: () => entry.clients <= 0 });
     } catch (e) {
       sendError(e);
       activeRuns--;

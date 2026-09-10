@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSemanticScholar, parsePubMedSummary, parseArchiveOrg } from '../backend/src/providers/academic.js';
+import { parseSemanticScholar, parsePubMedSummary, parseArchiveOrg, queryTerms, bookRelevance, rankByRelevance } from '../backend/src/providers/academic.js';
 
 describe('academic/book parsers (offline fixtures)', () => {
   it('parses Semantic Scholar, preferring open-access PDF over DOI', () => {
@@ -27,5 +27,27 @@ describe('academic/book parsers (offline fixtures)', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].url, 'https://archive.org/details/book123');
     assert.equal(out[0].via, 'books:archive.org');
+  });
+});
+
+describe('book relevance ranking (dynamic, no topic lists)', () => {
+  const recs = [
+    { title: 'A Heritage of Open Air Square Temple Discovered In Russia', snippet: 'Russian archaeology', meta: {} },
+    { title: 'The Harappan Civilization', snippet: 'Indus Valley', meta: { authors: ['Mortimer Wheeler'] } },
+    { title: 'Harappan civilization', snippet: '', meta: {} },
+  ];
+  it('extracts key terms minus stopwords', () => {
+    assert.deepEqual(queryTerms('tell about harappan civilization'), ['harappan', 'civilization']);
+    assert.deepEqual(queryTerms('the the a'), []);
+  });
+  it('ranks overlapping titles first and drops zero-overlap records', () => {
+    const ranked = rankByRelevance('tell about harappan civilization', recs);
+    assert.equal(ranked.length, 2);
+    assert.ok(ranked[0].title.toLowerCase().includes('harappan'));
+    assert.ok(!ranked.some((r) => r.title.includes('Russia')));
+  });
+  it('keeps provider order when nothing matches (no empty results)', () => {
+    const ranked = rankByRelevance('the the a', recs);
+    assert.equal(ranked.length, 3);
   });
 });

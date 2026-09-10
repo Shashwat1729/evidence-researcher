@@ -23,14 +23,38 @@ function recommendMode(q) {
   return 'Standard is a good default; escalate if contradictions appear.';
 }
 
+function getStoredKeys() {
+  try {
+    const arr = JSON.parse(localStorage.getItem('gemini_keys') || '[]');
+    if (Array.isArray(arr) && arr.length) return arr;
+  } catch {}
+  const single = localStorage.getItem('gemini_key');
+  return single ? [single] : [];
+}
+function getStoredModel() {
+  return localStorage.getItem('gemini_model') || '';
+}
+
 async function init() {
   let hasFallback = false;
   let apiOk = false;
+  let cfg = null;
   try {
-    const cfg = await (await fetch('/api/config')).json();
+    cfg = await (await fetch('/api/config')).json();
     serverKey = !!cfg.serverKey;
     hasFallback = !!cfg.hasFallback;
     apiOk = Array.isArray(cfg.modes);
+    // Populate model selectors
+    if (cfg.models && Array.isArray(cfg.models)) {
+      const opts = cfg.models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
+      $('#modelSelect').innerHTML = '<option value="">Auto (server default)</option>' + opts;
+      $('#modelInput').innerHTML = '<option value="">Auto (server default)</option>' + opts;
+      const savedModel = getStoredModel();
+      if (savedModel) {
+        $('#modelSelect').value = savedModel;
+        $('#modelInput').value = savedModel;
+      }
+    }
   } catch { /* offline → static mode */ }
   staticMode = !apiOk;
   $('#staticBanner').classList.toggle('hidden', !staticMode);
@@ -39,62 +63,167 @@ async function init() {
     $('#costNote').textContent = MODE_BLURB[document.querySelector('input[name=mode]:checked').value];
   }));
   const updateHint = () => { $('#modeHint').textContent = recommendMode($('#q').value); };
-  $('#q').addEventListener('input', updateHint);
+  $('#q').addEventListener('input', () => { updateHint(); $('#qCount').textContent = `${$('#q').value.length} / 5000`; });
   updateHint();
+  $('#qCount').textContent = `${$('#q').value.length} / 5000`;
   $('#serverKeyNote').textContent = staticMode
     ? 'Static demo mode: this page runs 100% in your browser with your own key — no server needed. Some page fetches may be limited by site CORS policies; grounding excerpts are still cited.'
     : serverKey
       ? `Server has a Gemini key configured${hasFallback ? ' (+ fallback key for rate limits)' : ''}. You can still override with your own below (used for this browser only).`
       : 'No server-side key configured. Enter your Gemini key to run research in private mode.';
-  if (localStorage.getItem('gemini_key')) $('#keyInput').value = '•••••• (saved)';
+  // Migrate old single key to new array format display
+  const keys = getStoredKeys();
+  $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
+  $('#keyCount').classList.toggle('hidden', keys.length === 0);
+  renderKeyList();
+  // Model selector change handlers
+  $('#modelSelect').addEventListener('change', () => {
+    const v = $('#modelSelect').value;
+    localStorage.setItem('gemini_model', v);
+    $('#modelInput').value = v;
+  });
+  $('#modelInput').addEventListener('change', () => {
+    const v = $('#modelInput').value;
+    localStorage.setItem('gemini_model', v);
+    $('#modelSelect').value = v;
+  });
+}
+
+function renderKeyList() {
+  const keys = getStoredKeys();
+  const container = $('#keyList');
+  if (!container) return;
+  container.innerHTML = keys.map((k, i) => `
+    <div class="key-item">
+      <input type="password" value="${k}" data-idx="${i}" placeholder="AIza…" autocomplete="off">
+      <button type="button" class="btn ghost small" data-remove="${i}" aria-label="Remove key">×</button>
+    </div>
+  `).join('') || '<p class="hint">No keys added yet. Add at least one Gemini API key.</p>';
+  container.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.remove);
+      const arr = getStoredKeys();
+      arr.splice(idx, 1);
+      localStorage.setItem('gemini_keys', JSON.stringify(arr));
+      if (arr.length === 0) localStorage.removeItem('gemini_key');
+      else localStorage.setItem('gemini_key', arr[0]);
+      renderKeyList();
+      $('#keyCount').textContent = arr.length ? String(arr.length) : '0';
+      $('#keyCount').classList.toggle('hidden', arr.length === 0);
+    });
+  });
+  container.querySelectorAll('input[data-idx]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const idx = parseInt(inp.dataset.idx);
+      const arr = getStoredKeys();
+      arr[idx] = inp.value.trim();
+      localStorage.setItem('gemini_keys', JSON.stringify(arr.filter(Boolean)));
+      localStorage.setItem('gemini_key', arr[0] || '');
+    });
+  });
 }
 
 function val(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
 
 let running = false;
+let currentAbort = null;
 $('#start').addEventListener('click', () => {
   if (running) return; // one run at a time — parallel runs would burn quota
   const question = $('#q').value.trim();
   if (question.length < 3) return alert('Enter a research question.');
   running = true;
   $('#start').disabled = true;
-  run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked, fresh: $('#fresh').checked });
+  run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked, fresh: $('#fresh').checked, model: getStoredModel() || undefined });
 });
 
 function run(body) {
   $('#askView').classList.add('hidden');
   $('#resultView').classList.add('hidden');
   $('#progressView').classList.remove('hidden');
+  $('#progressFill').style.width = '8%';
   $('#steps').innerHTML = '';
   $('#errorBanner').classList.add('hidden');
   $('#skeleton').classList.remove('hidden');
+  let progress = 8;
   const step = (cls, text) => {
     const d = document.createElement('div');
     d.className = 'step';
     d.innerHTML = `<span class="${cls}">${cls === 'ok' ? '✓' : cls === 'warn' ? '!' : '→'}</span> ${escapeHtml(text)}`;
     $('#steps').appendChild(d);
+    // Animate progress bar
+    progress = Math.min(92, progress + (cls === 'ok' ? 12 : cls === 'run' ? 4 : 2));
+    $('#progressFill').style.width = progress + '%';
     return d;
   };
-  const key = localStorage.getItem('gemini_key') || '';
-  const finish = () => { running = false; $('#start').disabled = false; $('#skeleton').classList.add('hidden'); $('#progressView').setAttribute('aria-busy', 'false'); };
-  if (staticMode) { runDirectFlow(body, key, step, finish); return; }
-  fetch('/api/research', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(key ? { 'x-gemini-key': key } : {}) },
-    body: JSON.stringify(body),
-  }).then(async (res) => {
-    if (!res.ok && res.headers.get('content-type')?.includes('json')) {
-      const e = await res.json();
-      step('warn', 'Error: ' + (e.error || res.status));
-      finish();
-      return;
-    }
-    if (!res.ok || !res.body) {
-      step('warn', 'Error: server returned status ' + res.status);
-      finish();
-      return;
-    }
+  const keys = getStoredKeys();
+  const model = body.model || getStoredModel() || '';
+  const finish = () => {
+    running = false;
+    if (currentAbort) { currentAbort = null; }
+    $('#start').disabled = false;
+    $('#skeleton').classList.add('hidden');
+    $('#progressFill').style.width = '100%';
+    setTimeout(() => $('#progressFill').style.width = '0%', 400);
+    $('#progressView').setAttribute('aria-busy', 'false');
+  };
+  // Cancel handler — aborting the fetch triggers server-side cancellation
+  // via the isCancelled refcount (no extra endpoint needed)
+  const abort = new AbortController();
+  currentAbort = abort;
+  $('#cancelBtn').onclick = () => {
+    if (abort.signal.aborted) return;
+    abort.abort();
+    step('warn', 'Cancelled by user — stopping…');
+  };
+  if (staticMode) {
+    const key = keys[0] || '';
+    runDirectFlow(body, key, step, finish, abort.signal, keys, model);
+    return;
+  }
+  // Build headers with multi-key and model support
+  const headers = { 'Content-Type': 'application/json' };
+  if (keys.length === 1) headers['x-gemini-key'] = keys[0];
+  else if (keys.length > 1) headers['x-gemini-keys'] = JSON.stringify(keys);
+  if (model) headers['x-gemini-model'] = model;
+
+  // Dynamic retry with exponential backoff for rate limits
+  let attempts = 0;
+  const maxAttempts = 3;
+  const doFetch = async () => {
+    attempts++;
     try {
+      const res = await fetch('/api/research', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      });
+      // Handle 429 with Retry-After — dynamic wait and retry
+      if (res.status === 429 && attempts < maxAttempts) {
+        const retryAfter = parseInt(res.headers.get('Retry-After') || res.headers.get('retry-after') || '0');
+        const waitMs = retryAfter ? retryAfter * 1000 : Math.min(60000, 1000 * Math.pow(2, attempts) + Math.random()*1000);
+        step('warn', `Rate limited — retrying in ${Math.ceil(waitMs/1000)}s (attempt ${attempts}/${maxAttempts})…`);
+        await new Promise(r => setTimeout(r, waitMs));
+        return doFetch();
+      }
+      if (!res.ok && res.headers.get('content-type')?.includes('json')) {
+        const e = await res.json();
+        // Also handle JSON 429 with retry
+        if (res.status === 429 && e.retryAfter && attempts < maxAttempts) {
+          const waitMs = e.retryAfter * 1000;
+          step('warn', `Rate limited — retrying in ${e.retryAfter}s…`);
+          await new Promise(r => setTimeout(r, waitMs));
+          return doFetch();
+        }
+        step('warn', 'Error: ' + (e.error || res.status));
+        finish();
+        return;
+      }
+      if (!res.ok || !res.body) {
+        step('warn', 'Error: server returned status ' + res.status);
+        finish();
+        return;
+      }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
@@ -111,10 +240,25 @@ function run(body) {
           catch { /* keep-alive */ }
         }
       }
-    } finally {
       finish();
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        step('warn', 'Cancelled.');
+        finish();
+      } else {
+        step('warn', 'Network error: ' + e.message);
+        // Retry on network error with backoff
+        if (attempts < maxAttempts && !abort.signal.aborted) {
+          const waitMs = Math.min(10000, 1000 * Math.pow(2, attempts));
+          step('warn', `Retrying in ${Math.ceil(waitMs/1000)}s…`);
+          await new Promise(r => setTimeout(r, waitMs));
+          return doFetch();
+        }
+        finish();
+      }
     }
-  }).catch((e) => { step('warn', 'Network error: ' + e.message); finish(); });
+  };
+  doFetch();
 }
 
 function showError(msg) {
@@ -124,8 +268,9 @@ function showError(msg) {
   b.focus?.();
 }
 // Static-mode run: same engine, executed in-page via frontend/direct.js.
-async function runDirectFlow(body, key, step, finish) {
-  if (!key) {
+async function runDirectFlow(body, key, step, finish, signal, allKeys = [], model = '') {
+  const keys = allKeys.length ? allKeys : (key ? [key] : []);
+  if (!keys.length) {
     const msg = 'Static mode needs a Gemini API key — click "API key" above to enter one (stored in this browser only).';
     step('warn', msg);
     showError(msg);
@@ -133,15 +278,19 @@ async function runDirectFlow(body, key, step, finish) {
     if (!$('#keyDialog').open) $('#keyDialog').showModal();
     return;
   }
+  if (signal?.aborted) { finish(); return; }
   try {
     const { runDirect, saveLocalResult } = await import('./direct.js');
-    step('run', 'Static mode: running the full pipeline in your browser…');
-    const result = await runDirect(body, { key, emit: (ev) => handleEvent(ev, step) });
+    step('run', `Static mode: running with ${keys.length} key(s)${model ? ` · model ${model}` : ''}…`);
+    // Pass all keys and model for rotation — handles any topic dynamically
+    const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step) });
+    if (signal?.aborted) { step('warn', 'Cancelled.'); finish(); return; }
     saveLocalResult(result);
     showResult(result);
   } catch (e) {
+    if (signal?.aborted || e.name === 'AbortError') { step('warn', 'Cancelled.'); finish(); return; }
     const raw = e.message || 'research failed';
-    const msg = /quota|rate|429/i.test(raw) ? 'Gemini rate limit reached. Wait a minute and retry, or use a shallower mode.' : raw;
+    const msg = /quota|rate|429/i.test(raw) ? 'Gemini rate limit reached. Wait a minute and retry, or add more API keys (they rotate automatically).' : raw;
     step('warn', 'Error: ' + msg);
     showError(msg);
   } finally {
@@ -355,14 +504,48 @@ $('#historyBtn').addEventListener('click', async () => {
 });
 $('#backAsk').addEventListener('click', () => { $('#historyView').classList.add('hidden'); $('#askView').classList.remove('hidden'); });
 $('#clearHist').addEventListener('click', () => { localStorage.removeItem('er_history'); alert('Local history cleared.'); });
-$('#keyBtn').addEventListener('click', () => { if (!$('#keyDialog').open) $('#keyDialog').showModal(); });
+$('#keyBtn').addEventListener('click', () => {
+  if (!$('#keyDialog').open) {
+    renderKeyList();
+    $('#keyDialog').showModal();
+  }
+});
 $('#closeKey').addEventListener('click', () => $('#keyDialog').close());
+$('#addKey').addEventListener('click', () => {
+  const keys = getStoredKeys();
+  keys.push('');
+  localStorage.setItem('gemini_keys', JSON.stringify(keys));
+  renderKeyList();
+  // Focus new input
+  const inputs = $('#keyList').querySelectorAll('input');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+});
 $('#saveKey').addEventListener('click', () => {
-  const v = $('#keyInput').value.trim();
-  if (v && !v.startsWith('•')) localStorage.setItem('gemini_key', v);
+  // Collect all keys from list
+  const inputs = $('#keyList').querySelectorAll('input');
+  const keys = [...inputs].map(i => i.value.trim()).filter(Boolean);
+  if (keys.length) {
+    localStorage.setItem('gemini_keys', JSON.stringify(keys));
+    localStorage.setItem('gemini_key', keys[0]);
+  }
+  const model = $('#modelInput')?.value || '';
+  localStorage.setItem('gemini_model', model);
+  $('#modelSelect').value = model;
+  $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
+  $('#keyCount').classList.toggle('hidden', keys.length === 0);
   $('#keyDialog').close();
 });
-$('#forgetKey').addEventListener('click', () => { localStorage.removeItem('gemini_key'); $('#keyInput').value = ''; });
+$('#forgetKey').addEventListener('click', () => {
+  localStorage.removeItem('gemini_keys');
+  localStorage.removeItem('gemini_key');
+  localStorage.removeItem('gemini_model');
+  $('#keyList').innerHTML = '';
+  $('#modelInput').value = '';
+  $('#modelSelect').value = '';
+  $('#keyCount').textContent = '0';
+  $('#keyCount').classList.add('hidden');
+  renderKeyList();
+});
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }

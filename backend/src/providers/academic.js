@@ -60,39 +60,132 @@ export async function searchArxiv(query, max = 6) {
   });
 }
 
-export async function searchBooks(query, limit = 8) {
-  return cached(`books:${query}:${limit}`, async () => {
-    const out = [];
+// Generate dynamic variant queries for any topic — truly dynamic, no hardcoding.
+// Uses LLM expansion when key available (to handle synonyms like Harappan→Indus Valley),
+// falls back to heuristic broadening that works for any category.
+async function generateBookVariants(question, { key, model } = {}) {
+  const q = question.trim().slice(0, 120);
+  // Try LLM expansion first if key available — handles ANY topic dynamically
+  if (key && model) {
     try {
-      const d = await getJson(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${limit}`);
-      for (const b of d.docs || []) {
-        out.push({
-          url: b.key ? `https://openlibrary.org${b.key}` : '',
-          title: b.title || '',
-          snippet: `Open Library: ${(b.author_name || []).slice(0, 3).join(', ')} (${b.first_publish_year || 'n.d.'}), ${b.publisher?.slice(0, 3).join(', ') || ''}.`,
-          via: 'books:openlibrary',
-          meta: { authors: b.author_name || [], year: b.first_publish_year },
-        });
+      const { generateJson } = await import('../gemini.js');
+      const result = await generateJson({
+        key, model,
+        prompt: `Given the research question: "${q}", generate 2-3 alternative search queries for finding BOOKS and scholarly monographs. Include synonyms, broader terms, and related concepts. For example, if question is about "Harappan civilization", alternatives might include "Indus Valley civilization books", "Mohenjo-daro Harappa archaeology". Return JSON: {"variants": ["query1", "query2", "query3"]}`,
+        system: 'You are a research librarian helping expand book search queries. Be concise and include alternative phrasings.',
+        schema: { type: 'object', properties: { variants: { type: 'array', items: { type: 'string' } } }, required: ['variants'] },
+        temperature: 0.7, maxTokens: 300,
+        timeoutMs: 8000
+      });
+      if (result.data?.variants?.length > 0) {
+        const llmVariants = result.data.variants.map(v => String(v).trim()).filter(Boolean).slice(0, 3);
+        if (llmVariants.length > 0) {
+          return [q, ...llmVariants].slice(0, 4);
+        }
       }
-    } catch { /* book APIs are best-effort */ }
-    try {
-      const g = await getJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=${limit}`);
-      for (const b of g.items || []) {
-        const v = b.volumeInfo || {};
-        out.push({
-          url: v.infoLink || v.previewLink || '',
-          title: v.title || '',
-          snippet: `Google Books: ${(v.authors || []).slice(0, 3).join(', ')} (${v.publisher || ''} ${v.publishedDate || ''}). ${v.description ? v.description.slice(0, 300) : 'Metadata only — text not inspected.'}`,
-          via: 'books:googlebooks',
-          meta: { authors: v.authors || [], year: v.publishedDate || '' },
-        });
-      }
-    } catch { /* best-effort */ }
+    } catch { /* fallback to heuristic */ }
+  }
+  // Heuristic fallback: works for any topic without hardcoding
+  const lower = q.toLowerCase();
+  const stopwords = new Set(['tell', 'about', 'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'how', 'when', 'where', 'why', 'who', 'which', 'explain', 'describe', 'discuss']);
+  const words = lower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
+  const keyTerms = words.slice(0, 4).join(' ');
+  const variants = new Set([q].filter(Boolean));
+  if (keyTerms && keyTerms !== q.toLowerCase() && keyTerms.length > 3) variants.add(keyTerms);
+  if (words.length > 2) variants.add(words.slice(0, 3).join(' '));
+  if (words.length > 1) variants.add(words.slice(0, 2).join(' '));
+  // Add book suffix variants
+  const base = [...variants];
+  for (const v of base) {
+    if (!v.includes('book') && v.length > 5) variants.add(v + ' book');
+  }
+  return [...variants].slice(0, 4);
+}
+
+/** Dynamic relevance score 0..1: key-term overlap with title (×2) + snippet/authors.
+ *  Fully query-driven — no topic lists. Zero-overlap records rank last so a
+ *  conversational query ("tell about X") doesn't surface unrelated books. */
+const REL_STOPWORDS = new Set(['tell', 'about', 'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'how', 'when', 'where', 'why', 'who', 'which', 'explain', 'describe', 'discuss', 'me', 'please', 'give', 'find', 'books', 'book']);
+export function queryTerms(query) {
+  return [...new Set(
+    String(query || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter((w) => w.length > 2 && !REL_STOPWORDS.has(w)),
+  )];
+}
+export function bookRelevance(query, r) {
+  const terms = queryTerms(query);
+  if (!terms.length) return 0.5; // nothing to match against — keep provider order
+  const title = `${r.title || ''}`.toLowerCase();
+  const rest = `${r.snippet || ''} ${(r.meta?.authors || []).join(' ')}`.toLowerCase();
+  let hit = 0;
+  for (const t of terms) {
+    if (title.includes(t)) hit += 2;
+    else if (rest.includes(t)) hit += 1;
+  }
+  return hit / (terms.length * 2);
+}
+/** Sort by relevance; drop zero-overlap records unless that would empty the list. */
+export function rankByRelevance(query, records) {
+  const scored = records.map((r, i) => ({ r, i, s: bookRelevance(query, r) }));
+  scored.sort((a, b) => b.s - a.s || a.i - b.i);
+  const filtered = scored.filter((x) => x.s > 0);
+  return (filtered.length ? filtered : scored).map((x) => x.r);
+}
+
+export async function searchBooks(query, limit = 8, opts = {}) {
+  const variants = await generateBookVariants(query, opts);
+  const cacheKey = `books:${variants.join('|')}:${limit}`;
+  return cached(cacheKey, async () => {
+    const allQueries = variants;
+    // Search all variants in parallel across providers, then deduplicate
+    const results = await Promise.allSettled(
+      allQueries.map(async (q) => {
+        const out = [];
+        try {
+          const d = await getJson(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${Math.ceil(limit/2)}`);
+          for (const b of (d.docs || []).slice(0, Math.ceil(limit/2))) {
+            out.push({
+              url: b.key ? `https://openlibrary.org${b.key}` : '',
+              title: b.title || '',
+              snippet: `Open Library: ${(b.author_name || []).slice(0, 3).join(', ')} (${b.first_publish_year || 'n.d.'}), ${b.publisher?.slice(0, 3).join(', ') || ''}.`,
+              via: 'books:openlibrary',
+              meta: { authors: b.author_name || [], year: b.first_publish_year },
+            });
+          }
+        } catch { /* best-effort */ }
+        try {
+          const g = await getJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=${Math.ceil(limit/2)}`);
+          for (const b of (g.items || []).slice(0, Math.ceil(limit/2))) {
+            const v = b.volumeInfo || {};
+            out.push({
+              url: v.infoLink || v.previewLink || '',
+              title: v.title || '',
+              snippet: `Google Books: ${(v.authors || []).slice(0, 3).join(', ')} (${v.publisher || ''} ${v.publishedDate || ''}). ${v.description ? v.description.slice(0, 300) : 'Metadata only — text not inspected.'}`,
+              via: 'books:googlebooks',
+              meta: { authors: v.authors || [], year: v.publishedDate || '' },
+            });
+          }
+        } catch { /* best-effort */ }
+        return out;
+      })
+    );
+    const out = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
     try {
       const a = await searchArchiveOrg(query, Math.min(limit, 8));
       out.push(...a);
     } catch { /* best-effort */ }
-    return out.filter((r) => r.url);
+    // Deduplicate by URL and title, then rank by relevance to the ORIGINAL
+    // question (variant queries widen recall; ranking restores precision).
+    const seen = new Set();
+    const deduped = [];
+    for (const r of out) {
+      if (!r.url || seen.has(r.url)) continue;
+      const titleKey = r.title.toLowerCase().trim();
+      if (deduped.some(d => d.title.toLowerCase().trim() === titleKey && titleKey.length > 5)) continue;
+      seen.add(r.url);
+      deduped.push(r);
+    }
+    return rankByRelevance(query, deduped).slice(0, limit * 2);
   });
 }
 

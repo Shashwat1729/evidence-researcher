@@ -24,6 +24,29 @@ const QUERY_SCHEMA = {
 
 const CATEGORIES = ['general', 'scholarly', 'primary-evidence', 'books', 'alternative-explanations', 'counter-evidence', 'disagreement', 'institutional'];
 
+// Compact topic for keyword-style APIs (OpenLibrary, arXiv, OpenAlex) that
+// match terms, not prose: strip interrogatives, filler, and stopwords while
+// keeping the user's own key terms in order ("tell about Harappan
+// civilization" → "harappan civilization").
+const TOPIC_STOPWORDS = new Set((
+  'what,when,where,which,who,why,how,tell,about,explain,describe,describes,described,' +
+  'discuss,investigate,investigates,research,explore,look,looking,into,does,did,are,was,were,' +
+  'the,a,an,of,on,for,and,or,to,in,me,please,find,show,give,gives,can,you,your,brief,short,' +
+  'detailed,detail,summary,summarize,overview,history,cause,causes,caused,causing,effects,effect,impact,mean,meaning,' +
+  'define,definition,characteristics,features,information,info,things,stuff,more,most,some,any,' +
+  'all,there,their,they,them,with,from,that,this,those,these,than,then,also,between,through,' +
+  'came,come,back,many,much,like,just,know,really,actually,ever,never,often,still,even,only'
+).split(','));
+
+export function topicOf(question) {
+  const words = String(question || '').toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w));
+  const topic = [...new Set(words)].slice(0, 8).join(' ');
+  return topic || String(question || '').trim().slice(0, 120);
+}
+
 export function templateQueries(question, { academic = true, books = true, contradiction = false } = {}) {
   const q = question.length > 120 ? question.slice(0, 120) : question;
   const out = [

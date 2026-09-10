@@ -7,11 +7,11 @@
 // offline in tests with deterministic fakes (see tests/e2e.test.js).
 // Pure logic (dedup, classification, budgets, citation filtering) always runs.
 
-import { MODES, MODEL_CONFIG, estimateCost } from '../config.js';
+import { MODES, MODEL_CONFIG, estimateCost, isKnownModel } from '../config.js';
 import { getKeys, urlContext } from '../gemini.js';
 import { createTask, createPlan, createSource, validateTask } from '../schemas.js';
 import { planResearch } from './planner.js';
-import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount, templateQueries } from './queries.js';
+import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount, templateQueries, topicOf } from './queries.js';
 import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
 import { pool } from './pool.js';
@@ -22,17 +22,17 @@ import { deduplicate, canonicalize } from './dedup.js';
 import { extractClaims } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
-import { synthesizeReport } from './synthesis.js';
+import { synthesizeReport, templateReport } from './synthesis.js';
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 
 export const defaultDeps = {
-  plan: (args) => planResearch(args),
+  plan: (args) => planResearch({ ...args, model: args.model || MODEL_CONFIG.planner }),
   queries: (args) => generateQueries(args),
-  search: async (q, _category, { key, onUsage, onKeyEvent }) =>
-    geminiSearchProvider.search(q.q || q, { key, model: MODEL_CONFIG.research, onUsage, onKeyEvent }),
+  search: async (q, _category, { key, model, onUsage, onKeyEvent }) =>
+    geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent }),
   academic: (question) => searchAcademic(question),
-  books: (question) => searchBooks(question),
+  books: (question, limit, opts) => searchBooks(question, limit, opts),
   fetch: (url) => fetchPage(url),
   claims: (args) => extractClaims(args),
   provenance: (args) => analyzeProvenance(args),
@@ -49,7 +49,6 @@ function domainOf(url) {
 export async function runResearch(input, { key, emit = () => {}, deps = {}, isCancelled = () => false } = {}) {
   const D = { ...defaultDeps, ...deps };
   const cancelledErr = () => Object.assign(new Error('client disconnected — run cancelled'), { status: 499, code: 'CANCELLED' });
-  const throwIfCancelled = () => { if (isCancelled()) throw cancelledErr(); };
   const started = Date.now();
   const task = createTask(input);
   const errors = validateTask(task);
@@ -57,13 +56,21 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   if (!getKeys(key).length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
 
   const budget = { ...MODES[task.mode] };
+  // Per-run model override (UI picker): applies to all four roles.
+  // Empty = server defaults per role (see MODEL_CONFIG).
+  const models = {
+    planner: task.model || MODEL_CONFIG.planner,
+    research: task.model || MODEL_CONFIG.research,
+    analysis: task.model || MODEL_CONFIG.analysis,
+    synthesis: task.model || MODEL_CONFIG.synthesis,
+  };
   const stats = { modelCalls: 0, searchCalls: 0, fetches: 0, tokensIn: 0, tokensOut: 0, keyRotations: 0, phases: {}, fetchIssues: {}, startedAt: new Date(started).toISOString() };
   const track = (u) => { if (u) { stats.tokensIn += u.in || 0; stats.tokensOut += u.out || 0; } };
   const overTokenCap = () => stats.tokensOut >= budget.maxTokensOut;
   // usage auto-tracked: every model-returning dep reports { usage } with real API counts
   // Cancellation is cooperative: checked before every model call and loop —
   // a disconnected client stops burning quota within seconds.
-  const call = async (fn) => { throwIfCancelled(); stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
+  const call = async (fn) => { throwIfStopped(); stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
   const deadline = started + budget.maxRuntimeMs;
 
   const ev = (type, message, data = {}) => emit({ type, message, ...data, at: new Date().toISOString() });
@@ -72,8 +79,20 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       stats.keyRotations++;
       ev('progress', `API key ${info.reason === 'rate-limit' ? 'rate-limited' : 'rejected'} — switched to fallback key`);
     } else if (info?.type === 'rate-wait') {
+      stats.quotaWaitMs = (stats.quotaWaitMs || 0) + (info.waitMs || 0);
       ev('progress', `Quota limited — waiting ~${Math.ceil((info.waitMs || 0) / 1000)}s for the per-minute bucket, then retrying`);
     }
+  };
+  // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
+  // fast with a clear message instead of hanging for many minutes.
+  const quotaWaitBudget = () => Math.max(30_000, Number(process.env.QUOTA_WAIT_BUDGET_MS || 120_000));
+  const quotaErr = () => Object.assign(
+    new Error('Gemini quota exhausted — waited for refills but none arrived. Retry in a few minutes, add another API key, or use a shallower mode.'),
+    { status: 429, code: 'QUOTA_EXHAUSTED' },
+  );
+  const throwIfStopped = () => {
+    if (isCancelled()) throw cancelledErr();
+    if ((stats.quotaWaitMs || 0) >= quotaWaitBudget()) throw quotaErr();
   };
   // Phase timing (observability): accumulates wall-clock ms per pipeline stage.
   const phase = async (name, fn) => {
@@ -95,7 +114,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('progress', 'Creating research plan…');
   // Quick keeps the model planner (1 call): the classification gate must run
   // before any search budget burns. Query generation uses templates in quick.
-  const planData = await phase('plan', () => call(() => D.plan({ key, model: MODEL_CONFIG.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent })));
+  const planData = await phase('plan', () => call(() => D.plan({ key, model: models.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent })));
   // Classification gate: non-questions abort before burning search budget.
   if (planData.valid === false) {
     throw Object.assign(new Error('Not a research question. ' + (planData.clarify || 'Please ask something to investigate.')), { status: 400 });
@@ -109,12 +128,12 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   let allResults = [];
   const doSearch = async (q, category, explicitKey = key) => {
     // check+reserve is synchronous (no await between) → race-free under pool()
-    throwIfCancelled();
+    throwIfStopped();
     if (!alive() || overTokenCap()) return [];
     stats.searchCalls++;
     ev('progress', `Searching: ${q.q || q}`, { category });
     try {
-      const rs = await D.search(q, category, { key: explicitKey, onUsage: track, onKeyEvent: keyEvent });
+      const rs = await D.search(q, category, { key: explicitKey, model: models.research, onUsage: track, onKeyEvent: keyEvent });
       return rs.map((r) => ({ ...r, category }));
     } catch (e) {
       ev('warning', `Search failed (${(e.message || '').slice(0, 100)})`, { query: q.q || q });
@@ -125,16 +144,20 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const initialCount = task.mode === 'quick' ? 2 : task.mode === 'standard' ? 8 : task.mode === 'deep' ? 14 : 20;
   const queries = task.mode === 'quick'
     ? templateQueries(task.question, { academic: budget.academic, books: budget.books, contradiction: false }).slice(0, initialCount)
-    : await call(() => D.queries({ key, model: MODEL_CONFIG.planner, question: task.question, linesOfInquiry: plan.linesOfInquiry, count: initialCount, onKeyEvent: keyEvent }));
+    : await call(() => D.queries({ key, model: models.planner, question: task.question, linesOfInquiry: plan.linesOfInquiry, count: initialCount, onKeyEvent: keyEvent }));
   ev('progress', `${queries.length} search queries generated`, { queries: queries.map((q) => q.q) });
 
   // academic + books discovery (free APIs, no key) runs OVERLAPPED with the
-  // grounding searches instead of sequentially after them.
+  // grounding searches instead of sequentially after them. Keyword APIs get
+  // the compact TOPIC ("tell about Harappan civilization" → "harappan
+  // civilization"); books additionally run per-angle queries so alias-heavy
+  // subjects ("Indus Valley" books for a Harappan question) are found.
+  const topic = topicOf(task.question);
   const extraJobs = [];
   if (budget.academic && alive()) {
     ev('progress', 'Searching academic literature (OpenAlex, Crossref, arXiv)…');
     extraJobs.push(
-      D.academic(task.question)
+      D.academic(topic)
         .then((a) => { allResults.push(...a.map((r) => ({ ...r, category: 'scholarly' }))); return a.length; })
         .then((n) => ev('progress', `${n} scholarly records discovered`))
         .catch((e) => ev('warning', 'Academic search unavailable', { error: String(e.message).slice(0, 120) })),
@@ -142,12 +165,18 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   if (budget.books && alive()) {
     ev('progress', 'Discovering books and monographs…');
-    extraJobs.push(
-      D.books(task.question)
-        .then((b) => { allResults.push(...b.map((r) => ({ ...r, category: 'books' }))); return b.length; })
-        .then((n) => ev('progress', `${n} book records discovered`))
-        .catch((e) => ev('warning', 'Book discovery unavailable', { error: String(e.message).slice(0, 120) })),
-    );
+    const bookQueries = [...new Set([topic, ...queries
+      .filter((q) => q.category === 'books' || q.category === 'scholarly')
+      .slice(0, 2)
+      .map((q) => q.q)])].filter(Boolean).slice(0, 3);
+    for (const bq of bookQueries) {
+      extraJobs.push(
+        D.books(bq, budget.bookLimit || 0, { key, model: models.research })
+          .then((b) => { allResults.push(...b.map((r) => ({ ...r, category: 'books' }))); return b.length; })
+          .catch((e) => ev('warning', 'Book discovery unavailable', { error: String(e.message).slice(0, 120) })),
+      );
+    }
+    extraJobs.push(Promise.resolve().then(() => ev('progress', 'Book records collected')));
   }
   // Gentle stagger (env SEARCH_STAGGER_MS, default 350ms) spaces burst starts:
   // tiny quotas punish 5-wide parallel bursts; ~1s total cost, large
@@ -169,6 +198,31 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const found = await phase('search', () => pool(batch, searchConcurrency, (q, i) => sleep(Math.min(i, searchConcurrency - 1) * searchStagger).then(() => doSearchWithKey(q, q.category))));
   for (const rs of found) allResults.push(...rs);
   await phase('search', () => Promise.all(extraJobs));
+  // Free-provider fallback: if grounding returned NOTHING (quota outage) and
+  // the mode skipped academic/books, run them anyway — they cost zero Gemini
+  // quota and can rescue the run. No key/model passed so book-variant
+  // expansion stays heuristic (zero model calls).
+  if (!allResults.length && (!budget.academic || !budget.books)) {
+    ev('progress', 'Grounded search came back empty — trying free academic/book sources (no quota cost)…');
+    const rescue = [];
+    if (!budget.academic) {
+      rescue.push(
+        D.academic(topic)
+          .then((a) => { allResults.push(...a.map((r) => ({ ...r, category: 'scholarly' }))); return a.length; })
+          .then((n) => ev('progress', `${n} scholarly records rescued from free sources`))
+          .catch(() => ev('warning', 'Free academic fallback unavailable')),
+      );
+    }
+    if (!budget.books) {
+      rescue.push(
+        D.books(topic, 6)
+          .then((b) => { allResults.push(...b.map((r) => ({ ...r, category: 'books' }))); return b.length; })
+          .then((n) => ev('progress', `${n} book records rescued from free sources`))
+          .catch(() => ev('warning', 'Free book fallback unavailable')),
+      );
+    }
+    await Promise.all(rescue);
+  }
   // Diversity guarantee: if grounding clustered on <3 domains, top up with
   // scholarly/primary/book angles (template queries — no extra model call).
   // Skip for quick: quota is too tight for top-ups.
@@ -288,7 +342,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       try {
         const enriched = await phase('enrich', () => call(() => D.urlContext({
           key,
-          model: MODEL_CONFIG.research,
+          model: models.research,
           prompt: `For the research question below, summarize per URL the key facts relevant to it. Keep each URL's facts separate under "URL 1:", "URL 2:" headings. Be faithful; do not invent.\n\nQuestion: ${task.question}`,
           urls: top.map((s) => s.url),
           onKeyEvent: keyEvent,
@@ -318,23 +372,23 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
 
   const tAnalyze = Date.now();
   for (let i = 1; i <= maxIter; i++) {
-    throwIfCancelled();
+    throwIfStopped();
     if (Date.now() > deadline) break;
     if (overTokenCap()) { ev('progress', 'Token budget reached — synthesizing from gathered evidence'); break; }
     ev('progress', `Analysis pass ${i}/${maxIter}…`);
     try {
-      claims = await call(() => D.claims({ key, model: MODEL_CONFIG.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
+      claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
     } catch (e) {
       ev('warning', `Claim extraction failed (${(e.message || '').slice(0, 100)}) — retrying with fewer sources`);
       try {
-        claims = await call(() => D.claims({ key, model: MODEL_CONFIG.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
+        claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
       } catch { claims = []; }
     }
     ev('claims', `${claims.length} claims extracted`, { count: claims.length });
 
     let review;
     try {
-      review = await call(() => D.review({ key, model: MODEL_CONFIG.analysis, question: task.question, claims, sources, iteration: i, onKeyEvent: keyEvent }));
+      review = await call(() => D.review({ key, model: models.analysis, question: task.question, claims, sources, iteration: i, onKeyEvent: keyEvent }));
     } catch (e) {
       ev('warning', `Review failed (${(e.message || '').slice(0, 100)}) — treating evidence as provisional`);
       review = { contradictions: [], gaps: [], sufficient: i >= maxIter, reason: 'review failed' };
@@ -402,18 +456,34 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       note: groups.length ? 'Heuristic overlap detected; model verification skipped in quick mode — source independence could not be fully determined.' : 'No textual overlap detected; source independence could not be determined beyond this check.',
     };
   } else {
-    provenance = await phase('provenance', () => call(() => D.provenance({ key, model: MODEL_CONFIG.analysis, sources, onKeyEvent: keyEvent }))
+    provenance = await phase('provenance', () => call(() => D.provenance({ key, model: models.analysis, sources, onKeyEvent: keyEvent }))
       .catch(() => ({ groups: [], relations: [], note: 'Source independence could not be determined (analysis unavailable).' })));
   }
   ev('progress', provenance.note);
 
   // ---- SYNTHESIS ----
   ev('progress', 'Synthesizing final report…');
-  const report = await phase('synthesis', () => call(() => D.synthesize({
-    key, model: MODEL_CONFIG.synthesis, task, plan, claims, sources,
-    contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
-    maxTokens: budget.reportTokens,
-  })));
+  // Empty-handed is still an answer, not a crash — but with zero sources AND
+  // zero claims there is nothing honest to report, so fail explicitly.
+  if (!sources.length && !claims.length) {
+    throw Object.assign(
+      new Error('Insufficient evidence: searches, academic sources, and fetches all came back empty. Try rephrasing, a broader question, or standard/deep mode.'),
+      { status: 502, code: 'NO_EVIDENCE' },
+    );
+  }
+  let report;
+  try {
+    report = await phase('synthesis', () => call(() => D.synthesize({
+      key, model: models.synthesis, task, plan, claims, sources,
+      contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
+      maxTokens: budget.reportTokens,
+    })));
+  } catch (e) {
+    // Model synthesis unavailable (quota/outage) → honest evidence inventory.
+    // The run still delivers everything actually gathered, flagged as fallback.
+    ev('warning', `Model synthesis unavailable (${(e.message || '').slice(0, 100)}) — assembling evidence inventory instead`);
+    report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
+  }
 
   // citation-integrity: strip cites pointing at unknown ids
   const validIds = new Set(sources.map((s) => s.id));
@@ -426,7 +496,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   if (task.mode !== 'quick') {
     ev('progress', 'Cross-checking findings against cited excerpts…');
     try {
-      verification = await phase('verify', () => call(() => D.verify({ key, model: MODEL_CONFIG.analysis, findings: report.findings || [], sources, onKeyEvent: keyEvent })));
+      verification = await phase('verify', () => call(() => D.verify({ key, model: models.analysis, findings: report.findings || [], sources, onKeyEvent: keyEvent })));
     } catch { verification = []; }
   }
   report.verification = verification;

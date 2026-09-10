@@ -2,7 +2,7 @@
 // ResearchTask → ResearchPlan → SearchTask → Source → Claim → Evidence →
 // Contradiction → ResearchIteration → ResearchResult → ResearchReport
 
-import { CLAIM_STATES } from './config.js';
+import { CLAIM_STATES, isKnownModel } from './config.js';
 
 let seq = 0;
 export function uid(prefix = 'id') {
@@ -10,13 +10,14 @@ export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${seq}`;
 }
 
-export function createTask({ question, mode = 'standard', stance = 'neutral', hypothesis = '', documentary = false }) {
+export function createTask({ question, mode = 'standard', stance = 'neutral', hypothesis = '', documentary = false, model = '' }) {
   return {
     id: uid('task'),
     question: String(question || '').trim(),
     mode, stance,
     hypothesis: String(hypothesis || '').trim(),
     documentary: !!documentary,
+    model: String(model || '').trim(),
     createdAt: new Date().toISOString(),
   };
 }
@@ -69,5 +70,6 @@ export function validateTask(t) {
   if (!t.question || t.question.length < 3) errors.push('question too short');
   if (!['quick', 'standard', 'deep', 'exhaustive'].includes(t.mode)) errors.push('bad mode');
   if (!['neutral', 'lean', 'adversarial', 'steelman', 'comparative'].includes(t.stance)) errors.push('bad stance');
+  if (t.model && !isKnownModel(t.model)) errors.push('unknown model');
   return errors;
 }

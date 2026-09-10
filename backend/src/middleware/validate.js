@@ -1,5 +1,6 @@
 // Request validation — zero deps, explicit error messages.
 // Validates POST /api/research body before any model/network work.
+import { isKnownModel } from '../config.js';
 
 const MODES = new Set(['quick', 'standard', 'deep', 'exhaustive']);
 const STANCES = new Set(['neutral', 'lean', 'adversarial', 'steelman', 'comparative']);
@@ -14,6 +15,7 @@ export function validateResearchBody(body) {
   if (body?.hypothesis !== undefined && String(body.hypothesis).length > 2000) errors.push('hypothesis too long (max 2000 chars)');
   if (body?.documentary !== undefined && typeof body.documentary !== 'boolean') errors.push('documentary must be boolean');
   if (body?.fresh !== undefined && typeof body.fresh !== 'boolean') errors.push('fresh must be boolean');
+  if (body?.model !== undefined && body.model !== '' && !isKnownModel(body.model)) errors.push('model must be one of the offered models');
   // Prompt-injection guard: stance/hypothesis must not look like system override
   const suspicious = /ignore previous instructions|system prompt|you are now/i;
   if (suspicious.test(q) || suspicious.test(String(body?.hypothesis ?? ''))) {

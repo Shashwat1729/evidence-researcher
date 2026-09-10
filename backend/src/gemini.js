@@ -9,16 +9,29 @@ export function getKey(explicit) {
   return getKeys(explicit)[0] || '';
 }
 
-/** Ordered key list: explicit/BYOK → server primary → server fallback (deduped).
+/** Ordered key list: explicit BYOK (string, array, or comma-separated) → server primary → server
+ *  fallback (deduped, capped). Rotation in post() cycles this list, so N user
+ *  keys multiply effective quota instead of failing over once.
+ *  Handles comma, newline, and JSON-array formats from multi-key UI.
  *  Browser-safe (`process` guarded) for the static Pages build. */
 export function getKeys(explicit) {
   const penv = (typeof process !== 'undefined' && process.env) || {};
+  let listed = [];
+  if (Array.isArray(explicit)) {
+    listed = explicit;
+  } else if (typeof explicit === 'string' && explicit.trim().startsWith('[')) {
+    try { listed = JSON.parse(explicit); } catch { listed = [explicit]; }
+  } else if (typeof explicit === 'string' && explicit.includes(',')) {
+    listed = explicit.split(/[,;\n]+/);
+  } else {
+    listed = [explicit];
+  }
   const list = [
-    (explicit || '').trim(),
+    ...listed.map((k) => String(k || '').trim()).filter(Boolean),
     (penv.GEMINI_API_KEY || '').trim(),
     (penv.GEMINI_API_KEY_FALLBACK || '').trim(),
   ].filter(Boolean);
-  return [...new Set(list)];
+  return [...new Set(list)].slice(0, 6);
 }
 
 function endpoint(model, key) {

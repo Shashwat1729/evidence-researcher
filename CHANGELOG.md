@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Free-provider fallback: empty grounding triggers zero-quota academic/book rescue (heuristic only)
+- 9.5/10 UI redesign: hero layout, mode cards, segmented stance, model picker, multi-key manager, cancel flow
 - Static Pages mode: full pipeline runs in-browser (shared engine, BYOK), client-side exports, local history reopen
 - Pages deploy workflow with static import-integrity gate; local `site/` staging via `scripts/build-pages.js`
 - Exporters moved to dependency-free `backend/src/export.js`; fixed re-export binding crash

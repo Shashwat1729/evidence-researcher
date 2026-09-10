@@ -3,59 +3,144 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Evidence Researcher — Gemini Deep Research</title>
+<meta name="description" content="Evidence-first deep research agent powered by Gemini — auditable, citation-backed reports">
+<title>Evidence Researcher — Deep Research, Verified</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<a href="#askView" class="skip-link">Skip to main content</a>
+<a href="#main" class="skip-link">Skip to content</a>
+
 <header class="topbar" role="banner">
-  <div class="brand" aria-label="Evidence Researcher home">◉ Evidence Researcher</div>
-  <div class="top-actions">
-    <button id="historyBtn" class="ghost" aria-label="View research history">History</button>
-    <button id="keyBtn" class="ghost" aria-label="Manage API key">API key</button>
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><span>◉</span></div>
+      <div class="brand-text">
+        <strong>Evidence Researcher</strong>
+        <span>Gemini Deep Research · Auditable</span>
+      </div>
+    </div>
+    <nav class="top-actions" aria-label="Primary">
+      <select id="modelSelect" class="select ghost" aria-label="Select Gemini model">
+        <option value="">Auto (server default)</option>
+      </select>
+      <button id="historyBtn" class="btn ghost" aria-label="View research history">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+        History
+      </button>
+      <button id="keyBtn" class="btn ghost" aria-label="Manage API keys">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 2l-6 6"/><path d="M7.5 20.5 19 9l-4-4L3.5 16.5 2 22z"/></svg>
+        Keys
+        <span id="keyCount" class="badge hidden">0</span>
+      </button>
+    </nav>
   </div>
 </header>
 
-<main>
-  <section id="askView" class="card">
-    <h1>Deep Researcher</h1>
-    <p class="sub">An evidence-first research assistant powered by Gemini. It searches broadly, checks sources, hunts contradictions, and shows its work.</p>
-    <p id="staticBanner" class="hint hidden">Static demo mode: runs fully in your browser with your own Gemini key — no server needed.</p>
-    <label class="lbl">Research question
-      <textarea id="q" rows="3" maxlength="5000" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
-    </label>
-    <div class="grid2">
-      <fieldset><legend>Research mode</legend>
-        <label><input type="radio" name="mode" value="quick"> Quick <span class="hint">fast, basic verification</span></label>
-        <label><input type="radio" name="mode" value="standard" checked> Standard <span class="hint">balanced</span></label>
-        <label><input type="radio" name="mode" value="deep"> Deep <span class="hint">slower, more API use</span></label>
-        <label><input type="radio" name="mode" value="exhaustive"> Exhaustive <span class="hint">documentary-grade, heavy</span></label>
-      </fieldset>
-      <fieldset><legend>Research stance</legend>
-        <label><input type="radio" name="stance" value="neutral" checked> Neutral</label>
-        <label><input type="radio" name="stance" value="lean"> Lean toward hypothesis</label>
-        <label><input type="radio" name="stance" value="adversarial"> Adversarial <span class="hint">try to disprove it</span></label>
-        <label><input type="radio" name="stance" value="steelman"> Steelman <span class="hint">strongest case + weaknesses</span></label>
-        <label><input type="radio" name="stance" value="comparative"> Compare hypotheses</label>
-      </fieldset>
+<main id="main">
+  <!-- Ask View -->
+  <section id="askView" class="ask-view">
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Research, not chat · Every claim cited</div>
+        <h1>Ask a question.<br>Get a <em>verifiable</em> report.</h1>
+        <p class="sub">An evidence-first researcher that searches broadly, evaluates source quality, hunts contradictions, and shows its work — not a chatbot.</p>
+        <p id="staticBanner" class="banner hidden" role="status">
+          <span>◐</span> Static mode — runs fully in your browser with your own key. Page fetches may be limited by CORS; grounding excerpts are still cited.
+        </p>
+      </div>
+
+      <div class="ask-card card elevated">
+        <label class="lbl" for="q">
+          <span class="lbl-title">Research question</span>
+          <span class="lbl-hint">Be specific. “What were the major causes of the collapse of the Western Roman Empire?” beats “Tell me about Rome.”</span>
+          <textarea id="q" rows="3" maxlength="5000" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire? Or: Tell about the Harappan civilization — what do we know from archaeology?"></textarea>
+          <div class="field-meta">
+            <span id="qCount" class="hint">0 / 5000</span>
+            <span id="modeHint" class="hint"></span>
+          </div>
+        </label>
+
+        <div class="mode-grid" role="group" aria-label="Research mode">
+          <label class="mode-card">
+            <input type="radio" name="mode" value="quick">
+            <span class="mode-head"><strong>Quick</strong><span class="pill">~1 min</span></span>
+            <span class="hint">Fast check · 2 searches · escalates if sources disagree</span>
+          </label>
+          <label class="mode-card active">
+            <input type="radio" name="mode" value="standard" checked>
+            <span class="mode-head"><strong>Standard</strong><span class="pill">balanced</span></span>
+            <span class="hint">Cross-checking + contradiction search · a few minutes</span>
+          </label>
+          <label class="mode-card">
+            <input type="radio" name="mode" value="deep">
+            <span class="mode-head"><strong>Deep</strong><span class="pill">~15 min</span></span>
+            <span class="hint">Books + academic + provenance · heavy</span>
+          </label>
+          <label class="mode-card">
+            <input type="radio" name="mode" value="exhaustive">
+            <span class="mode-head"><strong>Exhaustive</strong><span class="pill">~30 min</span></span>
+            <span class="hint">Documentary-grade · many sources</span>
+          </label>
+        </div>
+
+        <div class="stance-row" role="group" aria-label="Research stance">
+          <span class="lbl-title">Stance</span>
+          <div class="segmented" role="radiogroup">
+            <label><input type="radio" name="stance" value="neutral" checked><span>Neutral</span></label>
+            <label><input type="radio" name="stance" value="lean"><span>Lean</span></label>
+            <label><input type="radio" name="stance" value="adversarial"><span>Adversarial</span></label>
+            <label><input type="radio" name="stance" value="steelman"><span>Steelman</span></label>
+            <label><input type="radio" name="stance" value="comparative"><span>Compare</span></label>
+          </div>
+          <span class="hint">Stance changes the objective, never the truth conditions. Contradictions are always hunted.</span>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced options</summary>
+          <label class="lbl">Hypothesis / motive (optional)
+            <input id="hyp" type="text" maxlength="2000" placeholder="e.g. I suspect economic decline was primary — test it (never manufactures evidence)">
+          </label>
+          <div class="toggles">
+            <label class="check"><input id="docu" type="checkbox"><span>Documentary mode</span><span class="hint">chronology · myths vs evidence · source notes</span></label>
+            <label class="check"><input id="fresh" type="checkbox"><span>Fresh run</span><span class="hint">skip recent-result cache (uses quota)</span></label>
+          </div>
+        </details>
+
+        <div class="ask-actions">
+          <button id="start" class="btn primary large">
+            <span>Start Research</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+          </button>
+          <p id="costNote" class="hint"></p>
+        </div>
+      </div>
     </div>
-    <label class="lbl">Optional hypothesis / motive
-      <input id="hyp" type="text" maxlength="2000" placeholder="e.g. I suspect economic decline was primary — test it (never manufactures evidence)">
-    </label>
-    <label class="check"><input id="docu" type="checkbox"> Documentary mode <span class="hint">chronology, myths-vs-evidence, source notes</span></label>
-    <label class="check"><input id="fresh" type="checkbox"> Fresh run <span class="hint">skip recent-result cache (uses quota)</span></label>
-    <button id="start" class="primary">Start Research</button>
-    <p id="costNote" class="hint"></p>
-    <p id="modeHint" class="hint"></p>
+
+    <div class="trust-row" aria-label="How it works">
+      <div class="trust-item"><strong>Search broadly</strong><span>Not just top 3 results</span></div>
+      <div class="trust-item"><strong>Evaluate sources</strong><span>Tier 1–7, not domain = trust</span></div>
+      <div class="trust-item"><strong>Hunt contradictions</strong><span>What would prove this wrong?</span></div>
+      <div class="trust-item"><strong>Cite everything</strong><span>Claim → passage → source</span></div>
+    </div>
   </section>
 
+  <!-- Progress View -->
   <section id="progressView" class="card hidden" aria-live="polite" aria-busy="true">
-    <h2>Researching…</h2>
+    <div class="progress-head">
+      <h2>Researching…</h2>
+      <button id="cancelBtn" class="btn ghost danger">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+        Cancel
+      </button>
+    </div>
+    <div class="progress-bar" aria-hidden="true"><div id="progressFill" class="progress-fill"></div></div>
     <div id="steps" class="steps" role="log" aria-live="polite"></div>
     <div id="liveStats" class="hint" role="status"></div>
     <div class="skeleton hidden" id="skeleton" aria-hidden="true"><div class="sk-line"></div><div class="sk-line"></div><div class="sk-line short"></div></div>
   </section>
 
+  <!-- Result View -->
   <section id="resultView" class="hidden">
     <nav class="tabs" role="tablist" aria-label="Research results">
       <button data-tab="overview" class="active" role="tab" aria-selected="true" tabindex="0">Overview</button>
@@ -65,41 +150,66 @@
       <button data-tab="academic" role="tab" aria-selected="false" tabindex="-1">Academic</button>
       <button data-tab="primary" role="tab" aria-selected="false" tabindex="-1">Primary</button>
       <button data-tab="contra" role="tab" aria-selected="false" tabindex="-1">Contradictions</button>
-      <button data-tab="graph" role="tab" aria-selected="false" tabindex="-1">Source graph</button>
+      <button data-tab="graph" role="tab" aria-selected="false" tabindex="-1">Graph</button>
       <button data-tab="process" role="tab" aria-selected="false" tabindex="-1">Process</button>
-      <button data-tab="report" role="tab" aria-selected="false" tabindex="-1">Final report</button>
+      <button data-tab="report" role="tab" aria-selected="false" tabindex="-1">Report</button>
     </nav>
     <div id="tabBody" class="card" role="tabpanel"></div>
-    <div id="errorBanner" class="card hidden" role="alert" style="border-color: var(--bad); background: #2a1a1a;"></div>
+    <div id="errorBanner" class="card hidden" role="alert" style="border-color: var(--bad); background: color-mix(in oklch, var(--bad) 12%, var(--card));"></div>
     <div class="exports">
-      <button data-exp="md">Export Markdown</button>
-      <button data-exp="html">Export HTML</button>
-      <button data-exp="json">Export JSON</button>
-      <button id="printBtn">Print / PDF</button>
-      <button id="again">New research</button>
+      <button data-exp="md" class="btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg> Markdown</button>
+      <button data-exp="html" class="btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg> HTML</button>
+      <button data-exp="json" class="btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg> JSON</button>
+      <button id="printBtn" class="btn">Print / PDF</button>
+      <button id="again" class="btn ghost">New research</button>
     </div>
   </section>
 
+  <!-- History View -->
   <section id="historyView" class="card hidden">
-    <h2>Research history</h2>
+    <div class="history-head">
+      <h2>Research history</h2>
+      <button id="backAsk" class="btn ghost">Back</button>
+    </div>
     <div id="histList"></div>
-    <button id="clearHist" class="ghost">Clear local history</button>
-    <button id="backAsk" class="ghost">Back</button>
+    <div class="history-actions">
+      <button id="clearHist" class="btn ghost">Clear local history</button>
+    </div>
   </section>
 </main>
 
+<footer class="footer">
+  <span>Evidence-first · Every claim cited · Uncertainty is a feature</span>
+  <span class="hint">Keys stay in your browser. No analytics. No bypass of paywalls.</span>
+</footer>
+
 <dialog id="keyDialog">
-  <h3>Gemini API key</h3>
-  <p id="serverKeyNote"></p>
-  <input id="keyInput" type="password" placeholder="AIza…" autocomplete="off">
-  <p class="hint">Private mode: stored in <b>this browser only</b> (localStorage), sent to <b>your own backend</b> with each run, never persisted server-side or sent anywhere else. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key</a>.</p>
-  <div class="row">
-    <button id="saveKey" class="primary">Save</button>
-    <button id="forgetKey" class="ghost">Forget</button>
-    <button id="closeKey" class="ghost">Close</button>
-  </div>
+  <form method="dialog" class="dialog-form">
+    <h3>API keys & model</h3>
+    <p id="serverKeyNote" class="hint"></p>
+
+    <label class="lbl">Gemini API keys (add up to 5 — they rotate on rate limits)
+      <div id="keyList" class="key-list"></div>
+      <button type="button" id="addKey" class="btn ghost small">+ Add key</button>
+      <span class="hint">Stored in <b>this browser only</b> (localStorage). Sent to <b>your backend</b> per run, never persisted server-side.</span>
+    </label>
+
+    <label class="lbl">Model
+      <select id="modelInput" class="select">
+        <option value="">Auto (server default)</option>
+      </select>
+      <span class="hint">Flash = most quota headroom · Pro = deepest reasoning but tighter free limits</span>
+    </label>
+
+    <p class="hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a></p>
+    <div class="row">
+      <button id="saveKey" class="btn primary" value="default">Save</button>
+      <button id="forgetKey" type="button" class="btn ghost">Forget all</button>
+      <button id="closeKey" type="button" class="btn ghost">Close</button>
+    </div>
+  </form>
 </dialog>
 
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
