@@ -206,7 +206,9 @@ function renderTab(tab) {
   } else if (tab === 'process') {
     el.innerHTML = `<h3>Methodology</h3><p>${escapeHtml(r.report?.methodology || '')}</p>
       <h3>Iterations</h3><ul>${(r.iterations || []).map((i) => `<li>Pass ${i.n}: gaps: ${(i.gaps || []).join('; ') || 'none'} ${i.sufficient ? '(sufficient)' : ''}</li>`).join('')}</ul>
-      <h3>Budget</h3><p class="hint">model calls ${r.stats.modelCalls} · searches ${r.stats.searchCalls} · fetched ${r.stats.fetches} · runtime ${(r.stats.runtimeMs / 1000).toFixed(1)}s · tokens in/out ${((r.stats.tokensIn || 0)).toLocaleString()}/${((r.stats.tokensOut || 0)).toLocaleString()} (API-reported; cost follows current Google pricing, estimate only)${r.stats.escalated ? ' · escalated (disagreement found)' : ''}<br>${escapeHtml(r.stats.note || '')}</p>
+      <h3>Budget</h3><p class="hint">model calls ${r.stats.modelCalls} · searches ${r.stats.searchCalls} · fetched ${r.stats.fetches} · runtime ${(r.stats.runtimeMs / 1000).toFixed(1)}s · tokens in/out ${((r.stats.tokensIn || 0)).toLocaleString()}/${((r.stats.tokensOut || 0)).toLocaleString()} (API-reported; cost follows current Google pricing, estimate only)${r.stats.escalated ? ' · escalated (disagreement found)' : ''}${r.stats.keyRotations ? ` · ${r.stats.keyRotations} key rotation(s)` : ''}<br>${escapeHtml(r.stats.note || '')}</p>
+      ${r.stats.phases && Object.keys(r.stats.phases).length ? `<h3>Phase timings</h3><p class="hint">${Object.entries(r.stats.phases).map(([k, v]) => `${escapeHtml(k)}: ${(v / 1000).toFixed(1)}s`).join(' · ')}</p>` : ''}
+      ${r.stats.fetchIssues && Object.keys(r.stats.fetchIssues).length ? `<h3>Fetch issues</h3><p class="hint">${Object.entries(r.stats.fetchIssues).map(([k, v]) => `${v}× ${escapeHtml(k)}`).join(' · ')}</p>` : ''}
       <h3>Research gaps</h3><ul>${(r.report?.gaps || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
   } else if (tab === 'report') {
     const rep = r.report || {};

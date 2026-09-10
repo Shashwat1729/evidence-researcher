@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Shared CLI runner (`scripts/run.js`) behind both CLIs, with arg parsing + exit codes tested
+- Graceful shutdown (SIGTERM/SIGINT drain) + unhandled-rejection logging in server entry
+- Process tab surfaces phase timings, fetch-issue breakdown, key rotations
+- Eval `--all [dir]` batch scoring; API docs cover OpenAPI/singleflight/attachments
 - Singleflight: identical concurrent runs share one execution (no extra quota)
 - Export downloads as attachments; markdown link text sanitized; valid `<ul>` HTML
 - Follow-up sources keep grounding excerpts + related copies (parity with initial batch)

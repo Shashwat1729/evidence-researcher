@@ -12,11 +12,15 @@ Base URL locally: `http://localhost:8787`. All JSON unless noted.
 ## Endpoints
 
 ### `GET /api/health`
-Liveness. → `{ ok: true, time }`
+Liveness + ops telemetry → `{ ok, time, uptime, version, memory, model }`.
+Wire your orchestrator/load-balancer checks here.
+
+### `GET /api/openapi.json`
+Machine-readable OpenAPI 3.0 spec for all endpoints above.
 
 ### `GET /api/config`
-`{ serverKey: bool, modes: [...], stances: [...] }` — lets the UI explain
-whether a key is needed. Never exposes any key material.
+`{ serverKey: bool, hasFallback: bool, modes: [...], stances: [...] }` —
+lets the UI explain whether a key is needed. Never exposes any key material.
 
 ### `POST /api/research` — Server-Sent Events
 Body: `{ question, mode?, stance?, hypothesis?, documentary? }`
@@ -46,9 +50,14 @@ Local run persistence (file store; `DATA_DIR`). List returns summaries;
 get returns the full `ResearchResult`.
 
 ### `GET /api/export/:id?format=md|html|json`
-Download the report. Markdown is the clean documentary/essay format;
-HTML is self-contained; JSON is the full result object. PDF: open the Final
+Download the report **as a file attachment** (`research-<id>.md/html/json`).
+Markdown is the clean documentary/essay format; HTML is self-contained with
+valid `<ul>` lists; JSON is the full result object. PDF: open the Final
 Report tab → **Print / PDF** → Save as PDF (print stylesheet included).
+
+Identical concurrent `POST /api/research` bodies share one execution
+(singleflight): joiners receive a `progress` note plus the same `result`
+event, burning quota only once.
 
 ## Core schemas
 
