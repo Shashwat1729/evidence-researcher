@@ -17,8 +17,9 @@ const DOMAIN_TIER_HINTS = [
 ];
 
 const PATH_HINTS = [
-  [/\/blog\//i, 1, 'blog path lowers authority (not auto-trust)'],
-  [/arxiv|doi|pubmed|jstor|\/papers?\//i, -1, 'scholarly path marker'],
+  // [regex, minTier, reason]: blog/opinion paths cap evidentiary value at
+  // general-website level regardless of domain prestige (declared papers/books exempt).
+  [/\/blog\//i, 6, 'blog/opinion path — discovery value, not evidence'],
 ];
 
 export function classifySource({ url = '', title = '', snippet = '', text = '', sourceType = 'webpage' }) {
@@ -63,7 +64,12 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     tier = 3; reason = 'museum/archive/library institutional source';
     authority = 'medium'; proximity = tier === 3 ? proximity : 'secondary';
   }
-  void PATH_HINTS;
+  // Blog/opinion paths cap the tier (applied last so it wins over markers above).
+  for (const [re, minTier, r] of PATH_HINTS) {
+    if (re.test(u) && (sourceType === 'webpage' || sourceType === 'news' || sourceType === 'social')) {
+      if (tier < minTier) { tier = minTier; reason = r; authority = 'low'; }
+    }
+  }
 
   return {
     tier, tierReason: reason, authority, proximity,

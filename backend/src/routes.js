@@ -14,6 +14,9 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   // Per-router concurrency guard: quota is per project, so unbounded parallel
   // runs would 429 everyone. Env-tunable, defaults to 8.
   let activeRuns = 0;
+  // Run counters for /api/metrics (per-router instance → test-isolated).
+  const metrics = { startedAt: new Date().toISOString(), runsStarted: 0, runsCompleted: 0, runsFailed: 0, runsCancelled: 0, byMode: {} };
+  r.get('/metrics', (_req, res) => res.json(metrics));
   // Per-IP rate limit scoped to research runs only (history/export polling
   // must never 429). Env-tunable via RATE_LIMIT_MAX, default 30/min.
   const researchLimiter = createRateLimiter({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT_MAX || 30) });
@@ -115,6 +118,8 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       return res.status(503).json({ error: 'Server is busy — too many concurrent research runs. Try again shortly.' });
     }
     activeRuns++;
+    metrics.runsStarted++;
+    metrics.byMode[input.mode] = (metrics.byMode[input.mode] || 0) + 1;
     // Disconnect detection must watch the RESPONSE, not the request: for POSTs
     // the req stream closes as soon as the body is consumed, long before we
     // finish streaming. res 'close' with an unfinished body = client gone.
@@ -139,8 +144,13 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     try {
       const result = await task;
       await store.saveResult(result).catch(() => {});
+      metrics.runsCompleted++;
       send({ type: 'result', message: 'Done', result });
-    } catch (e) { sendError(e); }
+    } catch (e) {
+      if (e?.code === 'CANCELLED') metrics.runsCancelled++;
+      else metrics.runsFailed++;
+      sendError(e);
+    }
     finally {
       inflight.delete(bk);
       activeRuns--;

@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- `/api/metrics` run counters (started/completed/failed/cancelled/byMode)
+- Env-overridable mode budgets (`RESEARCH_BUDGETS_JSON`, numbers/booleans on known keys only)
+- Blog-path tier cap, generic-title + URL-less dedup guards, memoized provenance with root-id validation
+- Pool limit sanitization; scorer strictness + readability; eval bank grown to 14 questions
 - Shared CLI runner (`scripts/run.js`) behind both CLIs, with arg parsing + exit codes tested
 - Graceful shutdown (SIGTERM/SIGINT drain) + unhandled-rejection logging in server entry
 - Process tab surfaces phase timings, fetch-issue breakdown, key rotations

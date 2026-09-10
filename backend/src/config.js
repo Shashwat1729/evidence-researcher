@@ -78,6 +78,26 @@ export const STANCE_GUARDRAIL =
   'Never manufacture, exaggerate, or suppress evidence to fit a requested conclusion. ' +
   'Actively search for contradicting evidence and report uncertainty honestly.';
 
+// Ops override: RESEARCH_BUDGETS_JSON='{"quick":{"maxSearches":3}}' deep-merges
+// numeric/boolean fields into known modes. Unknown modes/keys and wrong types
+// are ignored; malformed JSON is ignored (fail-open to compiled defaults).
+export function applyBudgetOverrides(modes, patch) {
+  if (!patch || typeof patch !== 'object') return modes;
+  for (const [mode, fields] of Object.entries(patch)) {
+    if (!modes[mode] || !fields || typeof fields !== 'object') continue;
+    for (const [k, v] of Object.entries(fields)) {
+      if (!(k in modes[mode])) continue;
+      if (typeof modes[mode][k] === 'number' && Number.isFinite(Number(v))) modes[mode][k] = Number(v);
+      else if (typeof modes[mode][k] === 'boolean' && typeof v === 'boolean') modes[mode][k] = v;
+    }
+  }
+  return modes;
+}
+
+try {
+  if (process.env.RESEARCH_BUDGETS_JSON) applyBudgetOverrides(MODES, JSON.parse(process.env.RESEARCH_BUDGETS_JSON));
+} catch { /* fail-open to compiled defaults */ }
+
 export const DOMAINS = [
   'history', 'science', 'medicine', 'technology', 'economics', 'politics',
   'law', 'biography', 'archaeology', 'culture', 'current-events',

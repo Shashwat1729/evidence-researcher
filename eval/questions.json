@@ -2,6 +2,10 @@
   "note": "Audit-oriented benchmark. Score methodology, not prose beauty.",
   "questions": [
     { "id": "easy-1", "level": "easy", "question": "When was the University of Bologna traditionally said to be founded, and what evidence supports that date?" },
+    { "id": "easy-3", "level": "easy", "question": "When was the Eiffel Tower completed, and what contemporary records confirm the date?" },
+    { "id": "medium-3", "level": "medium", "question": "Why did the Concorde stop flying commercially in 2003 — what were the economic vs technical reasons?" },
+    { "id": "adversarial-2", "level": "adversarial", "question": "Did the Great Wall of China really cost over a million lives to build? What do modern historians say about the popular death toll?" },
+    { "id": "provenance-2", "level": "provenance", "question": "Is it true that Vikings wore horned helmets? Trace where the image comes from and what the archaeology shows." },
     { "id": "easy-2", "level": "easy", "question": "What year did the Berlin Wall fall, and what primary evidence confirms the date?" },
     { "id": "medium-1", "level": "medium", "question": "What caused the 1906 San Francisco earthquake's fires to do more damage than the shaking itself?" },
     { "id": "medium-2", "level": "medium", "question": "Which books are considered the key scholarly works on the causes of World War I?" },

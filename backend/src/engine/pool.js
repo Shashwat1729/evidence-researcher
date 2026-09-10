@@ -13,7 +13,9 @@ export async function pool(items, limit, fn) {
       out[i] = await fn(items[i], i);
     }
   };
-  const n = Math.max(1, Math.min(limit, items.length));
+  // Sanitize: NaN/zero/negative/fractional limits degrade to serial (1),
+  // never to silent data loss (length-0 worker set returns undefineds).
+  const n = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), items.length)) : 1;
   await Promise.all(Array.from({ length: n }, worker));
   return out;
 }

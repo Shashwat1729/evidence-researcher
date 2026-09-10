@@ -4,27 +4,30 @@
 // Never fabricate: unknown stays unknown.
 
 import { generateJson } from '../gemini.js';
-import { textSimilarity } from './dedup.js';
+import { fingerprint, jaccardSets } from './dedup.js';
 
 /** Heuristic pass: group sources sharing distinctive quoted strings. */
 export function heuristicGroups(sources) {
   const groups = [];
   const used = new Set();
-  for (let i = 0; i < sources.length; i++) {
-    if (used.has(sources[i].id)) continue;
-    const group = [sources[i]];
-    for (let j = i + 1; j < sources.length; j++) {
-      if (used.has(sources[j].id)) continue;
-      const a = sources[i].passages.map((p) => p.text).join(' ');
-      const b = sources[j].passages.map((p) => p.text).join(' ');
-      const sim = a && b ? textSimilarity(a.slice(0, 3000), b.slice(0, 3000)) : 0;
-      const sameQuote = sharedQuote(a, b);
+  // Fingerprints + joined text computed once per source (not per pair).
+  const prepared = (sources || []).map((s) => {
+    const text = ((s.passages || []).map((p) => p.text).join(' ')).slice(0, 3000);
+    return { s, text, fp: fingerprint(text) };
+  }).filter((p) => p.text.length > 0);
+  for (let i = 0; i < prepared.length; i++) {
+    if (used.has(prepared[i].s.id)) continue;
+    const group = [prepared[i].s];
+    for (let j = i + 1; j < prepared.length; j++) {
+      if (used.has(prepared[j].s.id)) continue;
+      const sim = jaccardSets(prepared[i].fp, prepared[j].fp);
+      const sameQuote = sharedQuote(prepared[i].text, prepared[j].text);
       if (sim > 0.55 || sameQuote) {
-        group.push(sources[j]);
-        used.add(sources[j].id);
+        group.push(prepared[j].s);
+        used.add(prepared[j].s.id);
       }
     }
-    if (group.length > 1) { groups.push(group); used.add(sources[i].id); }
+    if (group.length > 1) { groups.push(group); used.add(prepared[i].s.id); }
   }
   return groups;
 }
@@ -49,7 +52,8 @@ export async function analyzeProvenance({ key, model, sources, onKeyEvent }) {
   const relations = [];
   // Confirm each candidate group with the model (bounded: max 6 groups).
   for (const g of groups.slice(0, 6)) {
-    const desc = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: s.passages.map((p) => p.text).join(' ').slice(0, 800) }));
+    const ids = new Set(g.map((s) => s.id));
+    const desc = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: (s.passages || []).map((p) => p.text).join(' ').slice(0, 800) }));
     const prompt = `These web sources have overlapping text. Determine whether they are INDEPENDENT confirmations or DERIVED from a common source.
 Sources: ${JSON.stringify(desc).slice(0, 6000)}
 Return JSON: {"verdict": "independent|derived|unclear", "root": "<source id of likely original or ''>", "explanation": "one sentence"}`;
@@ -60,13 +64,15 @@ Return JSON: {"verdict": "independent|derived|unclear", "root": "<source id of l
         maxTokens: 512,
       });
       const verdict = data.verdict || 'unclear';
-      if (verdict === 'derived' && data.root) {
+      // Integrity: only link a root that is actually in this group — a
+      // hallucinated id must never enter the relation graph.
+      if (verdict === 'derived' && data.root && ids.has(data.root)) {
         for (const s of g) {
           if (s.id !== data.root) relations.push({ from: s.id, to: data.root, kind: 'derived_from', evidence: data.explanation || 'textual overlap' });
         }
       }
-      groups.find((x) => x === g).verdict = verdict;
-      groups.find((x) => x === g).explanation = data.explanation || '';
+      g.verdict = verdict;
+      g.explanation = data.explanation || '';
     } catch {
       g.verdict = 'unclear';
     }
