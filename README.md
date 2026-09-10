@@ -1,5 +1,9 @@
 # Evidence Researcher
 
+[![CI](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/ci.yml/badge.svg)](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/ci.yml)
+[![Pages](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/pages.yml/badge.svg)](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/pages.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **An evidence-first deep research agent powered by Gemini.** Ask anything from
 *"When was X founded?"* to *"What caused the collapse of the Western Roman Empire?"*
 and get an auditable, citation-backed research report — not a chatbot answer.
@@ -11,12 +15,11 @@ remains uncertain — with every conclusion traceable to its sources.
 
 ## Live demo (no install)
 
-Host the static build on GitHub Pages (`Settings → Pages → GitHub Actions`, workflow
-already included) and open the site URL + `/frontend/`. The page detects the static
-host and runs the **full pipeline in your browser** with your own Gemini key —
-grounding search, academic discovery, claims, provenance, cited report, exports.
-No server, no signup; page fetches may be limited by site CORS policies (recorded
-honestly, never bypassed).
+**Try it now: https://shashwat1729.github.io/evidence-researcher/frontend/** —
+the page detects the static host and runs the **full pipeline in your browser**
+with your own Gemini key — grounding search, academic discovery, claims,
+provenance, cited report, exports. No server, no signup; page fetches may be
+limited by site CORS policies (recorded honestly, never bypassed).
 
 ## Quickstart (local, 2 minutes)
 

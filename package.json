@@ -3,6 +3,15 @@
   "version": "1.0.0",
   "description": "Evidence-first deep research agent powered by Gemini. Searches the live web, evaluates sources, extracts claims, hunts contradictions, and produces auditable cited reports.",
   "type": "module",
+  "homepage": "https://shashwat1729.github.io/evidence-researcher/frontend/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shashwat1729/evidence-researcher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Shashwat1729/evidence-researcher/issues"
+  },
+  "author": "Shashwat Bajpai",
   "scripts": {
     "dev": "node backend/src/index.js",
     "start": "NODE_ENV=production node backend/src/index.js",
