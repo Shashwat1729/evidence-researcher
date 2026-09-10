@@ -10,9 +10,47 @@ function domainOf(url) {
 }
 
 function decodeHtml(s) {
-  return s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
-    .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }[e]));
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
+      const cp = parseInt(h, 16);
+      return Number.isFinite(cp) && cp <= 0x10FFFF ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&#(\d+);/g, (_, n) => {
+      const cp = +n;
+      return Number.isFinite(cp) && cp <= 0x10FFFF ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&([a-zA-Z]+);/g, (m, e) => (NAMED_ENTITIES[e] !== undefined ? NAMED_ENTITIES[e] : m));
 }
+
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  hellip: '…', mdash: '—', ndash: '–', ldquo: '\u201C', rdquo: '\u201D',
+  lsquo: '\u2018', rsquo: '\u2019', laquo: '«', raquo: '»',
+  copy: '©', reg: '®', trade: '™', deg: '°', plus: '+', times: '×',
+  euro: '€', pound: '£', yen: '¥', sect: '§', para: '¶', middot: '·', bull: '•',
+};
+
+// Charset-aware decoding: Buffer.toString('utf8') on a windows-1252/ISO page
+// produces U+FFFD mojibake ("Giosu��") that then pollutes model excerpts.
+// Detect from Content-Type, else <meta charset> in the head bytes, else utf-8.
+function detectCharset(buf, ctype) {
+  const fromHeader = (String(ctype || '').match(/charset\s*=\s*["']?([^"';\s]+)/i) || [])[1];
+  if (fromHeader) return fromHeader.toLowerCase();
+  const head = buf.slice(0, 4000).toString('latin1');
+  const meta = head.match(/<meta[^>]+charset\s*=\s*["']?([^"'\s/>]+)/i)
+    || head.match(/<meta[^>]+content=["'][^"']*charset\s*=\s*([^"';\s]+)/i);
+  return (meta?.[1] || 'utf-8').toLowerCase();
+}
+
+export function decodeBody(buf, ctype = '') {
+  try {
+    return new TextDecoder(detectCharset(buf, ctype), { fatal: false }).decode(buf);
+  } catch {
+    return new TextDecoder('utf-8').decode(buf); // unknown label → utf-8
+  }
+}
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function extractMeta(html, name) {
   const m = html.match(new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]*>`, 'i'));
@@ -115,10 +153,16 @@ async function attemptFetch(url, timeoutMs) {
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     let res;
     try {
-      res = await fetch(url, {
-        signal: ctrl.signal, redirect: 'follow',
-        headers: { 'User-Agent': 'evidence-researcher/1.0 (independent research bot; contact: local install)', Accept: 'text/html,application/xhtml+xml' },
-      });
+      // One polite retry on 429 (honor Retry-After ≤10s); anything else is final.
+      for (let a = 0; ; a++) {
+        res = await fetch(url, {
+          signal: ctrl.signal, redirect: 'follow',
+          headers: { 'User-Agent': 'evidence-researcher/1.0 (independent research bot; contact: local install)', Accept: 'text/html,application/xhtml+xml' },
+        });
+        if (res.status !== 429 || a >= 1) break;
+        const ra = parseInt(res.headers.get('retry-after') || '', 10);
+        await sleepMs(Number.isFinite(ra) ? Math.min(10_000, Math.max(0, ra * 1000)) : 2000);
+      }
     } finally { clearTimeout(t); }
     result.status = res.status;
     if (res.status === 401 || res.status === 403) { result.reason = 'access denied (auth/paywall/robots)'; return result; }
@@ -128,16 +172,20 @@ async function attemptFetch(url, timeoutMs) {
     if (!/html|text/i.test(ctype)) { result.reason = `unsupported content-type ${ctype}`; return result; }
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > MAX_BYTES) { result.reason = 'page too large'; return result; }
-    const html = buf.toString('utf8');
+    const finalUrl = res.url || url;
+    const html = decodeBody(buf, ctype);
     const title = (html.match(/<title[^>]*>([\s\S]{1,300})<\/title>/i) || [])[1] || '';
     result.title = decodeHtml(title.replace(/\s+/g, ' ').trim());
     result.author = extractMeta(html, 'author') || extractMeta(html, 'article:author') || '';
     result.publishedDate = extractMeta(html, 'article:published_time') || extractMeta(html, 'date') || extractMeta(html, 'publish_date') || '';
-    result.canonical = (html.match(/<link[^>]+rel=["']canonical["'][^>]*>/i)?.[0]?.match(/href=["']([^"']+)["']/i) || [])[1] || url;
+    const rawCanon = (html.match(/<link[^>]+rel=["']canonical["'][^>]*>/i)?.[0]?.match(/href=["']([^"']+)["']/i) || [])[1] || finalUrl;
+    try { result.canonical = new URL(rawCanon, finalUrl).toString(); }
+    catch { result.canonical = finalUrl; }
+    result.url = finalUrl; // cite the real location after redirects, not the entry URL
     result.text = cleanText(html).slice(0, 20_000);
     result.ok = result.text.length > 200;
     if (!result.ok) result.reason = 'no extractable text';
-    result.domain = domainOf(url);
+    result.domain = domainOf(finalUrl);
     return result;
   } catch (e) {
     result.reason = e.name === 'AbortError' ? 'timeout' : (e.message || 'fetch failed').slice(0, 120);

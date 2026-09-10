@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { domainCount, diversityTopups } from '../backend/src/engine/queries.js';
+import { domainCount, diversityTopups, effectiveDomain } from '../backend/src/engine/queries.js';
 import { splitEnrichment } from '../backend/src/engine/enrich.js';
 
 describe('diversity helpers', () => {
@@ -31,5 +31,21 @@ describe('enrichment splitter', () => {
     assert.deepEqual(splitEnrichment('just some summary', 2), ['just some summary']);
     assert.deepEqual(splitEnrichment('', 2), []);
     assert.deepEqual(splitEnrichment('x', 0), []);
+  });
+});
+
+describe('redirect-aware domain counting', () => {
+  const V = 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc';
+  it('uses title hints for grounding redirects so diverse results count', () => {
+    assert.equal(effectiveDomain({ url: V, title: 'unibo.it/history' }), 'unibo.it');
+    assert.equal(effectiveDomain({ url: 'https://en.wikipedia.org/wiki/X', title: 'Wikipedia' }), 'en.wikipedia.org');
+    assert.equal(effectiveDomain({ url: V, title: 'not a domain at all' }), '');
+    assert.equal(effectiveDomain({ url: 'not a url', title: '' }), '');
+    const recs = [
+      { url: V, title: 'unibo.it/history' },
+      { url: V, title: 'wikipedia.org/wiki/X' },
+      { url: V, title: 'britannica.com/topic' },
+    ];
+    assert.equal(domainCount(recs), 3);
   });
 });

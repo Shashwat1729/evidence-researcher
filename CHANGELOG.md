@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Charset-aware page decoding (kills U+FFFD mojibake from latin-1 pages); hex/astral/common-named entities
+- Relative canonical resolution + final-URL citation; single polite 429 retry honoring Retry-After
+- Redirect-aware domain counting (title hints) so diversity top-ups fire on merit, not redirect-host clustering
 - `/api/metrics` run counters (started/completed/failed/cancelled/byMode)
 - Env-overridable mode budgets (`RESEARCH_BUDGETS_JSON`, numbers/booleans on known keys only)
 - Blog-path tier cap, generic-title + URL-less dedup guards, memoized provenance with root-id validation

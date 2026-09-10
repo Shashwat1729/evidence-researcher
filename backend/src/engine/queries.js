@@ -65,14 +65,28 @@ export function contradictionQueriesFor(claimText) {
   ];
 }
 
+/** Effective registrable domain for diversity counting. Grounding redirect
+ *  URLs (vertexaisearch) all share one host, so fall back to the chunk title
+ *  hint (e.g. "unibo.it/...") — otherwise every run looks single-domain and
+ *  top-ups fire wastefully even when results are actually diverse. */
+export function effectiveDomain(r) {
+  try {
+    const h = new URL(r.url).hostname.toLowerCase();
+    if (h && h !== 'vertexaisearch.cloud.google.com' && h !== 'www.vertexaisearch.cloud.google.com') {
+      return h.replace(/^www\./, '');
+    }
+  } catch { /* fall through to title hint */ }
+  const t = String(r.title || '').trim().toLowerCase().replace(/^https?:\/\//, '');
+  const m = t.match(/^([a-z0-9.-]+\.[a-z]{2,})(?:\/|$)/);
+  return m ? m[1] : '';
+}
+
 /** Count distinct registrable domains across result-like records. */
 export function domainCount(records) {
   const hosts = new Set();
   for (const r of records || []) {
-    try {
-      const h = new URL(r.url).hostname.toLowerCase().replace(/^www\./, '');
-      if (h) hosts.add(h);
-    } catch { /* skip malformed */ }
+    const h = effectiveDomain(r);
+    if (h) hosts.add(h);
   }
   return hosts.size;
 }

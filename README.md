@@ -68,7 +68,7 @@ manufactured to fit.
 ## Testing & evaluation
 
 ```bash
-npm test        # 95+ tests: units + offline full-pipeline E2E (15/15 audit) + HTTP/SSE
+npm test        # 105+ tests: units + offline full-pipeline E2E (15/15 audit) + HTTP/SSE
                 # + infra (registry, logger redaction, OpenAPI, rate limiter, singleflight, exports)
                 # + perf latency budgets — no API key or network needed
 npm run research -- "When was X founded?" --mode quick   # CLI, same engine as the server
