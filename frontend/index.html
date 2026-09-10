@@ -21,7 +21,7 @@
     <h1>Deep Researcher</h1>
     <p class="sub">An evidence-first research assistant powered by Gemini. It searches broadly, checks sources, hunts contradictions, and shows its work.</p>
     <label class="lbl">Research question
-      <textarea id="q" rows="3" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
+      <textarea id="q" rows="3" maxlength="5000" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
     </label>
     <div class="grid2">
       <fieldset><legend>Research mode</legend>
@@ -39,7 +39,7 @@
       </fieldset>
     </div>
     <label class="lbl">Optional hypothesis / motive
-      <input id="hyp" type="text" placeholder="e.g. I suspect economic decline was primary — test it (never manufactures evidence)">
+      <input id="hyp" type="text" maxlength="2000" placeholder="e.g. I suspect economic decline was primary — test it (never manufactures evidence)">
     </label>
     <label class="check"><input id="docu" type="checkbox"> Documentary mode <span class="hint">chronology, myths-vs-evidence, source notes</span></label>
     <button id="start" class="primary">Start Research</button>

@@ -12,6 +12,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   // Per-router concurrency guard: quota is per project, so unbounded parallel
   // runs would 429 everyone. Env-tunable, defaults to 8.
   let activeRuns = 0;
+  const inflight = new Map(); // identical-body → in-flight result promise
   const MODES_LIST = ['quick', 'standard', 'deep', 'exhaustive'];
   const STANCES_LIST = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
 
@@ -55,6 +56,45 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     }
     const rawCap = Number(process.env.MAX_CONCURRENT_RUNS);
     const cap = Number.isFinite(rawCap) ? Math.max(0, rawCap) : 8;
+    // Singleflight: identical concurrent bodies share ONE run (fresh result,
+    // zero extra quota). Joiners get a note + the final result event.
+    const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary]);
+    const shared = inflight.get(bk);
+    // SSE preamble shared by owner + joiner paths.
+    const beginStream = () => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      if (typeof res.flushHeaders === 'function') { try { res.flushHeaders(); } catch { /* ignore */ } }
+    };
+    let closed = false;
+    res.on('close', () => { if (!res.writableEnded) closed = true; });
+    // Never throw on a dead socket: a disconnected client must not crash the run.
+    const send = (obj) => {
+      if (closed || res.writableEnded) return;
+      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); }
+      catch { closed = true; }
+    };
+    const sendError = (e) => {
+      const status = e.status || 500;
+      let msg = e.message || 'research failed';
+      if (status === 429 || /quota|rate|429/i.test(msg)) msg = 'Gemini rate limit reached. Wait a minute and retry, or use a shallower mode.';
+      if (/API key|API_KEY|key not valid/i.test(msg)) msg = 'Invalid Gemini API key. Check the key and try again.';
+      send({ type: 'error', message: msg });
+    };
+    const finish = () => { try { if (!res.writableEnded) res.end(); } catch { /* ignore */ } };
+    if (shared) {
+      beginStream();
+      send({ type: 'progress', message: 'Joined an identical run already in progress — sharing its result (no extra quota used).' });
+      try {
+        const result = await shared;
+        send({ type: 'result', message: 'Done', result });
+      } catch (e) { sendError(e); }
+      finally { finish(); }
+      return;
+    }
     if (activeRuns >= cap) {
       return res.status(503).json({ error: 'Server is busy — too many concurrent research runs. Try again shortly.' });
     }
@@ -62,33 +102,19 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     // Disconnect detection must watch the RESPONSE, not the request: for POSTs
     // the req stream closes as soon as the body is consumed, long before we
     // finish streaming. res 'close' with an unfinished body = client gone.
-    let closed = false;
-    res.on('close', () => { if (!res.writableEnded) closed = true; });
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    if (typeof res.flushHeaders === 'function') { try { res.flushHeaders(); } catch { /* ignore */ } }
-    // Never throw on a dead socket: a disconnected client must not crash the run.
-    const send = (obj) => {
-      if (closed || res.writableEnded) return;
-      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); }
-      catch { closed = true; }
-    };
+    beginStream();
+    const task = runFn(input, { key, emit: send });
+    inflight.set(bk, task);
+    if (inflight.size > 100) inflight.delete(inflight.keys().next().value); // bounded
     try {
-      const result = await runFn(input, { key, emit: send });
+      const result = await task;
       await store.saveResult(result).catch(() => {});
       send({ type: 'result', message: 'Done', result });
-    } catch (e) {
-      const status = e.status || 500;
-      let msg = e.message || 'research failed';
-      if (status === 429 || /quota|rate|429/i.test(msg)) msg = 'Gemini rate limit reached. Wait a minute and retry, or use a shallower mode.';
-      if (/API key|API_KEY|key not valid/i.test(msg)) msg = 'Invalid Gemini API key. Check the key and try again.';
-      send({ type: 'error', message: msg });
-    } finally {
+    } catch (e) { sendError(e); }
+    finally {
+      inflight.delete(bk);
       activeRuns--;
-      try { if (!res.writableEnded) res.end(); } catch { /* ignore */ }
+      finish();
     }
   });
 
@@ -107,16 +133,22 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     catch { res.status(404).json({ error: 'not found' }); }
   });
 
-  // Export: ?format=md|html|json
+  // Export: ?format=md|html|json (downloads as attachment)
   r.get('/export/:id', async (req, res) => {
     try {
       const result = await store.getResult(req.params.id);
       const format = req.query.format || 'md';
-      if (format === 'json') return res.json(result);
+      const base = `research-${String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'report'}`;
+      if (format === 'json') {
+        res.attachment(`${base}.json`);
+        return res.json(result);
+      }
       if (format === 'html') {
+        res.attachment(`${base}.html`);
         res.type('html');
         return res.send(exportHtml(result));
       }
+      res.attachment(`${base}.md`);
       res.type('markdown');
       return res.send(exportMarkdown(result));
     } catch { res.status(404).json({ error: 'not found' }); }
@@ -131,7 +163,10 @@ export function exportMarkdown(r) {
   const byId = new Map((r.sources || []).map((s) => [s.id, s]));
   const cite = (ids = []) => ids.map((id) => {
     const s = byId.get(id);
-    return s ? `[${oneLine(s.title || s.domain)}](${s.url})` : null;
+    if (!s) return null;
+    // Strip markdown metachars from link text so model titles can't break links.
+    const text = oneLine(s.title || s.domain).replace(/[\[\]()]/g, '');
+    return `[${text}](${s.url})`;
   }).filter(Boolean).join('; ');
   const L = [];
   L.push(`# Research: ${oneLine(r.task?.question) || ''}`, '');

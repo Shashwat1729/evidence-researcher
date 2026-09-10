@@ -24,12 +24,13 @@ integrity-checked against actually-retrieved sources.
 
 | Layer | Implementation |
 |---|---|
-| Search | `GeminiSearchProvider` (Google Search grounding: `tools: [{google_search}]` → `groundingMetadata` chunks become Sources). Provider interface in `providers/base.js` — Tavily/Exa/SearXNG/Brave/MCP can be added without touching the engine. |
-| Academic/books | Free, keyless: OpenAlex, Crossref, arXiv, Open Library, Google Books (metadata = discovery, never "read"). |
-| Fetch | Dependency-free HTML extraction with timeouts, size caps, no paywall/auth/CAPTCHA bypass. |
-| API | Express + SSE (`POST /api/research` streams progress; never streams chain-of-thought). Serves the static frontend. |
-| Frontend | Zero-build HTML/CSS/JS: ask form, live progress, 10-tab dashboard, SVG source graph, Markdown/HTML/JSON export. |
-| Persistence | JSON file store (`DATA_DIR`); browser localStorage history. Swappable for a real DB. |
+| Search | `GeminiSearchProvider` (Google Search grounding: `tools: [{google_search}]` → `groundingMetadata` chunks become Sources). Provider registry in `providers/registry.js` — Tavily/Exa/SearXNG/Brave/MCP can be added without touching the engine. |
+| Academic/books | Free, keyless: OpenAlex, Crossref, arXiv, Semantic Scholar, PubMed, Open Library, Google Books, Internet Archive (metadata = discovery, never "read"; 20-min LRU cache). |
+| Fetch | Dependency-free HTML extraction with timeouts, size caps, robots.txt respect, no paywall/auth/CAPTCHA bypass. |
+| API | Express + SSE (`POST /api/research` streams progress; never streams chain-of-thought). Request validation, per-IP rate limiting, concurrency guard, singleflight dedup of identical concurrent runs, OpenAPI at `/api/openapi.json`. Serves the static frontend. |
+| Frontend | Zero-build HTML/CSS/JS: ask form, live progress, 10-tab dashboard, SVG source graph, Markdown/HTML/JSON export, print/PDF, keyboard-navigable tabs, ARIA live regions. |
+| Persistence | Atomic JSON file store (`DATA_DIR`); browser localStorage history. Swappable for a real DB. |
+| Ops | Structured logs (`LOG_LEVEL`), `/api/health` with uptime/memory, CLI (`npm run research`), MCP tool stub, GitHub Actions CI. |
 
 Key methodology rules enforced in code: search-result ≠ evidence, `.edu` ≠ auto-trust,
 Wikipedia/Reddit = discovery value not evidentiary value, books distinguished as
@@ -54,10 +55,10 @@ override with their own key.
 
 ## Research modes & stance
 
-Modes: **Quick** (~4 searches) · **Standard** (~10, cross-checking) ·
+Modes: **Quick** (~2 searches, ~1 min, template queries) · **Standard** (~10, cross-checking) ·
 **Deep** (~24, books/academic/primary/provenance) · **Exhaustive** (~50,
 documentary-grade). Every run has hard budgets (iterations, searches, sources,
-fetches, model calls, runtime) and stops early when evidence suffices; a simple
+fetches, model calls, runtime, output tokens) and stops early when evidence suffices; a simple
 question whose sources disagree **escalates** automatically.
 
 Stances: Neutral · Lean · Adversarial · Steelman · Comparative. The stance is
@@ -67,9 +68,10 @@ manufactured to fit.
 ## Testing & evaluation
 
 ```bash
-npm test        # 51 tests: units (classifier, dedup, provenance, claims, budgets, failures)
-                # + offline full-pipeline E2E with deterministic fakes (14/14 audit)
-                # + live HTTP/SSE plumbing tests — no API key or network needed
+npm test        # 80+ tests: units + offline full-pipeline E2E (15/15 audit) + HTTP/SSE
+                # + infra (registry, logger redaction, OpenAPI, rate limiter, singleflight, exports)
+                # + perf latency budgets — no API key or network needed
+npm run research -- "When was X founded?" --mode quick   # CLI, same engine as the server
 node eval/run.js  # audit-score heuristic over eval/questions.json (needs GEMINI_API_KEY for live runs)
 ```
 

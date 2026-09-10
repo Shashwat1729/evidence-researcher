@@ -23,9 +23,11 @@ function recommendMode(q) {
 }
 
 async function init() {
+  let hasFallback = false;
   try {
     const cfg = await (await fetch('/api/config')).json();
     serverKey = !!cfg.serverKey;
+    hasFallback = !!cfg.hasFallback;
   } catch { /* offline */ }
   $('#costNote').textContent = MODE_BLURB.standard;
   $$('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
@@ -35,7 +37,7 @@ async function init() {
   $('#q').addEventListener('input', updateHint);
   updateHint();
   $('#serverKeyNote').textContent = serverKey
-    ? 'Server has a Gemini key configured. You can still override with your own below (used for this browser only).'
+    ? `Server has a Gemini key configured${hasFallback ? ' (+ fallback key for rate limits)' : ''}. You can still override with your own below (used for this browser only).`
     : 'No server-side key configured. Enter your Gemini key to run research in private mode.';
   if (localStorage.getItem('gemini_key')) $('#keyInput').value = '•••••• (saved)';
 }

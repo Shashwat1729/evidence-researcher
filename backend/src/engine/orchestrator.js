@@ -20,7 +20,7 @@ import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
 import { extractClaims } from './claims.js';
-import { analyzeProvenance } from './provenance.js';
+import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
 import { synthesizeReport } from './synthesis.js';
 import { verifyFindings } from './verify.js';
@@ -275,7 +275,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   // consult top sources via Google URL context — legitimate retrieval, no bypass.
   // Result is honestly labeled partial access, never "inspected".
   if (fetched === 0 && sources.some((s) => s.sourceType !== 'book') && !overTokenCap() && task.mode !== 'quick') {
-    const top = sources.filter((s) => s.sourceType !== 'book' && !s.verified).slice(0, 5);
+    // Redirect URLs aren't resolvable by URL context either — only real hosts.
+    const top = sources.filter((s) => s.sourceType !== 'book' && !s.verified && !isRedirect(s.url)).slice(0, 5);
     if (top.length >= 2) {
       ev('progress', 'Direct fetch blocked — consulting sources via Google URL context…');
       try {
@@ -324,7 +325,13 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
     }
     ev('claims', `${claims.length} claims extracted`, { count: claims.length });
 
-    const review = await call(() => D.review({ key, model: MODEL_CONFIG.analysis, question: task.question, claims, sources, iteration: i, onKeyEvent: keyEvent }).catch(() => ({ contradictions: [], gaps: [], sufficient: i >= maxIter, reason: 'review failed' })));
+    let review;
+    try {
+      review = await call(() => D.review({ key, model: MODEL_CONFIG.analysis, question: task.question, claims, sources, iteration: i, onKeyEvent: keyEvent }));
+    } catch (e) {
+      ev('warning', `Review failed (${(e.message || '').slice(0, 100)}) — treating evidence as provisional`);
+      review = { contradictions: [], gaps: [], sufficient: i >= maxIter, reason: 'review failed' };
+    }
     contradictions = review.contradictions || [];
     gaps = review.gaps || [];
     iterations.push({ n: i, gaps, sufficient: review.sufficient, reason: review.reason });
@@ -356,7 +363,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
       for (const r of fresh.slice(0, 4)) {
         if (sources.length >= budget.maxSources) break;
         const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '' });
-        sources.push(createSource({ url: r.url, canonicalUrl: canonicalize(r.url), title: r.title || r.url, domain: domainOf(r.url), discoveredVia: r.via, tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity }));
+        const ns = createSource({ url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url, domain: domainOf(r.url), discoveredVia: r.via, tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity });
+        if (r.snippet) ns.passages = [{ text: r.snippet.slice(0, 900), claimHint: 'grounding excerpt' }];
+        sources.push(ns);
         added++;
       }
     }
@@ -379,7 +388,6 @@ export async function runResearch(input, { key, emit = () => {}, deps = {} } = {
   ev('progress', 'Checking source independence…');
   if (task.mode === 'quick') {
     // Quick: heuristic only, no model call to stay under free-tier quota.
-    const { heuristicGroups } = await import('./provenance.js');
     const groups = heuristicGroups(sources);
     provenance = {
       groups: groups.map((g) => ({ ids: g.map((s) => s.id), verdict: 'unclear', explanation: 'heuristic overlap — model verification skipped in quick mode' })),

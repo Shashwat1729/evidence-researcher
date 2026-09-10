@@ -91,6 +91,7 @@ const deps = {
     { n: 0, supported: 'yes', note: 'Excerpts directly support the finding.' },
     { n: 1, supported: 'partial', note: 'Book evidence is metadata only.' },
   ],
+  urlContext: async () => ({ text: '' }), // hermetic: never hit network even if enrichment triggers
 };
 
 describe('full research pipeline (mocked models)', () => {
