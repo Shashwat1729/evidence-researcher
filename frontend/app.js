@@ -197,14 +197,23 @@ function showResult(r) {
 }
 
 function srcById(id) { return (current.sources || []).find((s) => s.id === id); }
+// Only http(s) links are clickable: model- or API-supplied URLs must never
+// become javascript:/data: hrefs (defense in depth — server already filters).
+function safeUrl(u) { return /^https?:\/\//i.test(String(u || '')) ? u : '#'; }
 function srcLink(id) {
   const s = srcById(id);
-  return s ? `<a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.domain || s.url)}</a>` : '<i>unknown source</i>';
+  return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.domain || s.url)}</a>` : '<i>unknown source</i>';
 }
 
 function renderTab(tab) {
   const r = current;
   const el = $('#tabBody');
+  if (!r || !r.task) {
+    el.innerHTML = '<div class="empty-state"><p>No result loaded.</p></div>';
+    return;
+  }
+  r.stats = r.stats || {};
+  r.report = r.report || {};
   if (tab === 'overview') {
     el.innerHTML = `<h2>${escapeHtml(r.task.question)}</h2>
       <p><span class="pill">${r.task.mode}</span><span class="pill">${r.task.stance}</span>
@@ -226,7 +235,7 @@ function renderTab(tab) {
       : s.proximity === 'primary' || s.tier === 1);
     el.innerHTML = `<p class="hint">${list.length} item(s). Tier 1 = primary evidence … Tier 7 = social/UGC (leads only). Book metadata ≠ inspected text.</p>
       <table><tr><th>Source</th><th>Tier</th><th>Access</th><th>Passage</th></tr>${list.map((s) => `<tr>
-      <td><a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a><br><span class="hint">${escapeHtml(s.domain)} · ${escapeHtml(s.author || '')} ${escapeHtml(s.publishedDate || '')}<br>${escapeHtml(s.tierReason || '')}${s.note ? ' · ' + escapeHtml(s.note) : ''}${(s.relatedCopies || []).length ? `<br>· ${s.relatedCopies.length} related cop${s.relatedCopies.length > 1 ? 'ies' : 'y'} (same canonical source — not independent confirmation)` : ''}</span></td>
+      <td><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a><br><span class="hint">${escapeHtml(s.domain)} · ${escapeHtml(s.author || '')} ${escapeHtml(s.publishedDate || '')}<br>${escapeHtml(s.tierReason || '')}${s.note ? ' · ' + escapeHtml(s.note) : ''}${(s.relatedCopies || []).length ? `<br>· ${s.relatedCopies.length} related cop${s.relatedCopies.length > 1 ? 'ies' : 'y'} (same canonical source — not independent confirmation)` : ''}</span></td>
       <td><span class="pill t${s.tier ?? ''}">${s.tier ?? '?'}</span></td>
       <td>${s.verified ? 'inspected' : escapeHtml(s.accessibility || '')}</td>
       <td class="hint">${escapeHtml((s.passages[0]?.text || '').slice(0, 280))}</td></tr>`).join('')}</table>`;
@@ -247,7 +256,7 @@ function renderTab(tab) {
   } else if (tab === 'report') {
     const rep = r.report || {};
     const byId = (id) => srcById(id);
-    const cite = (ids = []) => (ids || []).map((id) => { const s = byId(id); return s ? `<a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">[${escapeHtml((s.title || s.domain || '').slice(0, 40))}]</a>` : ''; }).join(' ');
+    const cite = (ids = []) => (ids || []).map((id) => { const s = byId(id); return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">[${escapeHtml((s.title || s.domain || '').slice(0, 40))}]</a>` : ''; }).join(' ');
     el.innerHTML = `<h2>Final report</h2><p>${escapeHtml(rep.executiveSummary || '')}</p>
       ${(rep.findings || []).map((f, i) => { const v = (rep.verification || []).find((x) => x.n === i); return `<h3>${escapeHtml(f.heading || '')}</h3><p>${escapeHtml(f.body || '')}</p><p>${cite(f.cite)}</p>` + (v ? `<p class="hint">Cross-check: <b>${escapeHtml(v.supported)}</b> — ${escapeHtml(v.note)}</p>` : ''); }).join('')}
       <h3>Source quality</h3><p>${escapeHtml(rep.sourceQuality || '')}</p>
@@ -256,7 +265,7 @@ function renderTab(tab) {
       <h3>Primary sources</h3><ul>${(rep.primarySources || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
       <h3>Uncertainty</h3><ul>${(rep.uncertainty || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
       <h3>Methodology</h3><p>${escapeHtml(rep.methodology || '')}</p>
-      <h3>Sources</h3><ul>${(r.sources || []).map((s) => `<li><a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span class="hint">tier ${s.tier ?? '?'} · ${escapeHtml(s.accessibility || '')}${s.verified ? ' · inspected' : ''}</span></li>`).join('')}</ul>`;
+      <h3>Sources</h3><ul>${(r.sources || []).map((s) => `<li><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span class="hint">tier ${s.tier ?? '?'} · ${escapeHtml(s.accessibility || '')}${s.verified ? ' · inspected' : ''}</span></li>`).join('')}</ul>`;
   }
 }
 
