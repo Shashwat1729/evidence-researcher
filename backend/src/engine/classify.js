@@ -22,9 +22,14 @@ const PATH_HINTS = [
   [/\/blog\//i, 6, 'blog/opinion path — discovery value, not evidence'],
 ];
 
-export function classifySource({ url = '', title = '', snippet = '', text = '', sourceType = 'webpage' }) {
+export function classifySource({ url = '', title = '', snippet = '', text = '', sourceType = 'webpage', domainHint = '' }) {
   const u = String(url || '');
   const hay = `${title} ${snippet} ${text.slice(0, 2000)}`.toLowerCase();
+  // Redirect/proxy URLs (e.g. grounding redirects) carry no real domain —
+  // a caller-provided hint (usually from the result title) lets domain
+  // hints apply. The hint only ever selects AMONG the fixed rules below.
+  const hint = String(domainHint || '').toLowerCase().replace(/^www\./, '');
+  const uPlus = hint && !u.includes(hint) ? `${u} ${hint}` : u;
   let tier = 6;
   let reason = 'general website — discovery/background; evidentiary value to be established';
   let authority = 'unknown';
@@ -35,7 +40,7 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
   if (sourceType === 'primary') { tier = 1; reason = 'declared primary evidence'; authority = 'medium'; proximity = 'primary'; }
 
   for (const [re, t, r] of DOMAIN_TIER_HINTS) {
-    if (re.test(u)) {
+    if (re.test(uPlus)) {
       if (t === null) {
         // .edu/.ac: only scholarly paths earn tier 2; blogs stay tier 6.
         if (/arxiv|jstor|pubmed|doi|repository|journals?|press|scholar/i.test(u + ' ' + hay)) {
@@ -60,7 +65,7 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }
-  if (/museum\.|archive|national library|smithsonian/i.test(u + ' ' + hay) && tier > 3) {
+  if (/museum\.|archive|national library|smithsonian/i.test(uPlus + ' ' + hay) && tier > 3) {
     tier = 3; reason = 'museum/archive/library institutional source';
     authority = 'medium'; proximity = tier === 3 ? proximity : 'secondary';
   }

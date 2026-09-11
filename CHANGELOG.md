@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+- Hinted-domain classification: grounding redirects now get proper tiers (social→7, scholarly→2) instead of all-6
+- Finding cite repair: uncited findings inherit sources from overlapping claims (real ids only)
+- Report completeness guard: uncertainty/gaps never empty, derived honestly from run state
+- Stronger synthesis prompt: cites mandatory, uncertainty/gaps minimums
+- Model picker (UI + `x-gemini-model` + body) routed to all four roles with allowlist validation
+- Multi-key rotation pool: N keys via UI/header/env multiply effective quota on 429
+- Dynamic rate limiter: sliding window, downstream-429 backoff, Retry-After, gradual recovery
+- Synthesis fallback: quota/outage yields honest evidence inventory instead of failed run
+- Quota circuit breaker: caps total quota-wait per run, fails fast with clear message
+- Cancel button with AbortController; server aborts on client disconnect (refcount)
+- Per-angle book queries with mode-scaled `bookLimit`; compact `topicOf` for keyword APIs
 - Free-provider fallback: empty grounding triggers zero-quota academic/book rescue (heuristic only)
 - 9.5/10 UI redesign: hero layout, mode cards, segmented stance, model picker, multi-key manager, cancel flow
 - Static Pages mode: full pipeline runs in-browser (shared engine, BYOK), client-side exports, local history reopen

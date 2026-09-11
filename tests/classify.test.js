@@ -27,4 +27,15 @@ describe('source classification', () => {
     const r = classifySource({ url: 'https://www.archives.gov/records/x', title: 'record', snippet: 'archival document' });
     assert.ok([1, 3].includes(r.tier));
   });
+  it('domainHint applies rules to grounding redirects (honest: unknown stays 6)', () => {
+    const paper = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'arxiv.org/abs/123', domainHint: 'arxiv.org' });
+    assert.equal(paper.tier, 2);
+    const social = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'facebook.com/post', domainHint: 'facebook.com' });
+    assert.equal(social.tier, 7);
+    // unibo.it matches no fixed rule — conservative 6, never auto-promoted
+    const uni = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'unibo.it/history', domainHint: 'unibo.it' });
+    assert.equal(uni.tier, 6);
+    const plain = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'unknown' });
+    assert.equal(plain.tier, 6);
+  });
 });

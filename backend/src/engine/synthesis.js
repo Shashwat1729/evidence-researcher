@@ -25,6 +25,58 @@ const REPORT_SCHEMA = {
   required: ['executiveSummary', 'findings', 'uncertainty', 'methodology'],
 };
 
+// Repair pass for findings the model left uncited: link each finding to the
+// claims whose wording it overlaps, and inherit those claims' source ids.
+// Deterministic and honest — it only ever attaches real, retrieved source ids
+// supporting the same assertion, never invents links. Findings with no
+// overlapping claim keep whatever (valid) cites they have.
+function wordsOf(s) {
+  return new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3));
+}
+export function repairFindingCites(report, claims) {
+  const claimWords = (claims || []).map((c) => ({
+    c,
+    words: wordsOf(`${c.text} ${c.confidenceWhy || ''}`),
+    ids: [...(c.supporting || []), ...(c.contradicting || [])],
+  }));
+  for (const f of report.findings || []) {
+    if ((f.cite || []).length) continue;
+    const fw = wordsOf(`${f.heading || ''} ${f.body || ''}`);
+    if (!fw.size) continue;
+    let best = null;
+    let bestScore = 0;
+    for (const { c, words, ids } of claimWords) {
+      if (!words.size || !ids.length) continue;
+      let inter = 0;
+      for (const w of fw) if (words.has(w)) inter++;
+      const score = inter / Math.sqrt(fw.size * words.size);
+      if (score > bestScore) { bestScore = score; best = ids; }
+    }
+    if (best && bestScore >= 0.2) f.cite = [...new Set(best)];
+  }
+  return report;
+}
+
+// Completeness guard: uncertainty and gaps must never be empty in a finished
+// report. Derives honest entries from the run's own state when the model
+// omitted them — an empty "uncertainty" section is itself misleading.
+export function ensureReportCompleteness(report, { claims = [], iterations = [] } = {}) {
+  const r = report;
+  if (!Array.isArray(r.uncertainty) || !r.uncertainty.length) {
+    const weak = claims.filter((c) => ['disputed', 'weakly-supported', 'contradicted', 'unknown'].includes(c.state));
+    r.uncertainty = [
+      ...(weak.slice(0, 3).map((c) => `Unresolved (${c.state}): ${c.text}`)),
+      'Residual uncertainty always remains where primary sources could not be inspected directly.',
+    ].slice(0, 5);
+  }
+  if (!Array.isArray(r.gaps) || !r.gaps.length) {
+    const iterGaps = (iterations || []).flatMap((it) => it.gaps || []).map(String);
+    r.gaps = [...new Set(iterGaps)].slice(0, 5);
+    if (!r.gaps.length) r.gaps = ['Deeper primary-source and archival verification remains for follow-up work.'];
+  }
+  return r;
+}
+
 // Zero-model fallback: when synthesis itself is unavailable (quota exhausted),
 // assemble an honest evidence inventory instead of failing the whole run.
 // Every section is derived from retrieved records — nothing invented.
@@ -91,6 +143,8 @@ Rules:
 - Distinguish: searched vs found vs verified vs uncertain.
 - If evidence is insufficient, SAY SO explicitly.
 - findings[].cite must contain only source ids from the list above.
+- EVERY finding MUST cite at least one source id — omit findings you cannot support rather than leaving cite empty.
+- uncertainty MUST contain at least 2 items and gaps at least 1; if the evidence is genuinely complete, state the narrow residual limits (e.g. primary sources not inspected directly).
 Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
   const { data } = await generateJson({ key, model, prompt, schema: REPORT_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
   return data;

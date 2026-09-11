@@ -22,7 +22,7 @@ import { deduplicate, canonicalize } from './dedup.js';
 import { extractClaims } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
-import { synthesizeReport, templateReport } from './synthesis.js';
+import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness } from './synthesis.js';
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 
@@ -244,10 +244,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     return unique.slice(0, budget.maxSources).map((r) => {
       const isBook = /books|openlibrary|google.*books/i.test(r.via || '') || r.category === 'books';
       const isPaper = /academic|arxiv|crossref|openalex|doi/i.test(r.via || '');
-      const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '', sourceType: isBook ? 'book' : isPaper ? 'paper' : 'webpage' });
-      // Redirect URLs carry no real domain; hint it from the chunk title (e.g. "unibo.it").
+      // Redirect URLs carry no real domain; hint it from the chunk title (e.g. "unibo.it")
+      // BEFORE classification so domain hints (institutional/social/scholarly) apply.
       const rawHost = domainOf(r.url);
       const hinted = (rawHost === 'vertexaisearch.cloud.google.com' && r.title) ? (r.title.split('/')[0].toLowerCase().replace(/^www\./, '') || rawHost) : rawHost;
+      const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '', sourceType: isBook ? 'book' : isPaper ? 'paper' : 'webpage', domainHint: hinted });
       const src = createSource({
         url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url,
         domain: hinted || rawHost, discoveredVia: r.via,
@@ -485,11 +486,19 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
   }
 
-  // citation-integrity: strip cites pointing at unknown ids
+  // citation-integrity: strip cites pointing at unknown ids, then repair
+  // findings the model left uncited by linking overlapping claims' sources
   const validIds = new Set(sources.map((s) => s.id));
   for (const f of report.findings || []) {
     f.cite = (f.cite || []).filter((id) => validIds.has(id));
   }
+  repairFindingCites(report, claims);
+  for (const f of report.findings || []) {
+    f.cite = (f.cite || []).filter((id) => validIds.has(id));
+  }
+  // completeness: uncertainty and gaps must never be empty — derive honest
+  // entries from run state when the model omitted them
+  ensureReportCompleteness(report, { claims, iterations });
 
   // Cross-evaluation: verify findings against their cited excerpts (1 call, skip in quick).
   let verification = [];
