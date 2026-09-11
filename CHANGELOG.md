@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Navigation safety: cancel/errors always land home with the question preserved (no more stranded progress view)
+- Abort-aware retry sleeps; dead showError path removed (wrote into hidden view)
+- Fixed Promise paren crash in retry helper found via bisect debugging
 - Finding cite repair + claim-derived findings fallback (empty model findings never go uncited)
 - Hinted-domain classification already live; verified live 15/15 via synthesis fallback path
 - Report completeness guard: uncertainty/gaps never empty, derived honestly from run state

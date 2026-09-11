@@ -136,13 +136,36 @@ $('#start').addEventListener('click', () => {
   run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked, fresh: $('#fresh').checked, model: getStoredModel() || undefined });
 });
 
+function showNotice(msg, kind = '') {
+  const n = $('#notice');
+  n.textContent = msg;
+  n.className = 'notice' + (kind ? ' ' + kind : '');
+  n.classList.remove('hidden');
+}
+
+// Home navigation: progress/result/history → ask view, controls reset,
+// question text preserved. The single safe landing for cancel + errors.
+function goHome(notice, kind = '') {
+  running = false;
+  currentAbort = null;
+  $('#start').disabled = false;
+  $('#skeleton').classList.add('hidden');
+  $('#progressFill').style.width = '0%';
+  $('#progressView').setAttribute('aria-busy', 'false');
+  $('#progressView').classList.add('hidden');
+  $('#resultView').classList.add('hidden');
+  $('#historyView').classList.add('hidden');
+  $('#askView').classList.remove('hidden');
+  if (notice) showNotice(notice, kind);
+  else $('#notice').classList.add('hidden');
+}
+
 function run(body) {
   $('#askView').classList.add('hidden');
   $('#resultView').classList.add('hidden');
   $('#progressView').classList.remove('hidden');
   $('#progressFill').style.width = '8%';
   $('#steps').innerHTML = '';
-  $('#errorBanner').classList.add('hidden');
   $('#skeleton').classList.remove('hidden');
   let progress = 8;
   const step = (cls, text) => {
@@ -167,13 +190,19 @@ function run(body) {
     $('#progressView').setAttribute('aria-busy', 'false');
   };
   // Cancel handler — aborting the fetch triggers server-side cancellation
-  // via the isCancelled refcount (no extra endpoint needed)
+  // via the isCancelled refcount (no extra endpoint needed), then home.
   const abort = new AbortController();
   currentAbort = abort;
+  const asleep = (ms) => new Promise((res, rej) => {
+    if (abort.signal.aborted) return rej(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    const t = setTimeout(res, ms);
+    abort.signal.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+  });
   $('#cancelBtn').onclick = () => {
     if (abort.signal.aborted) return;
     abort.abort();
     step('warn', 'Cancelled by user — stopping…');
+    goHome('Research cancelled — your question is kept above, ready to retry.');
   };
   if (staticMode) {
     const key = keys[0] || '';
@@ -203,7 +232,7 @@ function run(body) {
         const retryAfter = parseInt(res.headers.get('Retry-After') || res.headers.get('retry-after') || '0');
         const waitMs = retryAfter ? retryAfter * 1000 : Math.min(60000, 1000 * Math.pow(2, attempts) + Math.random()*1000);
         step('warn', `Rate limited — retrying in ${Math.ceil(waitMs/1000)}s (attempt ${attempts}/${maxAttempts})…`);
-        await new Promise(r => setTimeout(r, waitMs));
+        await asleep(waitMs);
         return doFetch();
       }
       if (!res.ok && res.headers.get('content-type')?.includes('json')) {
@@ -212,15 +241,17 @@ function run(body) {
         if (res.status === 429 && e.retryAfter && attempts < maxAttempts) {
           const waitMs = e.retryAfter * 1000;
           step('warn', `Rate limited — retrying in ${e.retryAfter}s…`);
-          await new Promise(r => setTimeout(r, waitMs));
+          await asleep(waitMs);
           return doFetch();
         }
         step('warn', 'Error: ' + (e.error || res.status));
+        goHome('Error: ' + (e.error || res.status), 'error');
         finish();
         return;
       }
       if (!res.ok || !res.body) {
         step('warn', 'Error: server returned status ' + res.status);
+        goHome('Error: server returned status ' + res.status + '. Check the server logs and try again.', 'error');
         finish();
         return;
       }
@@ -243,7 +274,7 @@ function run(body) {
       finish();
     } catch (e) {
       if (e.name === 'AbortError') {
-        step('warn', 'Cancelled.');
+        // Cancel button already navigated home; nothing left to do.
         finish();
       } else {
         step('warn', 'Network error: ' + e.message);
@@ -251,9 +282,12 @@ function run(body) {
         if (attempts < maxAttempts && !abort.signal.aborted) {
           const waitMs = Math.min(10000, 1000 * Math.pow(2, attempts));
           step('warn', `Retrying in ${Math.ceil(waitMs/1000)}s…`);
-          await new Promise(r => setTimeout(r, waitMs));
+          try { await asleep(waitMs); }
+          catch (ae) { if (ae.name === 'AbortError') { finish(); return; } }
+          if (abort.signal.aborted) { finish(); return; }
           return doFetch();
         }
+        goHome('Network error: ' + e.message + '. Check your connection and the server, then retry — your question is kept.', 'error');
         finish();
       }
     }
@@ -261,45 +295,46 @@ function run(body) {
   doFetch();
 }
 
-function showError(msg) {
-  const b = $('#errorBanner');
-  b.textContent = msg;
-  b.classList.remove('hidden');
-  b.focus?.();
-}
 // Static-mode run: same engine, executed in-page via frontend/direct.js.
 async function runDirectFlow(body, key, step, finish, signal, allKeys = [], model = '') {
   const keys = allKeys.length ? allKeys : (key ? [key] : []);
   if (!keys.length) {
     const msg = 'Static mode needs a Gemini API key — click "API key" above to enter one (stored in this browser only).';
     step('warn', msg);
-    showError(msg);
+    goHome(msg, 'error');
     finish();
     if (!$('#keyDialog').open) $('#keyDialog').showModal();
     return;
   }
-  if (signal?.aborted) { finish(); return; }
+  if (signal?.aborted) { goHome(); finish(); return; }
   try {
     const { runDirect, saveLocalResult } = await import('./direct.js');
     step('run', `Static mode: running with ${keys.length} key(s)${model ? ` · model ${model}` : ''}…`);
     // Pass all keys and model for rotation — handles any topic dynamically
     const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step) });
-    if (signal?.aborted) { step('warn', 'Cancelled.'); finish(); return; }
+    if (signal?.aborted) { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
     saveLocalResult(result);
     showResult(result);
   } catch (e) {
-    if (signal?.aborted || e.name === 'AbortError') { step('warn', 'Cancelled.'); finish(); return; }
+    if (signal?.aborted || e.name === 'AbortError') { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
     const raw = e.message || 'research failed';
     const msg = /quota|rate|429/i.test(raw) ? 'Gemini rate limit reached. Wait a minute and retry, or add more API keys (they rotate automatically).' : raw;
     step('warn', 'Error: ' + msg);
-    showError(msg);
+    goHome('Error: ' + msg, 'error');
   } finally {
     finish();
   }
 }
 
 function handleEvent(ev, step) {
-  if (ev.type === 'error') { step('warn', 'Error: ' + ev.message); showError(ev.message); return; }
+  if (ev.type === 'error') {
+    step('warn', 'Error: ' + ev.message);
+    // Terminal: the server ends the stream right after. Land home with the
+    // message instead of stranding the user on the progress view.
+    // (If a result already rendered, leave it alone.)
+    if ($('#resultView').classList.contains('hidden')) goHome('Error: ' + ev.message, 'error');
+    return;
+  }
   if (ev.type === 'result') return showResult(ev.result);
   if (ev.type === 'plan') {
     step('ok', 'Research plan created');

@@ -290,6 +290,16 @@ tr:hover td { background: color-mix(in oklch, var(--card) 50%, transparent) }
 
 .hint { color: var(--mut); font-size: 12px; line-height: 1.5 }
 .hidden { display: none !important }
+.notice {
+  display: flex; gap: .6rem; align-items: flex-start;
+  background: var(--bg-elev); border: 1px solid var(--line);
+  color: var(--txt); padding: .7rem .9rem; border-radius: var(--radius-sm);
+  font-size: 13px; margin-bottom: 1rem;
+}
+.notice.error {
+  background: color-mix(in oklch, var(--bad) 12%, var(--card));
+  border-color: color-mix(in oklch, var(--bad) 35%, transparent);
+}
 .empty-state { text-align: center; padding: 2.5rem 1rem; color: var(--mut) }
 .empty-state p { margin: .4rem 0; font-size: 14px }
 .empty-state strong { color: var(--txt); font-size: 15px }
