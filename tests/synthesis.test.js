@@ -23,6 +23,16 @@ describe('repairFindingCites', () => {
     assert.deepEqual(report.findings[0].cite, ['s9']);
     assert.deepEqual(report.findings[1].cite, []);
   });
+  it('drops vacuous findings and derives from claims when none survive', () => {
+    const empty = { findings: [{ heading: '', body: '  ', cite: [] }] };
+    repairFindingCites(empty, claims);
+    assert.equal(empty.findings.length, 2);
+    assert.ok(empty.findings[0].heading.includes('Bologna'));
+    assert.ok(empty.findings[0].cite.includes('s1'));
+    const noClaims = { findings: [{ heading: '', body: '', cite: [] }] };
+    repairFindingCites(noClaims, []);
+    assert.deepEqual(noClaims.findings, []);
+  });
 });
 
 describe('ensureReportCompleteness', () => {

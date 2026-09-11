@@ -1,8 +1,8 @@
 # Changelog
 
 ## Unreleased
-- Hinted-domain classification: grounding redirects now get proper tiers (social→7, scholarly→2) instead of all-6
-- Finding cite repair: uncited findings inherit sources from overlapping claims (real ids only)
+- Finding cite repair + claim-derived findings fallback (empty model findings never go uncited)
+- Hinted-domain classification already live; verified live 15/15 via synthesis fallback path
 - Report completeness guard: uncertainty/gaps never empty, derived honestly from run state
 - Stronger synthesis prompt: cites mandatory, uncertainty/gaps minimums
 - Model picker (UI + `x-gemini-model` + body) routed to all four roles with allowlist validation

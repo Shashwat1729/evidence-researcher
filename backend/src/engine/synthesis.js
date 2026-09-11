@@ -54,6 +54,18 @@ export function repairFindingCites(report, claims) {
     }
     if (best && bestScore >= 0.2) f.cite = [...new Set(best)];
   }
+  // Drop vacuous findings (no heading AND no body) — they carry nothing.
+  report.findings = (report.findings || []).filter((f) => (f.heading || f.body || '').trim().length > 0);
+  // If nothing survived, derive one finding per claim: honest, cited, complete.
+  // This keeps "every major statement traceable" true even when the model
+  // under-delivers on the findings section.
+  if (!report.findings.length && (claims || []).length) {
+    report.findings = claims.slice(0, 10).map((c) => ({
+      heading: c.text.slice(0, 90),
+      body: `${c.text}${c.confidenceWhy ? ` — ${c.confidenceWhy}` : ''} [Claim state: ${c.state}]`,
+      cite: [...new Set([...(c.supporting || []), ...(c.contradicting || [])])],
+    }));
+  }
   return report;
 }
 
