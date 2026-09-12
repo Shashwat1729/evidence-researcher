@@ -45,6 +45,7 @@ const deps = {
   search: async (_q, _cat, ctx) => { ctx?.onUsage?.({ in: 10, out: 5 }); return SEARCH_RESULTS; },
   academic: async () => [],
   books: async () => [],
+  expandBooks: async () => ({ variants: ['founding books'], llm: false }),
   fetch: fakeFetch,
   claims: async ({ sources }) => {
     const find = (fn) => sources.find(fn)?.id;
@@ -147,8 +148,7 @@ describe('full research pipeline (mocked models)', () => {
     assert.equal(result.report.verification[0].supported, 'yes');
   });
 
-  it('rejects non-questions at the classification gate without searching', async () => {
-    let searches = 0;
+  it('rejects non-questions at the classification gate without searching', async () => {    let searches = 0;
     await assert.rejects(
       runResearch(
         { question: 'Hello there!', mode: 'quick', stance: 'neutral' },
@@ -157,6 +157,37 @@ describe('full research pipeline (mocked models)', () => {
       /Not a research question/,
     );
     assert.equal(searches, 0);
+  });
+});
+
+describe('quick mode merges extract+review into one call', () => {
+  it('completes without a separate review call and minimal model calls', async () => {
+    let reviewUsed = false;
+    let claimsReviewUsed = false;
+    const mk = (id) => ({ id, text: 'X was founded in 1901.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'charter' });
+    const result = await runResearch(
+      { question: 'When was X founded?', mode: 'quick', stance: 'neutral' },
+      {
+        key: 'test-key', emit: () => {},
+        deps: {
+          ...deps,
+          claimsReview: async () => {
+            claimsReviewUsed = true;
+            return {
+              claims: [mk('c1')],
+              review: { contradictions: [], gaps: [], sufficient: true, reason: 'single pass sufficient' },
+            };
+          },
+          review: async () => { reviewUsed = true; throw new Error('separate review must not run in quick mode'); },
+        },
+      },
+    );
+    assert.ok(claimsReviewUsed, 'merged call used');
+    assert.ok(!reviewUsed, 'separate review skipped');
+    assert.equal(result.claims.length, 1);
+    // plan + merged analysis + synthesis = 3 counted calls (searches tracked separately)
+    assert.equal(result.stats.modelCalls, 3);
+    assert.ok(result.report);
   });
 });
 

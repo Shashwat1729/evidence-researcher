@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Planner now emits search queries + book variants: saves 2 model calls per non-quick run (query-gen + expansion merged in)
+- Book expansion reserved for deep/exhaustive fallback; standard uses planner/heuristic variants (zero extra calls)
+- Quick mode fits ~5 calls: plan + 2 searches + merged claims/review + synthesis
 - Navigation safety: cancel/errors always land home with the question preserved (no more stranded progress view)
 - Abort-aware retry sleeps; dead showError path removed (wrote into hidden view)
 - Fixed Promise paren crash in retry helper found via bisect debugging

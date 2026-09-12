@@ -22,6 +22,7 @@ describe('stats accounting', () => {
           books: async () => [],
           fetch: async () => ({ ok: false, reason: 'x' }),
           claims: async () => { calls.model++; return [mk('c1')]; },
+          claimsReview: async () => { calls.model++; return { claims: [mk('c1')], review: { contradictions: [], gaps: [], sufficient: true, reason: 'r' } }; },
           review: async () => { calls.model++; return { contradictions: [], gaps: [], sufficient: true, reason: 'r' }; },
           provenance: async () => ({ groups: [], relations: [], note: 'n' }),
           synthesize: async () => { calls.model++; return {
@@ -34,8 +35,10 @@ describe('stats accounting', () => {
         },
       },
     );
-    // quick: plan + claims + review + synth = 4 model calls (queries are templates)
-    assert.equal(calls.model, 4);
+    // quick: plan + merged claimsReview + synth = 3 model calls
+    // (queries are templates; review/provenance-model/verify skipped).
+    // The merge itself is the call-saving feature under test.
+    assert.equal(calls.model, 3);
     assert.equal(result.stats.modelCalls, calls.model);
     assert.equal(result.stats.searchCalls, calls.search);
     assert.ok(result.stats.tokensIn >= 7 && result.stats.tokensOut >= 9);

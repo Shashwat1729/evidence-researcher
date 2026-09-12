@@ -61,11 +61,18 @@ export async function searchArxiv(query, max = 6) {
 }
 
 // Generate dynamic variant queries for any topic — truly dynamic, no hardcoding.
-// Uses LLM expansion when key available (to handle synonyms like Harappan→Indus Valley),
-// falls back to heuristic broadening that works for any category.
+// Shared wrapper: expand once per run, then reuse across all book queries
+// (one model call total instead of one per query).
 async function generateBookVariants(question, { key, model } = {}) {
-  const q = question.trim().slice(0, 120);
-  // Try LLM expansion first if key available — handles ANY topic dynamically
+  const expanded = await expandBookQueries(question, { key, model });
+  return expanded.variants;
+}
+
+// Expand a topic into book-search variants. Returns { variants, llm } where
+// llm reports whether the LLM path succeeded. LLM handles ANY topic's
+// synonyms dynamically (Harappan→Indus Valley); heuristic needs zero calls.
+export async function expandBookQueries(topic, { key, model } = {}) {
+  const q = String(topic || '').trim().slice(0, 120);
   if (key && model) {
     try {
       const { generateJson } = await import('../gemini.js');
@@ -80,12 +87,17 @@ async function generateBookVariants(question, { key, model } = {}) {
       if (result.data?.variants?.length > 0) {
         const llmVariants = result.data.variants.map(v => String(v).trim()).filter(Boolean).slice(0, 3);
         if (llmVariants.length > 0) {
-          return [q, ...llmVariants].slice(0, 4);
+          return { variants: [q, ...llmVariants].slice(0, 4), llm: true };
         }
       }
     } catch { /* fallback to heuristic */ }
   }
-  // Heuristic fallback: works for any topic without hardcoding
+  return { variants: heuristicBookVariants(q || topic), llm: false };
+}
+
+// Heuristic variant broadening: zero model calls, works for any topic.
+export function heuristicBookVariants(question) {
+  const q = String(question || '').trim().slice(0, 120);
   const lower = q.toLowerCase();
   const stopwords = new Set(['tell', 'about', 'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'how', 'when', 'where', 'why', 'who', 'which', 'explain', 'describe', 'discuss']);
   const words = lower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
@@ -133,7 +145,10 @@ export function rankByRelevance(query, records) {
 }
 
 export async function searchBooks(query, limit = 8, opts = {}) {
-  const variants = await generateBookVariants(query, opts);
+  // Shared variants skip per-call expansion (one LLM call per run, not per query).
+  const variants = (opts.variants && opts.variants.length)
+    ? opts.variants.slice(0, 4)
+    : await generateBookVariants(query, opts);
   const cacheKey = `books:${variants.join('|')}:${limit}`;
   return cached(cacheKey, async () => {
     const allQueries = variants;

@@ -15,11 +15,11 @@ import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount,
 import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
 import { pool } from './pool.js';
-import { searchAcademic, searchBooks } from '../providers/academic.js';
+import { searchAcademic, searchBooks, expandBookQueries } from '../providers/academic.js';
 import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
-import { extractClaims } from './claims.js';
+import { extractClaims, extractClaimsWithReview } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
 import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness } from './synthesis.js';
@@ -33,8 +33,11 @@ export const defaultDeps = {
     geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent }),
   academic: (question) => searchAcademic(question),
   books: (question, limit, opts) => searchBooks(question, limit, opts),
+  expandBooks: (args) => expandBookQueries(args.topic, args),
   fetch: (url) => fetchPage(url),
   claims: (args) => extractClaims(args),
+  // Merged extract+review (quick mode): 1 call instead of 2.
+  claimsReview: (args) => extractClaimsWithReview(args),
   provenance: (args) => analyzeProvenance(args),
   review: (args) => findContradictionsAndGaps(args),
   synthesize: (args) => synthesizeReport(args),
@@ -111,10 +114,14 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('start', `Research started (${budget.label} mode)`, { task });
 
   // ---- PLAN ----
+  // The planner call also yields initial search queries + book variants, so
+  // separate query-generation and book-expansion model calls are skipped
+  // whenever it returns enough (saves 2 calls on constrained quotas).
+  const initialCount = task.mode === 'quick' ? 2 : task.mode === 'standard' ? 8 : task.mode === 'deep' ? 14 : 20;
   ev('progress', 'Creating research plan…');
   // Quick keeps the model planner (1 call): the classification gate must run
   // before any search budget burns. Query generation uses templates in quick.
-  const planData = await phase('plan', () => call(() => D.plan({ key, model: models.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent })));
+  const planData = await phase('plan', () => call(() => D.plan({ key, model: models.planner, question: task.question, stance: task.stance, hypothesis: task.hypothesis, onKeyEvent: keyEvent, queryCount: initialCount })));
   // Classification gate: non-questions abort before burning search budget.
   if (planData.valid === false) {
     throw Object.assign(new Error('Not a research question. ' + (planData.clarify || 'Please ask something to investigate.')), { status: 400 });
@@ -133,7 +140,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     stats.searchCalls++;
     ev('progress', `Searching: ${q.q || q}`, { category });
     try {
-      const rs = await D.search(q, category, { key: explicitKey, model: models.research, onUsage: track, onKeyEvent: keyEvent });
+      const rs = await D.search(q, category, { key: explicitKey, model: models.research, timeoutMs: searchTimeoutMs, onUsage: track, onKeyEvent: keyEvent });
       return rs.map((r) => ({ ...r, category }));
     } catch (e) {
       ev('warning', `Search failed (${(e.message || '').slice(0, 100)})`, { query: q.q || q });
@@ -141,11 +148,20 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     }
   };
 
-  const initialCount = task.mode === 'quick' ? 2 : task.mode === 'standard' ? 8 : task.mode === 'deep' ? 14 : 20;
-  const queries = task.mode === 'quick'
-    ? templateQueries(task.question, { academic: budget.academic, books: budget.books, contradiction: false }).slice(0, initialCount)
-    : await call(() => D.queries({ key, model: models.planner, question: task.question, linesOfInquiry: plan.linesOfInquiry, count: initialCount, onKeyEvent: keyEvent }));
-  ev('progress', `${queries.length} search queries generated`, { queries: queries.map((q) => q.q) });
+  const minQueries = Math.max(4, Math.ceil(initialCount / 2));
+  let queries;
+  let queriesFromPlan = false;
+  if (task.mode === 'quick') {
+    queries = templateQueries(task.question, { academic: budget.academic, books: budget.books, contradiction: false }).slice(0, initialCount);
+  } else if (Array.isArray(plan.queries) && plan.queries.length >= minQueries) {
+    // Planner already produced enough diverse queries — skip the separate
+    // query-generation call (1 model call saved).
+    queries = plan.queries.slice(0, initialCount);
+    queriesFromPlan = true;
+  } else {
+    queries = await call(() => D.queries({ key, model: models.planner, question: task.question, linesOfInquiry: plan.linesOfInquiry, count: initialCount, onKeyEvent: keyEvent }));
+  }
+  ev('progress', `${queries.length} search queries generated${queriesFromPlan ? ' with plan (no extra call)' : ''}`, { queries: queries.map((q) => q.q) });
 
   // academic + books discovery (free APIs, no key) runs OVERLAPPED with the
   // grounding searches instead of sequentially after them. Keyword APIs get
@@ -165,13 +181,34 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   if (budget.books && alive()) {
     ev('progress', 'Discovering books and monographs…');
+    // Book variants preferably come from the planner (zero extra calls).
+    // The standalone expansion call is reserved for deep/exhaustive runs
+    // where the planner provided none — never one LLM call per query.
+    let sharedVariants = Array.isArray(plan.bookVariants) && plan.bookVariants.length ? plan.bookVariants : null;
+    if (!sharedVariants && task.mode !== 'quick' && task.mode !== 'standard') {
+      try {
+        const expanded = await call(() => D.expandBooks({ topic, key, model: models.research, onKeyEvent: keyEvent }));
+        sharedVariants = expanded?.variants?.length ? expanded.variants : null;
+        if (expanded?.llm) ev('progress', 'Book query variants expanded');
+      } catch (e) {
+        ev('warning', `Book expansion failed (${(e.message || '').slice(0, 80)}) — using heuristic variants`);
+      }
+    } else if (sharedVariants) {
+      ev('progress', 'Book query variants taken from plan (no extra call)');
+    }
     const bookQueries = [...new Set([topic, ...queries
       .filter((q) => q.category === 'books' || q.category === 'scholarly')
       .slice(0, 2)
       .map((q) => q.q)])].filter(Boolean).slice(0, 3);
+    // Variants must be shared: without them each book query would trigger its
+    // own LLM expansion call. Heuristic-only (no key) costs zero calls;
+    // relevance ranking inside searchBooks restores precision afterwards.
+    const bookOpts = sharedVariants
+      ? { key, model: models.research, variants: sharedVariants }
+      : {};
     for (const bq of bookQueries) {
       extraJobs.push(
-        D.books(bq, budget.bookLimit || 0, { key, model: models.research })
+        D.books(bq, budget.bookLimit || 0, bookOpts)
           .then((b) => { allResults.push(...b.map((r) => ({ ...r, category: 'books' }))); return b.length; })
           .catch((e) => ev('warning', 'Book discovery unavailable', { error: String(e.message).slice(0, 120) })),
       );
@@ -184,6 +221,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // free-tier quick mode, keep it sequential to avoid bursting past per-minute
   // quotas even with 2-key rotation (10 RPM effective).
   const searchConcurrency = task.mode === 'quick' ? 2 : task.mode === 'standard' ? 3 : 5;
+  // Mode-scaled per-search timeout: a hung grounding call must never stall
+  // the run until the global deadline (up to 30 min in exhaustive).
+  const searchTimeoutMs = task.mode === 'quick' ? 60_000 : task.mode === 'standard' ? 75_000 : 90_000;
   const penv = (typeof process !== 'undefined' && process.env) || {};
   const searchStagger = Math.max(0, Number(penv.SEARCH_STAGGER_MS || 350));
   const batch = queries.slice(0, Math.max(0, budget.maxSearches - stats.searchCalls));
@@ -377,6 +417,23 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     if (Date.now() > deadline) break;
     if (overTokenCap()) { ev('progress', 'Token budget reached — synthesizing from gathered evidence'); break; }
     ev('progress', `Analysis pass ${i}/${maxIter}…`);
+    let review;
+    if (task.mode === 'quick') {
+      // Merged extract+review: one round-trip instead of two (quota is the
+      // binding constraint; quick runs a single pass anyway). On failure,
+      // degrade to claims-only so the run still completes.
+      try {
+        const merged = await call(() => D.claimsReview({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
+        claims = merged.claims;
+        review = merged.review;
+      } catch (e) {
+        ev('warning', `Analysis failed (${(e.message || '').slice(0, 100)}) — retrying claims only`);
+        try {
+          claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
+        } catch { claims = []; }
+        review = { contradictions: [], gaps: [], sufficient: true, reason: 'quick single-pass fallback' };
+      }
+    } else {
     try {
       claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
     } catch (e) {
@@ -385,14 +442,16 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
       } catch { claims = []; }
     }
+    }
     ev('claims', `${claims.length} claims extracted`, { count: claims.length });
 
-    let review;
+    if (task.mode !== 'quick') {
     try {
       review = await call(() => D.review({ key, model: models.analysis, question: task.question, claims, sources, iteration: i, onKeyEvent: keyEvent }));
     } catch (e) {
       ev('warning', `Review failed (${(e.message || '').slice(0, 100)}) — treating evidence as provisional`);
       review = { contradictions: [], gaps: [], sufficient: i >= maxIter, reason: 'review failed' };
+    }
     }
     contradictions = review.contradictions || [];
     gaps = review.gaps || [];

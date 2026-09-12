@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { topicOf } from '../backend/src/engine/queries.js';
+import { topicOf, normalizeQueries } from '../backend/src/engine/queries.js';
+import { templatePlan } from '../backend/src/engine/planner.js';
 import { getKeys } from '../backend/src/gemini.js';
 import { AVAILABLE_MODELS, isKnownModel } from '../backend/src/config.js';
 import { validateResearchBody } from '../backend/src/middleware/validate.js';
@@ -15,6 +16,31 @@ describe('topic extraction for keyword APIs', () => {
   it('falls back to trimmed question when nothing significant remains', () => {
     assert.ok(topicOf('What is it?').length > 0);
     assert.equal(topicOf(''), '');
+  });
+});
+
+describe('planner-provided queries (call merging)', () => {
+  it('normalizeQueries validates categories and drops empties', () => {
+    const out = normalizeQueries([
+      { q: '  Rome fall causes  ', category: 'general' },
+      { q: 'Rome historians', category: 'bogus-category' },
+      { q: '   ', category: 'books' },
+      null,
+      'bare string query',
+    ]);
+    assert.deepEqual(out, [
+      { q: 'Rome fall causes', category: 'general' },
+      { q: 'Rome historians', category: 'general' },
+      { q: 'bare string query', category: 'general' },
+    ]);
+    assert.deepEqual(normalizeQueries(null), []);
+    assert.deepEqual(normalizeQueries('nope'), []);
+  });
+  it('templatePlan carries template queries + heuristic book variants (zero calls)', () => {
+    const p = templatePlan('Tell about Harappan civilization?');
+    assert.ok(Array.isArray(p.queries) && p.queries.length > 0);
+    assert.ok(p.queries.every((q) => q.q && q.category));
+    assert.ok(Array.isArray(p.bookVariants) && p.bookVariants.length > 0);
   });
 });
 
@@ -45,18 +71,21 @@ describe('model picker', () => {
 
 describe('orchestrator model override + book wiring', () => {
   it('applies one override to all roles and passes topic + limits to discovery', async () => {
-    const seen = { models: [], academic: [], books: [] };
+    const seen = { models: [], academic: [], books: [], bookOpts: [] };
     const mk = (id) => ({ id, text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' });
+    const planQueries = ['general', 'scholarly', 'primary-evidence', 'books', 'alternative-explanations', 'counter-evidence', 'disagreement', 'institutional']
+      .map((c, i) => ({ q: `Harappan civilization angle ${i}`, category: c }));
     const result = await runResearch(
       { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.0-flash' },
       {
         key: 'k', emit: () => {},
         deps: {
-          plan: async (a) => { seen.models.push(['plan', a.model]); return { domain: 'history', complexity: 'low', steps: ['a'], linesOfInquiry: ['g'] }; },
+          plan: async (a) => { seen.models.push(['plan', a.model]); return { domain: 'history', complexity: 'low', steps: ['a'], linesOfInquiry: ['g'], queries: planQueries, bookVariants: ['harappan books', 'indus valley'] }; },
           queries: async (a) => { seen.models.push(['queries', a.model]); return [{ q: 'Harappan civilization book historian', category: 'books' }]; },
           search: async () => [],
           academic: async (q) => { seen.academic.push(q); return []; },
-          books: async (q, lim) => { seen.books.push([q, lim]); return []; },
+          books: async (q, lim, opts) => { seen.books.push([q, lim]); seen.bookOpts.push(opts); return []; },
+          expandBooks: async ({ topic }) => { seen.expand = topic; return { variants: [`${topic} books`], llm: false }; },
           fetch: async () => ({ ok: false, reason: 'x' }),
           claims: async (a) => { seen.models.push(['claims', a.model]); return [mk('c1')]; },
           review: async (a) => { seen.models.push(['review', a.model]); return { contradictions: [], gaps: [], sufficient: true, reason: 'r' }; },
@@ -79,5 +108,44 @@ describe('orchestrator model override + book wiring', () => {
     assert.ok(seen.academic.some((q) => q.includes('harappan')), JSON.stringify(seen.academic));
     assert.ok(seen.books.some(([q]) => q.includes('harappan')), JSON.stringify(seen.books));
     assert.ok(seen.books.every(([, lim]) => lim === 6), 'standard bookLimit wires through');
+    // Planner supplied 8 queries → separate query-generation call skipped.
+    assert.ok(!seen.models.some(([role]) => role === 'queries'), 'planner queries reused, no extra call');
+    // Planner supplied book variants → standalone expansion skipped, variants
+    // forwarded to every book query (no per-query LLM expansion either).
+    assert.equal(seen.expand, undefined, 'no standalone expansion call when plan provides variants');
+    assert.ok(seen.bookOpts.every((o) => o && o.variants && o.variants.includes('indus valley')), JSON.stringify(seen.bookOpts));
+  });
+
+  it('falls back to query-generation + heuristic books when the plan omits them', async () => {
+    const seen = { queriesCalls: 0, expandCalls: 0, bookOpts: [] };
+    const mk = (id) => ({ id, text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' });
+    const result = await runResearch(
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.0-flash' },
+      {
+        key: 'k', emit: () => {},
+        deps: {
+          plan: async () => ({ domain: 'history', complexity: 'low', steps: ['a'], linesOfInquiry: ['g'] }),
+          queries: async () => { seen.queriesCalls++; return [{ q: 'Harappan civilization overview', category: 'general' }]; },
+          search: async () => [],
+          academic: async () => [],
+          books: async (q, lim, opts) => { seen.bookOpts.push(opts); return []; },
+          expandBooks: async () => { seen.expandCalls++; return { variants: [], llm: false }; },
+          fetch: async () => ({ ok: false, reason: 'x' }),
+          claims: async () => [mk('c1')],
+          review: async () => ({ contradictions: [], gaps: [], sufficient: true, reason: 'r' }),
+          provenance: async () => ({ groups: [], relations: [], note: 'n' }),
+          synthesize: async () => ({
+            executiveSummary: 'e', established: [], findings: [], competing: [], contradictions: [],
+            sourceQuality: '', independence: '', books: [], primarySources: [], uncertainty: ['u'], gaps: [], methodology: 'm',
+          }),
+          verify: async () => [],
+          urlContext: async () => ({ text: '' }),
+        },
+      },
+    );
+    assert.ok(result.id);
+    assert.equal(seen.queriesCalls, 1, 'separate query call used as fallback');
+    assert.equal(seen.expandCalls, 0, 'standard mode never burns a call on standalone expansion');
+    assert.ok(seen.bookOpts.every((o) => !o || !o.variants), 'heuristic path: no variants forwarded');
   });
 });

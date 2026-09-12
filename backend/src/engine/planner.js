@@ -3,6 +3,8 @@
 
 import { generateJson } from '../gemini.js';
 import { STANCE_GUARDRAIL } from '../config.js';
+import { templateQueries, normalizeQueries } from './queries.js';
+import { heuristicBookVariants } from '../providers/academic.js';
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -13,12 +15,21 @@ const PLAN_SCHEMA = {
     linesOfInquiry: { type: 'array', items: { type: 'string' } },
     valid: { type: 'boolean' },
     clarify: { type: 'string' },
+    queries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { q: { type: 'string' }, category: { type: 'string' } },
+        required: ['q'],
+      },
+    },
+    bookVariants: { type: 'array', items: { type: 'string' } },
   },
-  required: ['domain', 'complexity', 'steps', 'linesOfInquiry'],
+  required: ['domain', 'complexity', 'steps', 'linesOfInquiry', 'queries', 'bookVariants'],
 };
 
 export function templatePlan(question) {
-  void question;
+  const q = String(question || '').trim();
   return {
     domain: 'general-factual',
     complexity: 'medium',
@@ -35,10 +46,12 @@ export function templatePlan(question) {
       'Determine what can actually be established vs what remains uncertain.',
     ],
     linesOfInquiry: ['general overview', 'scholarly interpretations', 'primary evidence', 'alternative explanations', 'counter-evidence'],
+    queries: templateQueries(q || 'general research', {}),
+    bookVariants: heuristicBookVariants(q),
   };
 }
 
-export async function planResearch({ key, model, question, stance, hypothesis, onKeyEvent }) {
+export async function planResearch({ key, model, question, stance, hypothesis, onKeyEvent, queryCount = 8 }) {
   const prompt = `You are a careful research planner. Given the user question, classify the research domain and produce a research plan.
 
 Question: ${question}
@@ -55,11 +68,19 @@ never manufacture support.
 Domains: history, science, medicine, technology, economics, politics, law, biography, archaeology, culture, current-events, product-research, general-factual, other.
 Complexity: low (single verifiable fact), medium (several sources needed), high (competing interpretations / deep investigation).
 
+Then write ${queryCount} diverse web-search queries covering: general, scholarly,
+primary-evidence, books, alternative-explanations, counter-evidence ("evidence
+against …", "scholars reject …"), disagreement, and institutional angles.
+
+Then write 2-3 book-search variants (synonyms, broader terms, related concepts —
+e.g. "Harappan civilization" → "Indus Valley civilization books",
+"Mohenjo-daro Harappa archaeology").
+
 Adapt the plan to the domain — do NOT force historical methodology onto programming/product questions.
 ${STANCE_GUARDRAIL}
-Return JSON: {"domain": "...", "complexity": "low|medium|high", "valid": true, "clarify": "", "steps": [...6-10 concrete steps...], "linesOfInquiry": [...4-8 diverse search angles...]}`;
+Return JSON: {"domain": "...", "complexity": "low|medium|high", "valid": true, "clarify": "", "steps": [...6-10 concrete steps...], "linesOfInquiry": [...4-8 diverse search angles...], "queries": [{"q": "...", "category": "general|scholarly|primary-evidence|books|alternative-explanations|counter-evidence|disagreement|institutional"} × ${queryCount}], "bookVariants": ["...", "...", "..."]}`;
   try {
-    const { data } = await generateJson({ key, model, prompt, schema: PLAN_SCHEMA, maxTokens: 2048, thinking: 'low', onKeyEvent });
+    const { data } = await generateJson({ key, model, prompt, schema: PLAN_SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });
     return {
       domain: data.domain || 'general-factual',
       complexity: ['low', 'medium', 'high'].includes(data.complexity) ? data.complexity : 'medium',
@@ -67,6 +88,8 @@ Return JSON: {"domain": "...", "complexity": "low|medium|high", "valid": true, "
       linesOfInquiry: Array.isArray(data.linesOfInquiry) ? data.linesOfInquiry.slice(0, 10) : [],
       valid: data.valid !== false,
       clarify: String(data.clarify || ''),
+      queries: normalizeQueries(data.queries),
+      bookVariants: Array.isArray(data.bookVariants) ? data.bookVariants.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 3) : [],
     };
   } catch {
     return templatePlan(question);

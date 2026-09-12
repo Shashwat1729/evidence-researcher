@@ -22,8 +22,14 @@ export function createTask({ question, mode = 'standard', stance = 'neutral', hy
   };
 }
 
-export function createPlan({ domain = 'general-factual', complexity = 'medium', steps = [], linesOfInquiry = [], valid = true, clarify = '' } = {}) {
-  return { domain, complexity, steps, linesOfInquiry, valid, clarify };
+export function createPlan({ domain = 'general-factual', complexity = 'medium', steps = [], linesOfInquiry = [], valid = true, clarify = '', queries = [], bookVariants = [] } = {}) {
+  const cleanQueries = Array.isArray(queries)
+    ? queries.filter((q) => q && String(q.q || '').trim()).slice(0, 24)
+    : [];
+  const cleanVariants = Array.isArray(bookVariants)
+    ? bookVariants.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 4)
+    : [];
+  return { domain, complexity, steps, linesOfInquiry, valid, clarify, queries: cleanQueries, bookVariants: cleanVariants };
 }
 
 export function createSource(partial = {}) {

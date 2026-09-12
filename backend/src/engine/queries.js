@@ -24,6 +24,20 @@ const QUERY_SCHEMA = {
 
 const CATEGORIES = ['general', 'scholarly', 'primary-evidence', 'books', 'alternative-explanations', 'counter-evidence', 'disagreement', 'institutional'];
 
+/** Normalize model- or template-produced queries to [{q, category}].
+ *  Invalid categories fall back to 'general'; empty texts are dropped. */
+export function normalizeQueries(list, fallbackCategory = 'general') {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const q = String(item?.q ?? item ?? '').trim();
+    if (!q) continue;
+    const cat = String(item?.category || fallbackCategory).trim().toLowerCase();
+    out.push({ q: q.slice(0, 300), category: CATEGORIES.includes(cat) ? cat : 'general' });
+  }
+  return out;
+}
+
 // Compact topic for keyword-style APIs (OpenLibrary, arXiv, OpenAlex) that
 // match terms, not prose: strip interrogatives, filler, and stopwords while
 // keeping the user's own key terms in order ("tell about Harappan

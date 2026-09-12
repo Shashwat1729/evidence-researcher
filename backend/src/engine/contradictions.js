@@ -26,6 +26,22 @@ const SCHEMA = {
   required: ['contradictions', 'gaps', 'sufficient'],
 };
 
+export function normalizeReview(data, sources, iteration) {
+  const valid = new Set(sources.map((s) => s.id));
+  return {
+    contradictions: (data.contradictions || []).map((c, i) => ({
+      id: `contra_${Date.now().toString(36)}_${i}`,
+      claimId: c.claimId || '',
+      against: String(c.against || '').slice(0, 500),
+      sources: (c.sources || []).filter((id) => valid.has(id)),
+      severity: ['high', 'medium', 'low'].includes(c.severity) ? c.severity : 'medium',
+    })).filter((c) => c.against),
+    gaps: (data.gaps || []).map(String).slice(0, 12),
+    sufficient: !!data.sufficient,
+    reason: String(data.reason || ''),
+  };
+}
+
 export async function findContradictionsAndGaps({ key, model, question, claims, sources, iteration, onKeyEvent }) {
   const prompt = `You are a skeptical reviewer. Given the research so far, find contradictions and knowledge gaps.
 
@@ -41,19 +57,7 @@ Tasks:
 Return JSON: {"contradictions": [{"claimId": "...", "against": "counter-claim text", "sources": ["id"], "severity": "high|medium|low"}], "gaps": ["..."], "sufficient": false, "reason": "..."}`;
   try {
     const { data } = await generateJson({ key, model, prompt, schema: SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });
-    const valid = new Set(sources.map((s) => s.id));
-    return {
-      contradictions: (data.contradictions || []).map((c, i) => ({
-        id: `contra_${Date.now().toString(36)}_${i}`,
-        claimId: c.claimId || '',
-        against: String(c.against || '').slice(0, 500),
-        sources: (c.sources || []).filter((id) => valid.has(id)),
-        severity: ['high', 'medium', 'low'].includes(c.severity) ? c.severity : 'medium',
-      })).filter((c) => c.against),
-      gaps: (data.gaps || []).map(String).slice(0, 12),
-      sufficient: !!data.sufficient,
-      reason: String(data.reason || ''),
-    };
+    return normalizeReview(data, sources, iteration);
   } catch {
     return { contradictions: [], gaps: ['Model review unavailable — treating evidence as provisional.'], sufficient: iteration >= 2, reason: 'fallback' };
   }
