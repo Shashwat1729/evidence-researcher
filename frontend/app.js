@@ -5,6 +5,12 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 let current = null;
 let serverKey = false;
 let staticMode = false;
+// Static cache-busting version. MUST match ENGINE_V in direct.js (enforced by
+// tests/static-version.test.js). Bump both on any static-mode change so Pages
+// visitors never run a stale engine bundle (stale bundles caused confusing
+// "process is not defined" errors after deploys).
+const STATIC_V = '2026-09-13f';
+const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
   quick: 'Quick: ~2 searches, ~1 min. Basic verification (escalates on disagreement).',
@@ -58,6 +64,8 @@ async function init() {
   } catch { /* offline → static mode */ }
   staticMode = !apiOk;
   $('#staticBanner').classList.toggle('hidden', !staticMode);
+  const buildTag = $('#buildTag');
+  if (buildTag) buildTag.textContent = `build ${STATIC_V}`;
   $('#costNote').textContent = MODE_BLURB.standard;
   $$('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
     $('#costNote').textContent = MODE_BLURB[document.querySelector('input[name=mode]:checked').value];
@@ -308,7 +316,7 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
   }
   if (signal?.aborted) { goHome(); finish(); return; }
   try {
-    const { runDirect, saveLocalResult } = await import('./direct.js');
+    const { runDirect, saveLocalResult } = await import(`./direct.js${staticSuffix()}`);
     step('run', `Static mode: running with ${keys.length} key(s)${model ? ` · model ${model}` : ''}…`);
     // Pass all keys and model for rotation — handles any topic dynamically
     const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step) });
@@ -494,7 +502,7 @@ $$('.exports [data-exp]').forEach((b) => b.addEventListener('click', async () =>
   if (!current) return;
   if (!staticMode) { window.open(`/api/export/${current.id}?format=${b.dataset.exp}`, '_blank'); return; }
   // Static mode: render client-side and download via Blob (no server).
-  const { exportMarkdown, exportHtml } = await import('../backend/src/export.js');
+  const { exportMarkdown, exportHtml } = await import(`../backend/src/export.js${staticSuffix()}`);
   const fmt = b.dataset.exp;
   const text = fmt === 'json' ? JSON.stringify(current, null, 2) : fmt === 'html' ? exportHtml(current) : exportMarkdown(current);
   const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
@@ -530,7 +538,7 @@ $('#historyBtn').addEventListener('click', async () => {
     showResult(r);
   }));
   $$('#histList [data-local]').forEach((b) => b.addEventListener('click', async () => {
-    const { loadLocalResult } = await import('./direct.js');
+    const { loadLocalResult } = await import(`./direct.js${staticSuffix()}`);
     const r = loadLocalResult(b.dataset.local);
     if (!r || !r.id || !r.task) { alert('Saved result not found in this browser (storage may have been cleared).'); return; }
     $('#historyView').classList.add('hidden');

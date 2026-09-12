@@ -6,7 +6,19 @@
 // Honest limits of static mode (shown in the UI): arbitrary page fetching may
 // be blocked by site CORS policies (recorded as inaccessible, never bypassed);
 // grounding excerpts + CORS-open academic APIs still provide cited evidence.
-import { runResearch } from '../backend/src/engine/orchestrator.js';
+
+// Cache-busting version for the engine bundle. Bump together with STATIC_V in
+// app.js (enforced by tests/static-version.test.js). Browser-only suffix:
+// in Node the query string is omitted so the test suite keeps working.
+export const ENGINE_V = '2026-09-13f';
+const engineSuffix = () => (typeof window === 'undefined' ? '' : `?v=${ENGINE_V}`);
+
+async function loadEngine() {
+  // Lazy: keeps first paint fast (engine loads only when a run starts) and
+  // lets every deploy invalidate the whole engine graph at once.
+  const mod = await import(`../backend/src/engine/orchestrator.js${engineSuffix()}`);
+  return mod.runResearch;
+}
 
 /** Minimal `process` safety net for shared modules that read env optionally.
  *  Injectable global makes it unit-testable without touching the real one.
@@ -41,6 +53,7 @@ export async function runDirect(input, { key, emit = () => {}, deps = {} } = {})
   if (!key) {
     throw Object.assign(new Error('Enter a Gemini API key to run in static mode.'), { status: 401 });
   }
+  const runResearch = await loadEngine();
   return runResearch(input, { key, emit, deps });
 }
 

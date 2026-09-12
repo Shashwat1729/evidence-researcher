@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Cache-busted static bundles (versioned imports + lazy engine load) with build stamp in footer
+- Version-sync test guarantees app/direct/index stay on one build id
 - Fixed "process is not defined" crash in static Pages builds (browser-safe env + process shim)
 - Planner-query acceptance now requires category diversity (≥3) so call savings never reduce accuracy
 - Planner now emits search queries + book variants: saves 2 model calls per non-quick run (query-gen + expansion merged in)

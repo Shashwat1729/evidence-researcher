@@ -38,14 +38,17 @@ for (const f of ['LICENSE', 'README.md']) {
 }
 
 // Import-integrity: every relative `from '...'` / `import '...'` must resolve.
+// Also covers versioned template imports: import(`../x.js${suffix}`) is
+// checked against ../x.js (query strings and ${} parts stripped).
 const files = await collectJs(OUT);
 let missing = 0;
 for (const f of files) {
   const src = await fs.readFile(f, 'utf8');
-  const re = /(?:import|export)[^'"]*from\s*['"](\.[^'"]+)['"]|import\s*\(\s*['"](\.[^'"]+)['"]\s*\)|import\s*['"](\.[^'"]+)['"]/g;
+  const re = /(?:import|export)[^'"`]*from\s*['"](\.[^'"]+)['"]|import\s*\(\s*['"](\.[^'"]+)['"]\s*\)|import\s*['"](\.[^'"]+)['"]|import\s*\(\s*`(\.[^`$]+)(?:\$\{[^`]*\})?[^`]*`\s*\)/g;
   let m;
   while ((m = re.exec(src))) {
-    const spec = m[1] || m[2] || m[3];
+    let spec = m[1] || m[2] || m[3] || m[4];
+    spec = spec.split('?')[0];
     const target = path.resolve(path.dirname(f), spec);
     let ok = false;
     for (const cand of [target, target + '.js', path.join(target, 'index.js')]) {
