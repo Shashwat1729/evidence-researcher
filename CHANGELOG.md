@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Fixed "process is not defined" crash in static Pages builds (browser-safe env + process shim)
+- Planner-query acceptance now requires category diversity (≥3) so call savings never reduce accuracy
 - Planner now emits search queries + book variants: saves 2 model calls per non-quick run (query-gen + expansion merged in)
 - Book expansion reserved for deep/exhaustive fallback; standard uses planner/heuristic variants (zero extra calls)
 - Quick mode fits ~5 calls: plan + 2 searches + merged claims/review + synthesis

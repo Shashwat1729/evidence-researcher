@@ -88,7 +88,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
   // fast with a clear message instead of hanging for many minutes.
-  const quotaWaitBudget = () => Math.max(30_000, Number(process.env.QUOTA_WAIT_BUDGET_MS || 120_000));
+  // Browser-safe: no bare `process` (static Pages build has none).
+  const quotaWaitBudget = () => {
+    const penv = (typeof process !== 'undefined' && process.env) || {};
+    return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS || 120_000));
+  };
   const quotaErr = () => Object.assign(
     new Error('Gemini quota exhausted — waited for refills but none arrived. Retry in a few minutes, add another API key, or use a shallower mode.'),
     { status: 429, code: 'QUOTA_EXHAUSTED' },
@@ -151,9 +155,18 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const minQueries = Math.max(4, Math.ceil(initialCount / 2));
   let queries;
   let queriesFromPlan = false;
+  // Accuracy guard: planner queries are accepted only if they are BOTH
+  // numerous enough AND diverse (≥3 distinct categories). A same-category
+  // bundle would silently kill counter-evidence search — worse than spending
+  // one extra call on dedicated generation. This keeps economizing from
+  // ever reducing result quality.
+  const planQueriesDiverse =
+    Array.isArray(plan.queries) &&
+    plan.queries.length >= minQueries &&
+    new Set(plan.queries.map((q) => q.category).filter(Boolean)).size >= (task.mode === 'quick' ? 1 : 3);
   if (task.mode === 'quick') {
     queries = templateQueries(task.question, { academic: budget.academic, books: budget.books, contradiction: false }).slice(0, initialCount);
-  } else if (Array.isArray(plan.queries) && plan.queries.length >= minQueries) {
+  } else if (planQueriesDiverse) {
     // Planner already produced enough diverse queries — skip the separate
     // query-generation call (1 model call saved).
     queries = plan.queries.slice(0, initialCount);

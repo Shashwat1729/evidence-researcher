@@ -8,6 +8,23 @@
 // grounding excerpts + CORS-open academic APIs still provide cited evidence.
 import { runResearch } from '../backend/src/engine/orchestrator.js';
 
+/** Minimal `process` safety net for shared modules that read env optionally.
+ *  Injectable global makes it unit-testable without touching the real one.
+ *  Every read site must still prefer explicit guards; this only prevents
+ *  hard crashes on paths nobody predicted. */
+export function ensureProcessShim(g = globalThis) {
+  if (g.process && g.process.env) return g.process;
+  g.process = {
+    env: (g.process && g.process.env) || {},
+    pid: 0,
+    uptime: () => 0,
+    memoryUsage: () => ({}),
+    versions: {},
+  };
+  return g.process;
+}
+ensureProcessShim();
+
 /** True when no same-origin API is reachable (pure static host). */
 export async function apiAvailable(base = '') {
   try {

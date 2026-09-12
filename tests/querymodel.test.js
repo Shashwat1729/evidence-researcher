@@ -148,4 +148,37 @@ describe('orchestrator model override + book wiring', () => {
     assert.equal(seen.expandCalls, 0, 'standard mode never burns a call on standalone expansion');
     assert.ok(seen.bookOpts.every((o) => !o || !o.variants), 'heuristic path: no variants forwarded');
   });
+
+  it('rejects planner queries that lack category diversity (accuracy over call savings)', async () => {
+    let queriesCalls = 0;
+    const mk = (id) => ({ id, text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' });
+    // 8 queries but ALL general — accepting them would silently kill
+    // counter-evidence search, so the dedicated call must still happen.
+    const monoQueries = Array.from({ length: 8 }, (_, i) => ({ q: `Harappan angle ${i}`, category: 'general' }));
+    const result = await runResearch(
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+      {
+        key: 'k', emit: () => {},
+        deps: {
+          plan: async () => ({ domain: 'history', complexity: 'medium', steps: ['a'], linesOfInquiry: ['g'], queries: monoQueries, bookVariants: [] }),
+          queries: async () => { queriesCalls++; return [{ q: 'Harappan overview', category: 'general' }]; },
+          search: async () => [],
+          academic: async () => [],
+          books: async () => [],
+          fetch: async () => ({ ok: false, reason: 'x' }),
+          claims: async () => [mk('c1')],
+          review: async () => ({ contradictions: [], gaps: [], sufficient: true, reason: 'r' }),
+          provenance: async () => ({ groups: [], relations: [], note: 'n' }),
+          synthesize: async () => ({
+            executiveSummary: 'e', established: [], findings: [], competing: [], contradictions: [],
+            sourceQuality: '', independence: '', books: [], primarySources: [], uncertainty: ['u'], gaps: [], methodology: 'm',
+          }),
+          verify: async () => [],
+          urlContext: async () => ({ text: '' }),
+        },
+      },
+    );
+    assert.ok(result.id);
+    assert.equal(queriesCalls, 1, 'monochrome planner queries must trigger dedicated generation');
+  });
 });

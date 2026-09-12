@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { apiAvailable, runDirect, saveLocalResult, loadLocalResult } from '../frontend/direct.js';
+import { apiAvailable, runDirect, saveLocalResult, loadLocalResult, ensureProcessShim } from '../frontend/direct.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -49,5 +49,18 @@ describe('static-mode helpers', () => {
   it('local persistence degrades gracefully without localStorage (node)', () => {
     assert.equal(saveLocalResult({ id: 'x' }), false);
     assert.equal(loadLocalResult('x'), null);
+  });
+
+  it('ensureProcessShim provides env/uptime/memoryUsage on bare globals, keeps real ones', () => {
+    // Regression: static Pages builds crashed with "process is not defined".
+    const bare = {};
+    const shimmed = ensureProcessShim(bare);
+    assert.deepEqual(shimmed.env, {});
+    assert.equal(shimmed.uptime(), 0);
+    assert.deepEqual(shimmed.memoryUsage(), {});
+    assert.equal(bare.process, shimmed);
+    const realish = { process: { env: { A: '1' }, custom: true } };
+    assert.equal(ensureProcessShim(realish), realish.process);
+    assert.equal(realish.process.env.A, '1');
   });
 });
