@@ -432,7 +432,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     ev('progress', `Analysis pass ${i}/${maxIter}…`);
     // Mode-scaled extraction depth: quick stays lean for quota, deeper modes
     // demand full facet coverage (chronology, sites/people, mechanisms, debates).
-    const minClaims = task.mode === 'quick' ? 4 : task.mode === 'standard' ? 10 : task.mode === 'deep' ? 14 : 18;
+    const minClaims = task.mode === 'quick' ? 4 : task.mode === 'standard' ? 14 : task.mode === 'deep' ? 18 : 22;
     const analysisTokens = task.mode === 'quick' ? 4096 : task.mode === 'standard' ? 6144 : 8192;
     let review;
     if (task.mode === 'quick') {

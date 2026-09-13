@@ -22,14 +22,20 @@ export function createTask({ question, mode = 'standard', stance = 'neutral', hy
   };
 }
 
-export function createPlan({ domain = 'general-factual', complexity = 'medium', steps = [], linesOfInquiry = [], valid = true, clarify = '', queries = [], bookVariants = [] } = {}) {
+export function createPlan({ domain = 'general-factual', complexity = 'medium', steps = [], linesOfInquiry = [], valid = true, clarify = '', queries = [], bookVariants = [], arc = [] } = {}) {
   const cleanQueries = Array.isArray(queries)
     ? queries.filter((q) => q && String(q.q || '').trim()).slice(0, 24)
     : [];
   const cleanVariants = Array.isArray(bookVariants)
     ? bookVariants.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 4)
     : [];
-  return { domain, complexity, steps, linesOfInquiry, valid, clarify, queries: cleanQueries, bookVariants: cleanVariants };
+  const cleanArc = Array.isArray(arc)
+    ? arc
+        .map((b) => ({ title: String(b?.title || '').trim().slice(0, 120), focus: String(b?.focus || '').trim().slice(0, 300) }))
+        .filter((b) => b.title && b.focus)
+        .slice(0, 8)
+    : [];
+  return { domain, complexity, steps, linesOfInquiry, valid, clarify, queries: cleanQueries, bookVariants: cleanVariants, arc: cleanArc };
 }
 
 export function createSource(partial = {}) {

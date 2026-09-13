@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { topicOf, normalizeQueries } from '../backend/src/engine/queries.js';
-import { templatePlan } from '../backend/src/engine/planner.js';
+import { templatePlan, suggestArc, normalizeArc } from '../backend/src/engine/planner.js';
 import { getKeys } from '../backend/src/gemini.js';
 import { AVAILABLE_MODELS, isKnownModel } from '../backend/src/config.js';
 import { validateResearchBody } from '../backend/src/middleware/validate.js';
@@ -19,7 +19,48 @@ describe('topic extraction for keyword APIs', () => {
   });
 });
 
-describe('planner-provided queries (call merging)', () => {
+describe('planner outputs: queries, book variants, narrative arc', () => {
+  it('picks domain-shaped arcs: biography, civilization, event, science', () => {
+    const bio = suggestArc('Who was Ada Lovelace?', 'biography');
+    assert.ok(bio[0].title.toLowerCase().includes('birth') || bio[0].title.toLowerCase().includes('origins'));
+    assert.ok(bio.some((b) => /legacy/i.test(b.title)));
+    const civ = suggestArc('Tell about Harappan civilization?', 'archaeology');
+    assert.ok(civ.some((b) => /decline/i.test(b.title)));
+    assert.ok(civ.some((b) => /site/i.test(b.title)));
+    const ev = suggestArc('Why did the Roman Empire collapse?', 'history');
+    assert.ok(ev.some((b) => /cause/i.test(b.title)));
+    const sci = suggestArc('How does CRISPR work?', 'science');
+    assert.ok(sci.some((b) => /mechanism|how it works/i.test(b.title)));
+    for (const arc of [bio, civ, ev, sci]) {
+      assert.ok(arc.length >= 5 && arc.length <= 8);
+      assert.ok(arc.every((b) => b.title && b.focus));
+    }
+  });
+  it('normalizeArc keeps good model arcs, falls back on thin ones', () => {
+    const good = normalizeArc(
+      Array.from({ length: 5 }, (_, i) => ({ title: `Beat ${i}`, focus: `Focus ${i} detail here` })),
+      'Q?', 'history',
+    );
+    assert.equal(good.length, 5);
+    assert.deepEqual(normalizeArc([{ title: 'Only', focus: 'one' }], 'Q?', 'history').length >= 4, true);
+    assert.deepEqual(normalizeArc('garbage', 'Q?', 'history').length >= 4, true);
+  });
+  it('synthesis prompt lists beats in order with narrative rules', async () => {
+    const { buildSynthesisPrompt, DEPTH } = await import('../backend/src/engine/synthesis.js');
+    const arc = suggestArc('Who was Ada Lovelace?', 'biography');
+    const p = buildSynthesisPrompt({
+      task: { question: 'Who was Ada Lovelace?', mode: 'standard', stance: 'neutral' },
+      plan: { domain: 'biography', arc }, claims: [], sources: [], contradictions: [],
+      provenance: {}, stats: {}, documentary: false, depth: DEPTH.standard,
+    });
+    let lastIdx = -1;
+    for (const b of arc) {
+      const idx = p.indexOf(b.title);
+      assert.ok(idx > lastIdx, `beat "${b.title}" out of order`);
+      lastIdx = idx;
+    }
+    assert.ok(p.includes('IN ORDER') && p.includes('chronological transitions'));
+  });
   it('normalizeQueries validates categories and drops empties', () => {
     const out = normalizeQueries([
       { q: '  Rome fall causes  ', category: 'general' },
@@ -44,8 +85,7 @@ describe('planner-provided queries (call merging)', () => {
   });
 });
 
-describe('multi-key support', () => {
-  it('accepts arrays, dedupes, caps fan-out', () => {
+describe('multi-key support', () => {  it('accepts arrays, dedupes, caps fan-out', () => {
     const keys = getKeys(['k1', 'k1', 'k2', '', 'k3', 'k4', 'k5', 'k6', 'k7']);
     assert.ok(keys.includes('k1') && keys.includes('k2'));
     assert.ok(keys.length <= 6);

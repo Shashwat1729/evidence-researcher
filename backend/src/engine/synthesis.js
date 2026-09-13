@@ -13,6 +13,14 @@ const REPORT_SCHEMA = {
     findings: { type: 'array', items: { type: 'object', properties: { heading: { type: 'string' }, body: { type: 'string' }, cite: { type: 'array', items: { type: 'string' } } } } },
     competing: { type: 'array', items: { type: 'string' } },
     contradictions: { type: 'array', items: { type: 'string' } },
+    timeline: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { date: { type: 'string' }, event: { type: 'string' } },
+        required: ['date', 'event'],
+      },
+    },
     sourceQuality: { type: 'string' },
     independence: { type: 'string' },
     books: { type: 'array', items: { type: 'string' } },
@@ -116,6 +124,7 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
     })),
     competing: [],
     contradictions: contradictions.map((c) => c.against).filter(Boolean),
+    timeline: [],
     sourceQuality: `Gathered ${sources.length} source(s): ${tierSummary}. ${verifiedCount} page(s) fully inspected; the rest are metadata or grounding excerpts. Strongest available: ` +
       (sources.filter((s) => (s.tier ?? 9) <= 3).slice(0, 3).map((s) => s.title || s.domain).join('; ') || 'none above tier 3 — treat all findings as provisional.'),
     independence: provenance.note || 'Source independence could not be determined.',
@@ -134,10 +143,10 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
 // Depth contract per mode: minimum substantive findings, finding body size,
 // and scholarly apparatus. A "study chapter", not a search summary.
 export const DEPTH = {
-  quick: { minFindings: 3, minBodyChars: 300, minBooks: 0, minPrimary: 0 },
-  standard: { minFindings: 7, minBodyChars: 600, minBooks: 3, minPrimary: 2 },
-  deep: { minFindings: 10, minBodyChars: 800, minBooks: 5, minPrimary: 3 },
-  exhaustive: { minFindings: 14, minBodyChars: 800, minBooks: 8, minPrimary: 4 },
+  quick: { minFindings: 3, minBodyChars: 300, minBooks: 0, minPrimary: 0, minTimeline: 0 },
+  standard: { minFindings: 9, minBodyChars: 900, minBooks: 4, minPrimary: 2, minTimeline: 8 },
+  deep: { minFindings: 12, minBodyChars: 900, minBooks: 6, minPrimary: 3, minTimeline: 12 },
+  exhaustive: { minFindings: 16, minBodyChars: 1000, minBooks: 8, minPrimary: 4, minTimeline: 15 },
 };
 
 // Pure, exported for unit tests: the exact prompt contract.
@@ -147,6 +156,10 @@ export function buildSynthesisPrompt({ task, plan, claims, sources, contradictio
     id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
     verified: s.verified, accessibility: s.accessibility,
   }));
+  const arc = Array.isArray(plan.arc) && plan.arc.length
+    ? plan.arc
+    : [{ title: 'Overview', focus: 'Essential context and the key facts in logical order.' }];
+  const arcText = arc.map((b, i) => `${i + 1}. ${b.title} — ${b.focus}`).join('\n');
   return `Write a thorough, chapter-like research study as JSON — NOT a summary of the search process.
 
 Question: ${task.question}
@@ -155,6 +168,9 @@ ${task.stance !== 'neutral' ? `DISCLOSURE: the user requested a "${task.stance}"
 Domain: ${plan.domain}
 ${documentary ? 'DOCUMENTARY MODE: emphasize chronology, key people, primary evidence, myths-vs-evidence, claims needing caution, surprising findings. Do NOT sensationalize.' : ''}
 
+NARRATIVE ARC — the report MUST read as one continuous study following these beats IN ORDER, like a book chapter (for a person: birth → life → death → legacy; for a civilization: origins → florescence → key sites → decline → legacy). Use chronological transitions between sections ("By 2600 BCE…", "Meanwhile…", "In his later years…"). Each beat becomes one or more findings; never a disconnected list of assertions:
+${arcText}
+
 Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 10000)}
 Contradictions: ${JSON.stringify(contradictions).slice(0, 4000)}
 Provenance: ${JSON.stringify(provenance).slice(0, 3000)}
@@ -162,10 +178,14 @@ Sources (cite ONLY these ids/urls; if a page number cannot be verified write "Pa
 Research stats: ${JSON.stringify(stats)}
 
 DEPTH REQUIREMENTS (this is a study chapter, not a search summary):
-- Write AT LEAST ${d.minFindings} substantive findings, each body at least ~${d.minBodyChars} characters: explain WHAT happened, WHEN (chronology), WHO/WHERE matters (key sites, people, works), HOW/WHY (mechanisms), and WHAT SCHOLARS DISAGREE ABOUT. Cover the topic's major facets, not just the first facts.
-- "established" lists only strongly-evidenced conclusions, each phrased as a finding (not a process note).
-- "competing" MUST present each rival interpretation fairly with its best evidence (${task.mode === 'quick' ? 'at least 1' : 'at least 2-3'}).
-- "books" lists at least ${d.minBooks} discovered books/monographs with authors (from the sources above; mark metadata-only honestly). "primarySources" lists at least ${d.minPrimary} (or states plainly none were accessible).
+- Write AT LEAST ${d.minFindings} substantive findings spanning EVERY narrative beat above (no beat left empty), each body at least ~${d.minBodyChars} characters.
+- Each finding body is structured prose with four parts: (1) the facts with specific dates, numbers, names, and places; (2) the evidence — which sources establish this and how strong they are; (3) what scholars disagree about here, if anything; (4) what remains uncertain, flagged inline.
+- "executiveSummary" is a full introduction of 3-5 paragraphs telling the whole arc: what the subject is, the key story, the main debates, and the bottom line — a reader should grasp the entire topic from it alone.
+- "established" lists only strongly-evidenced conclusions, each phrased as a finding with its key date (not a process note).
+- "timeline" lists at least ${d.minTimeline} dated entries in chronological order (exact dates where known, approximate eras otherwise)${d.minTimeline === 0 ? ' — may be empty in quick mode' : ''}.
+- "competing" MUST present each rival interpretation fairly with its best evidence AND the evidence against it (${task.mode === 'quick' ? 'at least 1' : 'at least 2-3'}).
+- "books" lists at least ${d.minBooks} discovered books/monographs: author, title, and one sentence on each book's THESIS (what it argues), from the sources above; mark metadata-only honestly. "primarySources" lists at least ${d.minPrimary} with what each source is and what it establishes (or states plainly none were accessible).
+- COVERAGE: every tier-1 and tier-2 source above MUST be cited by at least one finding — leave no strong source unused.
 - Every section discusses the TOPIC. NEVER write about the research process, the search, "the provided evidence", "the grounding API", page-number meta-talk, or model limitations — uncertainty belongs in domain terms (what is unknown about the subject, and why).
 
 Rules:
@@ -175,7 +195,7 @@ Rules:
 - findings[].cite must contain only source ids from the list above.
 - EVERY finding MUST cite at least one source id — omit findings you cannot support rather than leaving cite empty.
 - uncertainty MUST contain at least 2 items and gaps at least 1; if the evidence is genuinely complete, state the narrow residual limits (e.g. primary sources not inspected directly).
-Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
+Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, timeline[{date, event}], sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
 }
 
 export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth }) {

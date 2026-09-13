@@ -451,6 +451,7 @@ function renderTab(tab) {
     const cite = (ids = []) => (ids || []).map((id) => { const s = byId(id); return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">[${escapeHtml((s.title || s.domain || '').slice(0, 40))}]</a>` : ''; }).join(' ');
     el.innerHTML = `<h2>Final report</h2><p>${escapeHtml(rep.executiveSummary || '')}</p>
       ${(rep.findings || []).map((f, i) => { const v = (rep.verification || []).find((x) => x.n === i); return `<h3>${escapeHtml(f.heading || '')}</h3><p>${escapeHtml(f.body || '')}</p><p>${cite(f.cite)}</p>` + (v ? `<p class="hint">Cross-check: <b>${escapeHtml(v.supported)}</b> — ${escapeHtml(v.note)}</p>` : ''); }).join('')}
+      ${(rep.timeline || []).length ? `<h3>Chronology</h3><table><tr><th>Date</th><th>Event</th></tr>${(rep.timeline || []).map((t) => `<tr><td><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</table>` : ''}
       <h3>Source quality</h3><p>${escapeHtml(rep.sourceQuality || '')}</p>
       <h3>Source independence</h3><p>${escapeHtml(rep.independence || '')}</p>
       <h3>Books</h3><ul>${(rep.books || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>

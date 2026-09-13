@@ -33,4 +33,13 @@ describe('citation integrity in export', () => {
     const md = exportMarkdown(fixture);
     assert.ok(md.includes('Uncertainty') && md.includes('Research gaps') && md.includes('Methodology'));
   });
+  it('renders timeline as a chronology table when present', () => {
+    const withTimeline = {
+      ...fixture,
+      report: { ...fixture.report, timeline: [{ date: '1088', event: 'Traditional founding' }, { date: '1158', event: 'Authentica Habita' }] },
+    };
+    const md = exportMarkdown(withTimeline);
+    assert.ok(md.includes('## Chronology'));
+    assert.ok(md.includes('| 1088 | Traditional founding |'));
+  });
 });

@@ -27,6 +27,12 @@ export function exportMarkdown(r) {
   }
   if (r.report?.competing?.length) { L.push('## Competing explanations', ''); for (const c of r.report.competing) L.push(`- ${oneLine(c)}`); L.push(''); }
   if (r.report?.contradictions?.length) { L.push('## Contradictory evidence', ''); for (const c of r.report.contradictions) L.push(`- ${oneLine(c)}`); L.push(''); }
+  if (r.report?.timeline?.length) {
+    L.push('## Chronology', '');
+    L.push('| Date | Event |', '| --- | --- |');
+    for (const t of r.report.timeline) L.push(`| ${oneLine(t.date)} | ${oneLine(t.event)} |`);
+    L.push('');
+  }
   L.push('## Claim confidence', '');
   for (const c of r.claims || []) L.push(`- **${c.state}** — ${oneLine(c.text)}${c.confidenceWhy ? ` (${oneLine(c.confidenceWhy)})` : ''}`);
   L.push('', '## Source quality', '', r.report?.sourceQuality || '', '', '## Source independence', '', r.report?.independence || r.provenance?.note || '');

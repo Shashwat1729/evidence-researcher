@@ -19,16 +19,19 @@ describe('synthesis depth contract', () => {
   });
   it('standard prompt demands chapter depth and bans process-talk', () => {
     const p = buildSynthesisPrompt({ ...base, depth: DEPTH.standard });
-    assert.ok(p.includes('AT LEAST 7 substantive findings'));
-    assert.ok(p.includes('600'));
-    assert.ok(p.includes('at least 3 discovered books'));
+    assert.ok(p.includes('AT LEAST 9 substantive findings'));
+    assert.ok(p.includes('900'));
+    assert.ok(p.includes('at least 4 discovered books'));
+    assert.ok(p.includes('at least 8 dated entries'));
+    assert.ok(p.includes('tier-1 and tier-2 source') && p.includes('MUST be cited'));
     assert.ok(p.includes('grounding API') && p.includes('NEVER write about'));
     assert.ok(p.includes('provided evidence'));
-    assert.ok(p.includes('chronology') && p.includes('DISAGREE'));
+    assert.ok(p.includes('chronolog') && p.includes('disagree'));
+    assert.ok(p.includes('NARRATIVE ARC'));
   });
   it('claims prompt demands facet coverage minimums', () => {
-    const p = buildClaimsPrompt('Q?', '[]', 10, false);
-    assert.ok(p.includes('AT LEAST 10 distinct claims'));
+    const p = buildClaimsPrompt('Q?', '[]', 14, false);
+    assert.ok(p.includes('AT LEAST 14 distinct claims'));
     assert.ok(p.includes('chronology/dates'));
     const pr = buildClaimsPrompt('Q?', '[]', 4, true);
     assert.ok(pr.includes('AT LEAST 4 distinct claims') && pr.includes('Part 2'));
