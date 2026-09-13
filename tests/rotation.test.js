@@ -81,4 +81,31 @@ describe('API key rotation', () => {
     assert.ok(events.some((e) => e.type === 'rate-wait' && e.waitMs === 1000));
     assert.ok(!JSON.stringify(events).includes('KEY_'));
   });
+
+  it('keeps waiting across rounds (never one-and-done) until the budget is spent', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const events = [];
+    let calls = 0;
+    const limited = () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '1s' }] } });
+    mockFetch(async () => { calls++; return calls <= 2 ? limited() : jsonResponse(200, okPayload); });
+    const r = await generate({ key: '', model: 'm', prompt: 'hi', onKeyEvent: (e) => events.push(e) });
+    assert.equal(r.text, 'hi');
+    assert.equal(calls, 3, 'two waits then success — nothing skipped');
+    assert.equal(events.filter((e) => e.type === 'rate-wait').length, 2);
+  });
+
+  it('gives up fast with zero wait budget (no hanging)', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const saved = process.env.QUOTA_WAIT_BUDGET_MS;
+    process.env.QUOTA_WAIT_BUDGET_MS = '0';
+    try {
+      mockFetch(async () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '120s' }] } }));
+      const err = await generate({ key: '', model: 'm', prompt: 'hi' }).catch((e) => e);
+      assert.equal(err.status, 429);
+      assert.equal(err.code, 'QUOTA_EXHAUSTED');
+    } finally {
+      if (saved === undefined) delete process.env.QUOTA_WAIT_BUDGET_MS;
+      else process.env.QUOTA_WAIT_BUDGET_MS = saved;
+    }
+  });
 });

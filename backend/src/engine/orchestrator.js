@@ -560,20 +560,39 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const perSectionMin = Math.max(2, Math.ceil(modeDepth.minFindings / sectionGroups.length));
     const settled = await pool(sectionGroups, 2, async (beats, gi) => {
       throwIfStopped();
-      try {
-        const sec = await phase('synthesis', () => call(() => D.synthesize({
-          key, model: models.synthesis, task, plan, claims, sources,
-          contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
-          documentary: task.documentary, onKeyEvent: keyEvent,
-          maxTokens: budget.reportTokens, beats, findingsOnly: true,
-          depth: { ...(DEPTH[task.mode] || DEPTH.standard), minFindings: perSectionMin },
-        })));
-        const found = Array.isArray(sec?.findings) ? sec.findings : [];
-        ev('progress', `Section ${gi + 1}/${sectionGroups.length}: ${found.length} finding(s)`);
-        return found;
-      } catch (e) {
-        ev('warning', `Section ${gi + 1} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
-        return [];
+      const label = `Section ${gi + 1}/${sectionGroups.length}`;
+      // Planned work is NEVER skipped on transient quota: rate-limited sections
+      // wait (via post()) and retry here; only truly-failed sections are cut,
+      // and shortfalls get one expansion retry with an explicit nudge.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const sec = await phase('synthesis', () => call(() => D.synthesize({
+            key, model: models.synthesis, task, plan, claims, sources,
+            contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
+            documentary: task.documentary, onKeyEvent: keyEvent,
+            maxTokens: budget.reportTokens, beats, findingsOnly: true,
+            depth: { ...(DEPTH[task.mode] || DEPTH.standard), minFindings: perSectionMin },
+            retryHint: attempt > 1
+              ? `Previous attempt for THESE beats under-delivered. Expand now to at least ${perSectionMin} findings with specifics (dates, names, numbers, evidence).`
+              : '',
+          })));
+          const found = Array.isArray(sec?.findings) ? sec.findings : [];
+          if ((found.length === 0 && claims.length > 0) || (found.length > 0 && found.length < perSectionMin)) {
+            if (attempt === 1) {
+              ev('progress', `${label} thin (${found.length}/${perSectionMin}) — expanding with one more call…`);
+              continue;
+            }
+          }
+          ev('progress', `${label}: ${found.length} finding(s)`);
+          return found;
+        } catch (e) {
+          if ((e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED') && attempt < 3) {
+            ev('progress', `${label} rate-limited — quota wait done, retrying (attempt ${attempt + 1})…`);
+            continue;
+          }
+          ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
+          return [];
+        }
       }
     });
     const merged = settled.flat().filter((f) => f && ((f.heading || f.body || '').trim()));

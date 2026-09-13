@@ -65,58 +65,56 @@ function retryDelayMs(err, fallbackMs) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// POST with key rotation: tries keys in order (preferred first), bounded
-// transient retries per key (honoring Google's RetryInfo delay). Rotates on
-// rate-limit/transient AND on key errors (401/403/invalid-key 400) so a dead
-// primary fails over to the fallback; rotation is announced via onKeyEvent
-// even when every key is exhausted. Timeouts/bad requests fail fast. When all
-// keys hit 429, honors RetryInfo once before giving up (free-tier 5 RPM).
+// POST with key rotation and PATIENT quota handling: tries keys in order
+// (preferred first), rotates immediately on 429/key-errors, and — when every
+// key reports 429 — waits out per-minute buckets and retries, round after
+// round, until the wait budget is spent. Only 429s are waited for (quota
+// refills); other errors fail fast so real problems surface immediately.
+// Timeouts/bad requests fail fast, never rotated, never retried.
 // onKeyEvent receives { type:'rotated'|'rate-wait', ... } — never key values.
-async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent } = {}) {
+async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent, rateWaitBudgetMs } = {}) {
   if (!keys.length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
+  const penv = (typeof process !== 'undefined' && process.env) || {};
+  const budget = Number.isFinite(rateWaitBudgetMs) ? Math.max(0, rateWaitBudgetMs)
+    : Math.max(0, Number(penv.QUOTA_WAIT_BUDGET_MS || 120_000));
   const order = keys.map((_, i) => (preferredIdx + i) % keys.length);
   let firstErr = null;
-  for (let o = 0; o < order.length; o++) {
-    const ki = order[o];
-    try {
-      const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
-      preferredIdx = ki; // sticky: skip known-dead keys first next time
-      return data;
-    } catch (e) {
-      if (e?.name === 'AbortError') throw e;
-      firstErr = firstErr || e;
-      if ((isTransient(e.status) || isKeyError(e)) && o + 1 < order.length) {
-        onKeyEvent?.({ type: 'rotated', keyIndex: order[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
-        continue; // next key immediately, no sleep
-      }
-      if (isTransient(e.status) || isKeyError(e)) break; // exhausted: maybe RetryInfo wait
-      throw e; // bad request etc: key-independent, fail fast
-    }
-  }
-  // All keys hit 429 with RetryInfo — honor the per-minute bucket once
-  // (capped at 60s), then retry one more round across keys.
-  if (firstErr?.status === 429) {
-    const wait = retryDelayMs(firstErr, 0);
-    if (wait > 0) {
-      const capped = Math.min(wait, 60000);
-      onKeyEvent?.({ type: 'rate-wait', waitMs: capped });
-      await sleep(capped);
-      // One more attempt across keys after waiting
-      for (const ki of order) {
-        try {
-          const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, 0);
-          preferredIdx = ki;
-          return data;
-        } catch (e) {
-          if (e?.name === 'AbortError') throw e;
-          firstErr = e;
-          if (isTransient(e.status) || isKeyError(e)) continue;
-          throw e;
+  let waitedMs = 0;
+  let round = 0;
+  for (;;) {
+    round++;
+    let round429 = null;
+    for (let o = 0; o < order.length; o++) {
+      const ki = order[o];
+      try {
+        const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
+        preferredIdx = ki; // sticky: skip known-dead keys first next time
+        return data;
+      } catch (e) {
+        if (e?.name === 'AbortError') throw e;
+        firstErr = firstErr || e;
+        if (e.status === 429) round429 = round429 || e;
+        if ((isTransient(e.status) || isKeyError(e)) && o + 1 < order.length) {
+          onKeyEvent?.({ type: 'rotated', keyIndex: order[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
+          continue; // next key immediately, no sleep
         }
+        if (!(isTransient(e.status) || isKeyError(e))) throw e; // key-independent: fail fast
+        // last key exhausted with transient/key error → wait logic below
       }
     }
+    // All keys tried this round. Only 429s are worth waiting for (per-minute
+    // buckets refill); anything else fails fast with the first error.
+    if (!round429 || round429.status !== 429) throw firstErr;
+    const hinted = retryDelayMs(round429, 0);
+    const wait = hinted > 0 ? Math.min(hinted, 60000) : Math.min(60000, 15000 * round);
+    if (waitedMs + wait > budget) break; // budget spent → honest failure below
+    waitedMs += wait;
+    onKeyEvent?.({ type: 'rate-wait', waitMs: wait });
+    await sleep(wait);
   }
-  throw firstErr;
+  throw Object.assign(firstErr || new Error('Gemini quota exhausted'), {
+    status: firstErr?.status ?? 429, code: 'QUOTA_EXHAUSTED',
+  });
 }
 
 async function attemptKey(url, body, timeoutMs, retries) {

@@ -39,7 +39,8 @@ describe('sectional synthesis (standard mode)', () => {
         synthesize: async (a) => {
           calls.push({ findingsOnly: !!a.findingsOnly, assembleOnly: !!a.assembleOnly, beats: (a.beats || []).map((b) => b.title), n: (a.assemblyFindings || []).length });
           if (a.findingsOnly) {
-            return { findings: a.beats.map((b) => ({ heading: b.title, body: `Body for ${b.title} with substance.`, cite: [] })) };
+            // 3 findings per group meets perSectionMin (9/3) → no expansion retry.
+            return { findings: [...a.beats.map((b) => ({ heading: b.title, body: `Body for ${b.title} with substance.`, cite: [] })), { heading: 'Extra', body: 'More substance here.', cite: [] }] };
           }
           return {
             executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
@@ -54,8 +55,8 @@ describe('sectional synthesis (standard mode)', () => {
     assert.equal(sections.length, 3, 'standard splits 6 beats into 3 groups');
     assert.deepEqual(sections.flatMap((c) => c.beats), arc6.map((b) => b.title), 'every beat covered once, in order');
     assert.equal(assembly.length, 1);
-    assert.equal(assembly[0].n, 6, 'assembly receives all section findings');
-    assert.equal(result.report.findings.length, 6);
+    assert.equal(assembly[0].n, 9, 'assembly receives all section findings');
+    assert.equal(result.report.findings.length, 9);
     assert.ok(!result.report.synthesisFallback, 'full path is not flagged fallback');
   });
 
@@ -108,5 +109,76 @@ describe('sectional synthesis (standard mode)', () => {
     assert.equal(result.report.synthesisFallback, true);
     assert.ok(result.report.findings.length > 0, 'model-written sections preserved');
     assert.ok(result.report.findings.every((f) => f.heading && f.body));
+  });
+
+  it('retries rate-limited sections instead of skipping planned work', async () => {
+    const attempts = [];
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async (a) => {
+          if (a.findingsOnly) {
+            const n = attempts.filter((x) => x === 'section').length;
+            attempts.push('section');
+            if (n === 0) throw Object.assign(new Error('slow down'), { status: 429 });
+            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: 'Recovered body.', cite: [] })) };
+          }
+          return {
+            executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
+            timeline: [], sourceQuality: '', independence: '', books: [], primarySources: [],
+            uncertainty: ['u'], gaps: [], methodology: 'm',
+          };
+        },
+      }),
+    });
+    assert.ok(result.report.findings.length === 6, 'all beats recovered after quota wait');
+    assert.ok(!result.report.synthesisFallback);
+  });
+
+  it('expands thin sections once with an explicit nudge (no silent thinness)', async () => {
+    const hints = [];
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async (a) => {
+          if (a.findingsOnly) {
+            hints.push(a.retryHint || '');
+            if (!a.retryHint) return { findings: [{ heading: 'Only', body: 'Thin.', cite: [] }] };
+            return {
+              findings: (a.beats || []).map((b) => ({ heading: b.title, body: 'Expanded body with dates, names, and evidence discussed at length.', cite: [] })),
+            };
+          }
+          return {
+            executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
+            timeline: [], sourceQuality: '', independence: '', books: [], primarySources: [],
+            uncertainty: ['u'], gaps: [], methodology: 'm',
+          };
+        },
+      }),
+    });
+    assert.ok(hints.some((h) => h.includes('Expand now')), 'retry carries an expansion nudge');
+    assert.ok(result.report.findings.length >= 6, 'expanded sections kept');
+  });
+
+  it('does not retry non-retryable section failures (fail fast, then degrade)', async () => {
+    let calls = 0;
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async (a) => {
+          if (a.findingsOnly) {
+            calls++;
+            throw Object.assign(new Error('bad request'), { status: 400 });
+          }
+          return {
+            executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
+            timeline: [], sourceQuality: '', independence: '', books: [], primarySources: [],
+            uncertainty: ['u'], gaps: [], methodology: 'm',
+          };
+        },
+      }),
+    });
+    assert.equal(calls, 3, 'one attempt per group, no pointless retries on 400');
+    assert.ok(result.report);
   });
 });

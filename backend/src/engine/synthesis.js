@@ -275,7 +275,7 @@ Return JSON with keys: executiveSummary, established, findings[{heading, body, c
 // Section prompt: write ONLY the findings for the given beats (used when the
 // report is assembled from per-section calls). Same cite rules and process-talk
 // ban, scoped minimums passed explicitly by the orchestrator.
-export function buildSectionPrompt({ task, plan, claims, sources, beats, minFindings = 3, minBodyChars = 600 }) {
+export function buildSectionPrompt({ task, plan, claims, sources, beats, minFindings = 3, minBodyChars = 600, retryHint = '' }) {
   const srcIndex = sources.map((s) => ({
     id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
     verified: s.verified, accessibility: s.accessibility,
@@ -296,7 +296,7 @@ SECTION RULES:
 - findings[].cite must contain only source ids from the list above; EVERY finding MUST cite at least one — omit findings you cannot support.
 - Discuss the TOPIC only. NEVER write about the research process, the search, "the provided evidence", "the grounding API", or model limitations.
 - Confidence is CLAIM-LEVEL (high/medium/low/disputed) — never one global percentage.
-Return JSON: {"findings": [{"heading": "...", "body": "...", "cite": ["id"]}]}`;
+${retryHint ? `\nRETRY NOTE: ${retryHint}\n` : ''}Return JSON: {"findings": [{"heading": "...", "body": "...", "cite": ["id"]}]}`;
 }
 
 // Assembly prompt: frame already-written section findings with everything
@@ -327,7 +327,7 @@ NEVER write about the research process beyond methodology, never mention "the pr
 Return JSON with keys: executiveSummary, established, competing, contradictions, timeline[{date, event}], sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
 }
 
-export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth, beats = null, findingsOnly = false, assemblyFindings = null, assembleOnly = false }) {
+export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth, beats = null, findingsOnly = false, assemblyFindings = null, assembleOnly = false, retryHint = '' }) {
   // Sectional path: findings-only scoped call (one full budget per section).
   if (findingsOnly) {
     const d = depth || DEPTH[task.mode] || DEPTH.standard;
@@ -335,6 +335,7 @@ export async function synthesizeReport({ key, model, task, plan, claims, sources
       task, plan, claims, sources, beats: beats || [],
       minFindings: Number.isFinite(d.minFindings) ? d.minFindings : 3,
       minBodyChars: Number.isFinite(d.minBodyChars) ? d.minBodyChars : 600,
+      retryHint,
     });
     const { data } = await generateJson({ key, model, prompt, schema: SECTION_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
     return data;
