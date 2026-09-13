@@ -1,6 +1,39 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { repairFindingCites, ensureReportCompleteness, templateReport } from '../backend/src/engine/synthesis.js';
+import { repairFindingCites, ensureReportCompleteness, templateReport, buildSynthesisPrompt, DEPTH } from '../backend/src/engine/synthesis.js';
+import { buildClaimsPrompt } from '../backend/src/engine/claims.js';
+
+describe('synthesis depth contract', () => {
+  const base = {
+    task: { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+    plan: { domain: 'archaeology' }, claims: [], sources: [], contradictions: [],
+    provenance: { note: '' }, stats: {}, documentary: false,
+  };
+  it('DEPTH scales monotonically across modes', () => {
+    const order = ['quick', 'standard', 'deep', 'exhaustive'];
+    const vals = order.map((m) => DEPTH[m]);
+    for (let i = 1; i < vals.length; i++) {
+      assert.ok(vals[i].minFindings >= vals[i - 1].minFindings);
+      assert.ok(vals[i].minBodyChars >= vals[i - 1].minBodyChars);
+    }
+  });
+  it('standard prompt demands chapter depth and bans process-talk', () => {
+    const p = buildSynthesisPrompt({ ...base, depth: DEPTH.standard });
+    assert.ok(p.includes('AT LEAST 7 substantive findings'));
+    assert.ok(p.includes('600'));
+    assert.ok(p.includes('at least 3 discovered books'));
+    assert.ok(p.includes('grounding API') && p.includes('NEVER write about'));
+    assert.ok(p.includes('provided evidence'));
+    assert.ok(p.includes('chronology') && p.includes('DISAGREE'));
+  });
+  it('claims prompt demands facet coverage minimums', () => {
+    const p = buildClaimsPrompt('Q?', '[]', 10, false);
+    assert.ok(p.includes('AT LEAST 10 distinct claims'));
+    assert.ok(p.includes('chronology/dates'));
+    const pr = buildClaimsPrompt('Q?', '[]', 4, true);
+    assert.ok(pr.includes('AT LEAST 4 distinct claims') && pr.includes('Part 2'));
+  });
+});
 
 describe('repairFindingCites', () => {
   const claims = [

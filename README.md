@@ -121,7 +121,7 @@ are recorded as inaccessible. See `docs/production-checklist.md` before going pu
 ## Testing & evaluation
 
 ```bash
-npm test        # 145+ tests: units + offline full-pipeline E2E (15/15 audit) + HTTP/SSE
+npm test        # 150+ tests: units + offline full-pipeline E2E (15/15 audit) + HTTP/SSE
                 # + infra, cancellation, result-cache, static-mode, perf budgets — no key needed
 npm run lint    # syntax gate over every JS file (runs in CI)
 node eval/run.js result.json        # audit-score a saved run

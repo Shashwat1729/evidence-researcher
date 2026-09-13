@@ -26,26 +26,46 @@ const CLAIMS_SCHEMA = {
   required: ['claims'],
 };
 
-export async function extractClaims({ key, model, question, sources, onKeyEvent }) {
-  const srcList = sources.map((s) => ({
-    id: s.id, title: s.title, url: s.url, tier: s.tier,
-    excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
-  }));
-  const prompt = `Extract the key factual claims relevant to the research question, with claim-level confidence.
+export function buildClaimsPrompt(question, srcJson, minClaims = 6, withReview = false) {
+  const base = `Extract the key factual claims relevant to the research question, with claim-level confidence${withReview ? ' — then review them skeptically' : ''}.
 
 Question: ${question}
 
 Sources (use ONLY these ids when linking evidence; never invent source ids):
-${JSON.stringify(srcList).slice(0, 12000)}
+${srcJson}
 
 Rules:
-- Each claim: one verifiable assertion.
+- Extract AT LEAST ${minClaims} distinct claims when the evidence supports that many — cover chronology/dates, key places and people, mechanisms/causes, major scholarly interpretations, and points of disagreement. Fewer is acceptable ONLY if the sources genuinely contain less.
+- Each claim: one verifiable assertion.`;
+  if (!withReview) {
+    return `${base}
 - state ∈ strongly-supported|supported|plausible|disputed|weakly-supported|unsupported|contradicted|unknown.
 - "many mentions" ≠ strong evidence: require source QUALITY + INDEPENDENCE for supported/strongly-supported.
 - confidenceWhy: one sentence naming what establishes or undermines the claim.
 - supporting/contradicting: arrays of source ids from the list above.
 Return JSON: {"claims": [{"text": "...", "state": "...", "supporting": ["id"], "contradicting": ["id"], "confidenceWhy": "..."}]}`;
-  const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_SCHEMA, maxTokens: 4096, thinking: 'low', onKeyEvent });
+  }
+  return `${base}
+- state ∈ strongly-supported|supported|plausible|disputed|weakly-supported|unsupported|contradicted|unknown.
+- "many mentions" ≠ strong evidence: require source QUALITY + INDEPENDENCE for supported/strongly-supported.
+- confidenceWhy: one sentence naming what establishes or undermines the claim.
+- supporting/contradicting: arrays of source ids from the list above.
+
+Part 2 — review. For each major claim, state what evidence would make it WRONG
+and whether any source provides it. List knowledge gaps (searched vs found vs
+verified vs uncertain). Set sufficient true only if the evidence genuinely
+answers the question.
+
+Return JSON: {"claims": [{"text": "...", "state": "...", "supporting": ["id"], "contradicting": ["id"], "confidenceWhy": "..."}], "contradictions": [{"claimId": "...", "against": "...", "sources": ["id"], "severity": "high|medium|low"}], "gaps": ["..."], "sufficient": false, "reason": "..."}`;
+}
+
+export async function extractClaims({ key, model, question, sources, onKeyEvent, minClaims = 6, maxTokens = 4096 }) {
+  const srcList = sources.map((s) => ({
+    id: s.id, title: s.title, url: s.url, tier: s.tier,
+    excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
+  }));
+  const prompt = buildClaimsPrompt(question, JSON.stringify(srcList).slice(0, 12000), minClaims, false);
+  const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_SCHEMA, maxTokens, thinking: 'low', onKeyEvent });
   return normalizeClaims(data, sources);
 }
 
@@ -90,32 +110,13 @@ const CLAIMS_REVIEW_SCHEMA = {
   required: ['claims'],
 };
 
-export async function extractClaimsWithReview({ key, model, question, sources, onKeyEvent }) {
+export async function extractClaimsWithReview({ key, model, question, sources, onKeyEvent, minClaims = 6, maxTokens = 5120 }) {
   const srcList = sources.map((s) => ({
     id: s.id, title: s.title, url: s.url, tier: s.tier,
     excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
   }));
-  const prompt = `Extract the key factual claims relevant to the research question, with claim-level confidence — then review them skeptically.
-
-Question: ${question}
-
-Sources (use ONLY these ids when linking evidence; never invent source ids):
-${JSON.stringify(srcList).slice(0, 12000)}
-
-Part 1 — claims. Rules:
-- Each claim: one verifiable assertion.
-- state ∈ strongly-supported|supported|plausible|disputed|weakly-supported|unsupported|contradicted|unknown.
-- "many mentions" ≠ strong evidence: require source QUALITY + INDEPENDENCE for supported/strongly-supported.
-- confidenceWhy: one sentence naming what establishes or undermines the claim.
-- supporting/contradicting: arrays of source ids from the list above.
-
-Part 2 — review. For each major claim, state what evidence would make it WRONG
-and whether any source provides it. List knowledge gaps (searched vs found vs
-verified vs uncertain). Set sufficient true only if the evidence genuinely
-answers the question.
-
-Return JSON: {"claims": [{"text": "...", "state": "...", "supporting": ["id"], "contradicting": ["id"], "confidenceWhy": "..."}], "contradictions": [{"claimId": "...", "against": "...", "sources": ["id"], "severity": "high|medium|low"}], "gaps": ["..."], "sufficient": false, "reason": "..."}`;
-  const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_REVIEW_SCHEMA, maxTokens: 5120, thinking: 'low', onKeyEvent });
+  const prompt = buildClaimsPrompt(question, JSON.stringify(srcList).slice(0, 12000), minClaims, true);
+  const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_REVIEW_SCHEMA, maxTokens, thinking: 'low', onKeyEvent });
   return {
     claims: normalizeClaims(data, sources),
     review: normalizeReview(data, sources, 1),

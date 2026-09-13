@@ -430,29 +430,33 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     if (Date.now() > deadline) break;
     if (overTokenCap()) { ev('progress', 'Token budget reached — synthesizing from gathered evidence'); break; }
     ev('progress', `Analysis pass ${i}/${maxIter}…`);
+    // Mode-scaled extraction depth: quick stays lean for quota, deeper modes
+    // demand full facet coverage (chronology, sites/people, mechanisms, debates).
+    const minClaims = task.mode === 'quick' ? 4 : task.mode === 'standard' ? 10 : task.mode === 'deep' ? 14 : 18;
+    const analysisTokens = task.mode === 'quick' ? 4096 : task.mode === 'standard' ? 6144 : 8192;
     let review;
     if (task.mode === 'quick') {
       // Merged extract+review: one round-trip instead of two (quota is the
       // binding constraint; quick runs a single pass anyway). On failure,
       // degrade to claims-only so the run still completes.
       try {
-        const merged = await call(() => D.claimsReview({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
+        const merged = await call(() => D.claimsReview({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens + 1024 }));
         claims = merged.claims;
         review = merged.review;
       } catch (e) {
         ev('warning', `Analysis failed (${(e.message || '').slice(0, 100)}) — retrying claims only`);
         try {
-          claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
+          claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
         } catch { claims = []; }
         review = { contradictions: [], gaps: [], sufficient: true, reason: 'quick single-pass fallback' };
       }
     } else {
     try {
-      claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent }));
+      claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources, onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
     } catch (e) {
       ev('warning', `Claim extraction failed (${(e.message || '').slice(0, 100)}) — retrying with fewer sources`);
       try {
-        claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent }));
+        claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
       } catch { claims = []; }
     }
     }

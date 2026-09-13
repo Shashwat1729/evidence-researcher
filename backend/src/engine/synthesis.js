@@ -131,12 +131,23 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
   };
 }
 
-export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192 }) {
+// Depth contract per mode: minimum substantive findings, finding body size,
+// and scholarly apparatus. A "study chapter", not a search summary.
+export const DEPTH = {
+  quick: { minFindings: 3, minBodyChars: 300, minBooks: 0, minPrimary: 0 },
+  standard: { minFindings: 7, minBodyChars: 600, minBooks: 3, minPrimary: 2 },
+  deep: { minFindings: 10, minBodyChars: 800, minBooks: 5, minPrimary: 3 },
+  exhaustive: { minFindings: 14, minBodyChars: 800, minBooks: 8, minPrimary: 4 },
+};
+
+// Pure, exported for unit tests: the exact prompt contract.
+export function buildSynthesisPrompt({ task, plan, claims, sources, contradictions, provenance, stats, documentary, depth }) {
+  const d = depth || DEPTH.standard;
   const srcIndex = sources.map((s) => ({
     id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
     verified: s.verified, accessibility: s.accessibility,
   }));
-  const prompt = `Write the final evidence-first research report as JSON.
+  return `Write a thorough, chapter-like research study as JSON — NOT a summary of the search process.
 
 Question: ${task.question}
 Mode: ${task.mode} | Stance: ${task.stance}${task.hypothesis ? ` | User hypothesis: ${task.hypothesis}` : ''}
@@ -150,14 +161,28 @@ Provenance: ${JSON.stringify(provenance).slice(0, 3000)}
 Sources (cite ONLY these ids/urls; if a page number cannot be verified write "Page number not verified"; never invent URLs, authors, dates, DOIs, quotes): ${JSON.stringify(srcIndex).slice(0, 12000)}
 Research stats: ${JSON.stringify(stats)}
 
+DEPTH REQUIREMENTS (this is a study chapter, not a search summary):
+- Write AT LEAST ${d.minFindings} substantive findings, each body at least ~${d.minBodyChars} characters: explain WHAT happened, WHEN (chronology), WHO/WHERE matters (key sites, people, works), HOW/WHY (mechanisms), and WHAT SCHOLARS DISAGREE ABOUT. Cover the topic's major facets, not just the first facts.
+- "established" lists only strongly-evidenced conclusions, each phrased as a finding (not a process note).
+- "competing" MUST present each rival interpretation fairly with its best evidence (${task.mode === 'quick' ? 'at least 1' : 'at least 2-3'}).
+- "books" lists at least ${d.minBooks} discovered books/monographs with authors (from the sources above; mark metadata-only honestly). "primarySources" lists at least ${d.minPrimary} (or states plainly none were accessible).
+- Every section discusses the TOPIC. NEVER write about the research process, the search, "the provided evidence", "the grounding API", page-number meta-talk, or model limitations — uncertainty belongs in domain terms (what is unknown about the subject, and why).
+
 Rules:
 - Confidence is CLAIM-LEVEL (qualitative: high/medium/low/disputed) — never one global percentage.
 - Distinguish: searched vs found vs verified vs uncertain.
-- If evidence is insufficient, SAY SO explicitly.
+- If evidence is insufficient, SAY SO explicitly — in domain terms.
 - findings[].cite must contain only source ids from the list above.
 - EVERY finding MUST cite at least one source id — omit findings you cannot support rather than leaving cite empty.
 - uncertainty MUST contain at least 2 items and gaps at least 1; if the evidence is genuinely complete, state the narrow residual limits (e.g. primary sources not inspected directly).
 Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
+}
+
+export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth }) {
+  const prompt = buildSynthesisPrompt({
+    task, plan, claims, sources, contradictions, provenance, stats, documentary,
+    depth: depth || DEPTH[task.mode] || DEPTH.standard,
+  });
   const { data } = await generateJson({ key, model, prompt, schema: REPORT_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
   return data;
 }

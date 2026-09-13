@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Chapter-grade reports: per-mode depth contract (standard ≥7 findings × 600 chars, books/primary minimums)
+- Claim yield minimums per mode (standard 10+, facet coverage) with larger analysis budgets
+- Process-talk ban in synthesis prompt (no grounding-API/meta language, domain terms only)
 - Cache-busted static bundles (versioned imports + lazy engine load) with build stamp in footer
 - Version-sync test guarantees app/direct/index stay on one build id
 - Fixed "process is not defined" crash in static Pages builds (browser-safe env + process shim)
