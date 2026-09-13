@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { repairFindingCites, ensureReportCompleteness, templateReport, buildSynthesisPrompt, buildAppendix, DEPTH } from '../backend/src/engine/synthesis.js';
+import { repairFindingCites, ensureReportCompleteness, templateReport, buildSynthesisPrompt, buildSectionPrompt, buildAssemblyPrompt, partitionBeats, buildAppendix, DEPTH } from '../backend/src/engine/synthesis.js';
 import { buildClaimsPrompt } from '../backend/src/engine/claims.js';
 
 describe('synthesis depth contract', () => {
@@ -131,5 +131,36 @@ describe('buildAppendix (deterministic, zero model cost)', () => {
   });
   it('returns [] for no claims', () => {
     assert.deepEqual(buildAppendix({ claims: [], sources }), []);
+  });
+});
+
+describe('sectional synthesis', () => {
+  const beats = (n) => Array.from({ length: n }, (_, i) => ({ title: `Beat ${i}`, focus: `Focus ${i}` }));
+  it('partitionBeats splits contiguously, balanced, with clamping', () => {
+    assert.deepEqual(partitionBeats([], 3), []);
+    assert.deepEqual(partitionBeats(beats(2), 5).length, 2, 'clamps to beat count');
+    const groups = partitionBeats(beats(7), 3);
+    assert.equal(groups.length, 3);
+    assert.deepEqual(groups.flat().map((b) => b.title), beats(7).map((b) => b.title), 'order preserved, none lost');
+    assert.deepEqual(partitionBeats(beats(3), 0).length, 1, 'non-positive groups degrade to one');
+  });
+  it('section prompt scopes to its beats with minimums and cite rules', () => {
+    const p = buildSectionPrompt({
+      task: { question: 'Q?', mode: 'standard', stance: 'neutral' }, plan: {},
+      claims: [], sources: [], beats: beats(2), minFindings: 4, minBodyChars: 700,
+    });
+    assert.ok(p.includes('Beat 0') && p.includes('Beat 1'));
+    assert.ok(p.includes('AT LEAST 4 substantive findings') && p.includes('700'));
+    assert.ok(p.includes('findings ONLY') && p.includes('MUST cite at least one'));
+    assert.ok(!p.includes('executiveSummary'), 'section calls must not waste tokens on framing');
+  });
+  it('assembly prompt frames given findings without inventing new ones', () => {
+    const p = buildAssemblyPrompt({
+      task: { question: 'Q?', mode: 'standard', stance: 'neutral' }, plan: { domain: 'history' },
+      claims: [], sources: [], contradictions: [], provenance: {}, stats: {}, documentary: false,
+      findings: [{ heading: 'H', body: 'B', cite: ['s1'] }],
+    });
+    assert.ok(p.includes('Do NOT write new findings'));
+    assert.ok(p.includes('methodology') && p.includes('timeline'));
   });
 });

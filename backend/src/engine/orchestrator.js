@@ -22,7 +22,7 @@ import { deduplicate, canonicalize } from './dedup.js';
 import { extractClaims, extractClaimsWithReview } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
-import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness, buildAppendix } from './synthesis.js';
+import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness, buildAppendix, partitionBeats, DEPTH } from './synthesis.js';
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 
@@ -549,17 +549,63 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     );
   }
   let report;
-  try {
-    report = await phase('synthesis', () => call(() => D.synthesize({
-      key, model: models.synthesis, task, plan, claims, sources,
-      contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
-      maxTokens: budget.reportTokens,
-    })));
-  } catch (e) {
-    // Model synthesis unavailable (quota/outage) → honest evidence inventory.
-    // The run still delivers everything actually gathered, flagged as fallback.
-    ev('warning', `Model synthesis unavailable (${(e.message || '').slice(0, 100)}) — assembling evidence inventory instead`);
-    report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
+  const sectionGroups = task.mode === 'quick' ? [] : partitionBeats(plan.arc, budget.sections || 1);
+  if (sectionGroups.length > 1) {
+    // Sectional synthesis: one full-budget findings call per beat group, then
+    // one assembly call for framing. N calls multiply output length where a
+    // single call caps it — this is what makes chapter-length reports real.
+    // Partial failure degrades per-section (warn + skip), never kills the run.
+    ev('progress', `Writing report in ${sectionGroups.length} sections…`);
+    const modeDepth = DEPTH[task.mode] || DEPTH.standard;
+    const perSectionMin = Math.max(2, Math.ceil(modeDepth.minFindings / sectionGroups.length));
+    const settled = await pool(sectionGroups, 2, async (beats, gi) => {
+      throwIfStopped();
+      try {
+        const sec = await phase('synthesis', () => call(() => D.synthesize({
+          key, model: models.synthesis, task, plan, claims, sources,
+          contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
+          documentary: task.documentary, onKeyEvent: keyEvent,
+          maxTokens: budget.reportTokens, beats, findingsOnly: true,
+          depth: { ...(DEPTH[task.mode] || DEPTH.standard), minFindings: perSectionMin },
+        })));
+        const found = Array.isArray(sec?.findings) ? sec.findings : [];
+        ev('progress', `Section ${gi + 1}/${sectionGroups.length}: ${found.length} finding(s)`);
+        return found;
+      } catch (e) {
+        ev('warning', `Section ${gi + 1} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
+        return [];
+      }
+    });
+    const merged = settled.flat().filter((f) => f && ((f.heading || f.body || '').trim()));
+    if (merged.length) {
+      try {
+        report = await phase('synthesis', () => call(() => D.synthesize({
+          key, model: models.synthesis, task, plan, claims, sources,
+          contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
+          documentary: task.documentary, onKeyEvent: keyEvent,
+          maxTokens: 3500, assemblyFindings: merged, assembleOnly: true,
+        })));
+        report.findings = merged;
+      } catch (e) {
+        // Sections model-written, frontmatter templated — flag stays honest.
+        ev('warning', `Report assembly unavailable (${(e.message || '').slice(0, 80)}) — framing sections deterministically`);
+        report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps, findings: merged });
+      }
+    }
+  }
+  if (!report) {
+    try {
+      report = await phase('synthesis', () => call(() => D.synthesize({
+        key, model: models.synthesis, task, plan, claims, sources,
+        contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started }, documentary: task.documentary, onKeyEvent: keyEvent,
+        maxTokens: budget.reportTokens,
+      })));
+    } catch (e) {
+      // Model synthesis unavailable (quota/outage) → honest evidence inventory.
+      // The run still delivers everything actually gathered, flagged as fallback.
+      ev('warning', `Model synthesis unavailable (${(e.message || '').slice(0, 100)}) — assembling evidence inventory instead`);
+      report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
+    }
   }
 
   // citation-integrity: strip cites pointing at unknown ids, then repair

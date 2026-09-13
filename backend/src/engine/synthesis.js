@@ -122,7 +122,7 @@ export function buildAppendix({ claims = [], sources = [] }) {
 // assemble an honest evidence inventory instead of failing the whole run.
 // Every section is derived from retrieved records — nothing invented.
 // Flagged via synthesisFallback so the UI can say so plainly.
-export function templateReport({ task, plan, claims, sources, contradictions, provenance, gaps = [] }) {
+export function templateReport({ task, plan, claims, sources, contradictions, provenance, gaps = [], findings = null }) {
   const valid = new Set(sources.map((s) => s.id));
   const link = (ids) => (ids || []).filter((id) => valid.has(id));
   const byTier = {};
@@ -131,14 +131,26 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
   const books = sources.filter((s) => s.sourceType === 'book');
   const primaries = sources.filter((s) => s.tier === 1 || s.proximity === 'primary');
   const verifiedCount = sources.filter((s) => s.verified).length;
+  // Prebuilt section findings (model-written) take precedence over
+  // claim-derived ones when the assembly step failed but sections succeeded.
+  const sectionFindings = Array.isArray(findings) && findings.length
+    ? findings.map((f) => ({
+      heading: String(f.heading || '').slice(0, 120),
+      body: String(f.body || ''),
+      cite: link(f.cite || []),
+    })).filter((f) => f.heading || f.body)
+    : null;
   return {
-    executiveSummary:
-      `Automated synthesis was unavailable (model quota or outage), so no interpreted findings could be written. ` +
-      `What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
-      `${claims.length} extracted claim(s), ${contradictions.length} flagged contradiction(s). ` +
-      `Use the Sources/Books tabs to inspect the raw evidence below — everything listed was actually retrieved.`,
+    executiveSummary: sectionFindings
+      ? `Section findings below were model-written from retrieved evidence, but the framing sections (summary methodology, competing views) could not be generated (model quota or outage). ` +
+        `What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
+        `${claims.length} extracted claim(s), ${contradictions.length} flagged contradiction(s).`
+      : `Automated synthesis was unavailable (model quota or outage), so no interpreted findings could be written. ` +
+        `What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
+        `${claims.length} extracted claim(s), ${contradictions.length} flagged contradiction(s). ` +
+        `Use the Sources/Books tabs to inspect the raw evidence below — everything listed was actually retrieved.`,
     established: [],
-    findings: claims.slice(0, 15).map((c) => ({
+    findings: sectionFindings || claims.slice(0, 15).map((c) => ({
       heading: c.text.slice(0, 90),
       body: `${c.text} [Claim state: ${c.state}${c.confidenceWhy ? ` — ${c.confidenceWhy}` : ''}] (Uninterpreted extract — model synthesis unavailable.)`,
       cite: link([...(c.supporting || []), ...(c.contradicting || [])]),
@@ -170,6 +182,37 @@ export const DEPTH = {
   deep: { minFindings: 12, minBodyChars: 900, minBooks: 6, minPrimary: 3, minTimeline: 12 },
   exhaustive: { minFindings: 16, minBodyChars: 1000, minBooks: 8, minPrimary: 4, minTimeline: 15 },
 };
+
+// Section response: findings ONLY. One full-budget call per section group is
+// what makes chapter-length reports possible — a single call caps output,
+// N calls multiply it. Assembly (below) writes everything else.
+const SECTION_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: REPORT_SCHEMA.properties.findings,
+  },
+  required: ['findings'],
+};
+
+// Assembly response: the full report EXCEPT findings (provided separately).
+// Keeps the assembly call small: it frames already-written sections.
+const ASSEMBLY_SCHEMA = {
+  type: 'object',
+  properties: Object.fromEntries(
+    Object.entries(REPORT_SCHEMA.properties).filter(([k]) => k !== 'findings'),
+  ),
+  required: ['executiveSummary', 'uncertainty', 'methodology'],
+};
+
+// Split arc beats into G contiguous groups, balanced by count. Pure.
+export function partitionBeats(arc, groups) {
+  const beats = Array.isArray(arc) ? arc.filter((b) => b && b.title) : [];
+  const g = Math.max(1, Math.min(Math.floor(groups) || 1, beats.length || 1));
+  if (!beats.length) return [];
+  const out = Array.from({ length: g }, () => []);
+  beats.forEach((b, i) => out[Math.min(g - 1, Math.floor((i * g) / beats.length))].push(b));
+  return out.filter((grp) => grp.length);
+}
 
 // Pure, exported for unit tests: the exact prompt contract.
 export function buildSynthesisPrompt({ task, plan, claims, sources, contradictions, provenance, stats, documentary, depth }) {
@@ -229,7 +272,82 @@ Rules:
 Return JSON with keys: executiveSummary, established, findings[{heading, body, cite}], competing, contradictions, timeline[{date, event}], sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
 }
 
-export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth }) {
+// Section prompt: write ONLY the findings for the given beats (used when the
+// report is assembled from per-section calls). Same cite rules and process-talk
+// ban, scoped minimums passed explicitly by the orchestrator.
+export function buildSectionPrompt({ task, plan, claims, sources, beats, minFindings = 3, minBodyChars = 600 }) {
+  const srcIndex = sources.map((s) => ({
+    id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
+    verified: s.verified, accessibility: s.accessibility,
+    excerpts: ((s.passages || []).map((p) => p.text).filter(Boolean)).slice(0, 2).map((t) => t.slice(0, 500)),
+  }));
+  const arcText = beats.map((b, i) => `${i + 1}. ${b.title} — ${b.focus}`).join('\n');
+  return `Write one detailed report section as JSON: findings ONLY, for THESE narrative beats (in order):
+
+${arcText}
+
+Question: ${task.question}
+Mode: ${task.mode} | Stance: ${task.stance}
+Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 10000)}
+Sources with excerpts (cite ONLY these ids): ${JSON.stringify(srcIndex).slice(0, 14000)}
+
+SECTION RULES:
+- Write AT LEAST ${minFindings} substantive findings covering EVERY beat above, each body at least ~${minBodyChars} characters of structured prose: (1) facts with dates/numbers/names/places; (2) which sources establish this and how strong they are; (3) scholarly disagreement, if any; (4) residual uncertainty flagged inline.
+- findings[].cite must contain only source ids from the list above; EVERY finding MUST cite at least one — omit findings you cannot support.
+- Discuss the TOPIC only. NEVER write about the research process, the search, "the provided evidence", "the grounding API", or model limitations.
+- Confidence is CLAIM-LEVEL (high/medium/low/disputed) — never one global percentage.
+Return JSON: {"findings": [{"heading": "...", "body": "...", "cite": ["id"]}]}`;
+}
+
+// Assembly prompt: frame already-written section findings with everything
+// else (summary, established, competing, timeline, books, uncertainty…).
+// Must NOT invent new findings — findings[] is provided and reused verbatim.
+export function buildAssemblyPrompt({ task, plan, claims, sources, contradictions, provenance, stats, documentary, findings }) {
+  const srcIndex = sources.map((s) => ({
+    id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
+    verified: s.verified, accessibility: s.accessibility,
+  }));
+  return `Frame the finished research findings below with a complete report. Do NOT write new findings — reuse the provided ones' substance when summarizing.
+
+Question: ${task.question}
+Mode: ${task.mode} | Stance: ${task.stance}${task.hypothesis ? ` | User hypothesis: ${task.hypothesis}` : ''}
+${task.stance !== 'neutral' ? `DISCLOSURE: the user requested a "${task.stance}" investigation. Disclose this in the methodology and report contradicting evidence anyway. ${STANCE_GUARDRAIL}` : ''}
+Domain: ${plan.domain}
+${documentary ? 'DOCUMENTARY MODE: emphasize chronology, key people, primary evidence, myths-vs-evidence, claims needing caution, surprising findings. Do NOT sensationalize.' : ''}
+
+Findings (already written — use their substance, do not repeat them verbatim as new claims): ${JSON.stringify((findings || []).map((f) => ({ heading: f.heading, body: String(f.body || '').slice(0, 1200), cite: f.cite }))).slice(0, 12000)}
+Claims: ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, why: c.confidenceWhy }))).slice(0, 6000)}
+Contradictions: ${JSON.stringify(contradictions).slice(0, 3000)}
+Provenance: ${JSON.stringify(provenance).slice(0, 2000)}
+Sources (cite ONLY these ids/urls; never invent URLs, authors, dates, DOIs, quotes): ${JSON.stringify(srcIndex).slice(0, 8000)}
+Research stats: ${JSON.stringify(stats)}
+
+Write: a 3-5 paragraph executiveSummary telling the whole arc; "established" (strongly-evidenced conclusions with dates); "competing" (each rival interpretation fairly, with evidence for AND against); "contradictions" (evidence challenging the leading view); "timeline" (dated entries, chronological); "sourceQuality" (which sources are strongest and why); "independence" (whether sources are genuinely independent); "books" (author + one-sentence thesis each, metadata-only marked honestly); "primarySources" (what each is and establishes); "uncertainty" (≥2, domain terms); "gaps"; "methodology" (how research was conducted, stance disclosed).
+NEVER write about the research process beyond methodology, never mention "the provided evidence", "grounding API", or model limitations.
+Return JSON with keys: executiveSummary, established, competing, contradictions, timeline[{date, event}], sourceQuality, independence, books, primarySources, uncertainty, gaps, methodology.`;
+}
+
+export async function synthesizeReport({ key, model, task, plan, claims, sources, contradictions, provenance, stats, documentary, onKeyEvent, maxTokens = 8192, depth, beats = null, findingsOnly = false, assemblyFindings = null, assembleOnly = false }) {
+  // Sectional path: findings-only scoped call (one full budget per section).
+  if (findingsOnly) {
+    const d = depth || DEPTH[task.mode] || DEPTH.standard;
+    const prompt = buildSectionPrompt({
+      task, plan, claims, sources, beats: beats || [],
+      minFindings: Number.isFinite(d.minFindings) ? d.minFindings : 3,
+      minBodyChars: Number.isFinite(d.minBodyChars) ? d.minBodyChars : 600,
+    });
+    const { data } = await generateJson({ key, model, prompt, schema: SECTION_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
+    return data;
+  }
+  // Assembly path: frame pre-written findings (no new findings invented).
+  if (assembleOnly) {
+    const prompt = buildAssemblyPrompt({
+      task, plan, claims, sources, contradictions, provenance, stats, documentary,
+      findings: assemblyFindings || [],
+    });
+    const { data } = await generateJson({ key, model, prompt, schema: ASSEMBLY_SCHEMA, maxTokens, temperature: 0.3, onKeyEvent });
+    return data;
+  }
   const prompt = buildSynthesisPrompt({
     task, plan, claims, sources, contradictions, provenance, stats, documentary,
     depth: depth || DEPTH[task.mode] || DEPTH.standard,

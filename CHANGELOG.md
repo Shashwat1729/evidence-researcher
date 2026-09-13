@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Sectional synthesis: one full-budget call per beat group + assembly (3-6× output for deep modes)
+- Per-section graceful degradation; template fallbacks when sections or assembly fail
 - Richer synthesis input (per-source excerpts, higher caps) at zero extra calls
 - Deterministic evidence appendix: every claim + linked sources, no model cost
 - Contents + chronology rendering in UI report and Markdown export; audit now 16/16
