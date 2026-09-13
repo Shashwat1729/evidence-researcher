@@ -450,7 +450,8 @@ function renderTab(tab) {
     const byId = (id) => srcById(id);
     const cite = (ids = []) => (ids || []).map((id) => { const s = byId(id); return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">[${escapeHtml((s.title || s.domain || '').slice(0, 40))}]</a>` : ''; }).join(' ');
     el.innerHTML = `<h2>Final report</h2><p>${escapeHtml(rep.executiveSummary || '')}</p>
-      ${(rep.findings || []).map((f, i) => { const v = (rep.verification || []).find((x) => x.n === i); return `<h3>${escapeHtml(f.heading || '')}</h3><p>${escapeHtml(f.body || '')}</p><p>${cite(f.cite)}</p>` + (v ? `<p class="hint">Cross-check: <b>${escapeHtml(v.supported)}</b> — ${escapeHtml(v.note)}</p>` : ''); }).join('')}
+      ${(rep.findings || []).length > 1 ? `<h3>Contents</h3><ul>${(rep.findings || []).map((f, i) => `<li><a href="#f-${i}">${escapeHtml((f.heading || `Finding ${i + 1}`).slice(0, 80))}</a></li>`).join('')}</ul>` : ''}
+      ${(rep.findings || []).map((f, i) => { const v = (rep.verification || []).find((x) => x.n === i); return `<h3 id="f-${i}">${escapeHtml(f.heading || '')}</h3><p>${escapeHtml(f.body || '')}</p><p>${cite(f.cite)}</p>` + (v ? `<p class="hint">Cross-check: <b>${escapeHtml(v.supported)}</b> — ${escapeHtml(v.note)}</p>` : ''); }).join('')}
       ${(rep.timeline || []).length ? `<h3>Chronology</h3><table><tr><th>Date</th><th>Event</th></tr>${(rep.timeline || []).map((t) => `<tr><td><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</table>` : ''}
       <h3>Source quality</h3><p>${escapeHtml(rep.sourceQuality || '')}</p>
       <h3>Source independence</h3><p>${escapeHtml(rep.independence || '')}</p>
@@ -458,6 +459,7 @@ function renderTab(tab) {
       <h3>Primary sources</h3><ul>${(rep.primarySources || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
       <h3>Uncertainty</h3><ul>${(rep.uncertainty || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
       <h3>Methodology</h3><p>${escapeHtml(rep.methodology || '')}</p>
+      ${(rep.appendix || []).length ? `<details><summary><b>Evidence appendix</b> — every extracted claim with its sources (${rep.appendix.length})</summary>${rep.appendix.map((a) => `<div class="claim"><b>${a.n}. [${escapeHtml(a.state)}]</b> ${escapeHtml(a.text)}${a.why ? `<br><span class="hint">${escapeHtml(a.why)}</span>` : ''}<br><span class="hint">Supports:</span> ${(a.supporting || []).map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ') || '<i>none listed</i>'}${(a.contradicting || []).length ? `<br><span class="hint">Contradicted by:</span> ${a.contradicting.map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ')}` : ''}</div>`).join('')}</details>` : ''}
       <h3>Sources</h3><ul>${(r.sources || []).map((s) => `<li><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span class="hint">tier ${s.tier ?? '?'} · ${escapeHtml(s.accessibility || '')}${s.verified ? ' · inspected' : ''}</span></li>`).join('')}</ul>`;
   }
 }

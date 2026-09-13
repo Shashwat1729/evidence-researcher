@@ -42,4 +42,25 @@ describe('citation integrity in export', () => {
     assert.ok(md.includes('## Chronology'));
     assert.ok(md.includes('| 1088 | Traditional founding |'));
   });
+  it('renders contents list and evidence appendix when present', () => {
+    const full = {
+      ...fixture,
+      report: {
+        ...fixture.report,
+        findings: [
+          { heading: 'Date', body: 'Records show 1901.', cite: ['src_1'] },
+          { heading: 'Cause', body: 'Debated.', cite: [] },
+        ],
+        appendix: [
+          { n: 1, text: 'X founded 1901', state: 'supported', why: 'archive', supporting: [{ id: 'src_1', title: 'Archive charter', url: 'https://archives.example/x', tier: 1 }], contradicting: [] },
+        ],
+      },
+    };
+    const md = exportMarkdown(full);
+    assert.ok(md.includes('## Contents'));
+    assert.ok(md.includes('- Date'));
+    assert.ok(md.includes('## Evidence appendix'));
+    assert.ok(md.includes('### 1. X founded 1901'));
+    assert.ok(md.includes('- Supports: [Archive charter](https://archives.example/x) (tier 1)'));
+  });
 });

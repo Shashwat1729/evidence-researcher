@@ -97,6 +97,27 @@ export function ensureReportCompleteness(report, { claims = [], iterations = [] 
   return r;
 }
 
+// Deterministic evidence appendix: every extracted claim with its linked
+// sources, assembled from verified records at zero model cost. This is what
+// makes long reports genuinely detailed without hallucination risk —
+// everything listed was retrieved and linked by the pipeline.
+export function buildAppendix({ claims = [], sources = [] }) {
+  const byId = new Map((sources || []).map((s) => [s.id, s]));
+  const link = (id) => {
+    const s = byId.get(id);
+    if (!s) return null;
+    return { id, title: s.title || s.domain || s.url, url: s.url || '', tier: s.tier ?? null };
+  };
+  return (claims || []).map((c, i) => ({
+    n: i + 1,
+    text: String(c.text || ''),
+    state: c.state || 'unknown',
+    why: String(c.confidenceWhy || ''),
+    supporting: (c.supporting || []).map(link).filter(Boolean),
+    contradicting: (c.contradicting || []).map(link).filter(Boolean),
+  })).filter((a) => a.text);
+}
+
 // Zero-model fallback: when synthesis itself is unavailable (quota exhausted),
 // assemble an honest evidence inventory instead of failing the whole run.
 // Every section is derived from retrieved records — nothing invented.
@@ -136,6 +157,7 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
     ],
     gaps: gaps.map(String).slice(0, 10),
     methodology: `Research ran in ${task.mode} mode (${plan.domain} domain): planned, searched broadly with dedup, classified sources into tiers, extracted claims where possible. Synthesis fell back to an evidence inventory when the model was unreachable. Stance: ${task.stance}.`,
+    appendix: buildAppendix({ claims, sources }),
     synthesisFallback: true,
   };
 }
@@ -152,10 +174,18 @@ export const DEPTH = {
 // Pure, exported for unit tests: the exact prompt contract.
 export function buildSynthesisPrompt({ task, plan, claims, sources, contradictions, provenance, stats, documentary, depth }) {
   const d = depth || DEPTH.standard;
-  const srcIndex = sources.map((s) => ({
-    id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
-    verified: s.verified, accessibility: s.accessibility,
-  }));
+  // Rich per-source context at zero extra call cost: top excerpts for strong
+  // sources (tier ≤3 get two passages), one for the rest. More material in →
+  // more detailed report out, without spending quota.
+  const srcIndex = sources.map((s) => {
+    const passages = (s.passages || []).map((p) => p.text).filter(Boolean);
+    const excerptCount = (s.tier ?? 9) <= 3 ? 2 : 1;
+    return {
+      id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
+      verified: s.verified, accessibility: s.accessibility,
+      excerpts: passages.slice(0, excerptCount).map((t) => t.slice(0, 500)),
+    };
+  });
   const arc = Array.isArray(plan.arc) && plan.arc.length
     ? plan.arc
     : [{ title: 'Overview', focus: 'Essential context and the key facts in logical order.' }];
@@ -171,10 +201,10 @@ ${documentary ? 'DOCUMENTARY MODE: emphasize chronology, key people, primary evi
 NARRATIVE ARC — the report MUST read as one continuous study following these beats IN ORDER, like a book chapter (for a person: birth → life → death → legacy; for a civilization: origins → florescence → key sites → decline → legacy). Use chronological transitions between sections ("By 2600 BCE…", "Meanwhile…", "In his later years…"). Each beat becomes one or more findings; never a disconnected list of assertions:
 ${arcText}
 
-Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 10000)}
+Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 14000)}
 Contradictions: ${JSON.stringify(contradictions).slice(0, 4000)}
 Provenance: ${JSON.stringify(provenance).slice(0, 3000)}
-Sources (cite ONLY these ids/urls; if a page number cannot be verified write "Page number not verified"; never invent URLs, authors, dates, DOIs, quotes): ${JSON.stringify(srcIndex).slice(0, 12000)}
+Sources with excerpts (cite ONLY these ids/urls; if a page number cannot be verified write "Page number not verified"; never invent URLs, authors, dates, DOIs, quotes): ${JSON.stringify(srcIndex).slice(0, 20000)}
 Research stats: ${JSON.stringify(stats)}
 
 DEPTH REQUIREMENTS (this is a study chapter, not a search summary):
@@ -186,6 +216,7 @@ DEPTH REQUIREMENTS (this is a study chapter, not a search summary):
 - "competing" MUST present each rival interpretation fairly with its best evidence AND the evidence against it (${task.mode === 'quick' ? 'at least 1' : 'at least 2-3'}).
 - "books" lists at least ${d.minBooks} discovered books/monographs: author, title, and one sentence on each book's THESIS (what it argues), from the sources above; mark metadata-only honestly. "primarySources" lists at least ${d.minPrimary} with what each source is and what it establishes (or states plainly none were accessible).
 - COVERAGE: every tier-1 and tier-2 source above MUST be cited by at least one finding — leave no strong source unused.
+- An evidence appendix is assembled automatically from the claims and sources — do NOT include one yourself; spend the tokens on findings depth instead.
 - Every section discusses the TOPIC. NEVER write about the research process, the search, "the provided evidence", "the grounding API", page-number meta-talk, or model limitations — uncertainty belongs in domain terms (what is unknown about the subject, and why).
 
 Rules:

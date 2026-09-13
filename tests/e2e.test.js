@@ -137,7 +137,7 @@ describe('full research pipeline (mocked models)', () => {
   it('scores full marks on the audit benchmark', () => {
     const { checks, score: s } = score(result);
     assert.deepEqual(Object.entries(checks).filter(([, v]) => !v), [], 'all audit checks must pass');
-    assert.equal(s, '15/15');
+    assert.equal(s, '16/16');
   });
 
   it('records phase timings, fetch telemetry, and cross-evaluation', () => {

@@ -22,7 +22,7 @@ import { deduplicate, canonicalize } from './dedup.js';
 import { extractClaims, extractClaimsWithReview } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
-import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness } from './synthesis.js';
+import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness, buildAppendix } from './synthesis.js';
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 
@@ -575,6 +575,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // completeness: uncertainty and gaps must never be empty — derive honest
   // entries from run state when the model omitted them
   ensureReportCompleteness(report, { claims, iterations });
+  // appendix: deterministic claim-by-claim evidence ledger (zero model cost)
+  report.appendix = buildAppendix({ claims, sources });
 
   // Cross-evaluation: verify findings against their cited excerpts (1 call, skip in quick).
   let verification = [];

@@ -27,6 +27,7 @@ export function score(result) {
     'inspected vs metadata distinguished': (anyInspected && anyUninspected) || (!anyInspected && sources.some((s) => (s.passages || []).length > 0)),
     'post-synthesis verification recorded': (result.report?.verification || []).length > 0 || !!result.stats?.fetchIssues,
     'no global fake-precision confidence': !JSON.stringify(result.report || '').match(/confidence:\s*\d{2}(\.\d+)?%/i),
+    'evidence appendix covers extracted claims': (result.claims || []).length === 0 || ((result.report?.appendix || []).length > 0 && result.report.appendix.every((a) => a.text && a.state)),
   };
   const passed = Object.values(checks).filter(Boolean).length;
   return { checks, score: `${passed}/${Object.keys(checks).length}` };

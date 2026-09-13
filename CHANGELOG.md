@@ -1,8 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Richer synthesis input (per-source excerpts, higher caps) at zero extra calls
+- Deterministic evidence appendix: every claim + linked sources, no model cost
+- Contents + chronology rendering in UI report and Markdown export; audit now 16/16
 - Narrative arc: planner designs ordered beats per domain; synthesis follows them like chapters
-- Deeper reports: timeline section, annotated books, tier-coverage rule, higher minimums
+- Timeline section with per-mode minimums; annotated books and tier-coverage rule
 - Chapter-grade reports: per-mode depth contract (findings × body minimums, books/primary minimums)
 - Claim yield minimums per mode with facet coverage and larger analysis budgets
 - Process-talk ban in synthesis prompt (no grounding-API/meta language, domain terms only)

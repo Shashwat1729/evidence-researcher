@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { repairFindingCites, ensureReportCompleteness, templateReport, buildSynthesisPrompt, DEPTH } from '../backend/src/engine/synthesis.js';
+import { repairFindingCites, ensureReportCompleteness, templateReport, buildSynthesisPrompt, buildAppendix, DEPTH } from '../backend/src/engine/synthesis.js';
 import { buildClaimsPrompt } from '../backend/src/engine/claims.js';
 
 describe('synthesis depth contract', () => {
@@ -28,6 +28,7 @@ describe('synthesis depth contract', () => {
     assert.ok(p.includes('provided evidence'));
     assert.ok(p.includes('chronolog') && p.includes('disagree'));
     assert.ok(p.includes('NARRATIVE ARC'));
+    assert.ok(p.includes('excerpts') && p.includes('appendix is assembled automatically'));
   });
   it('claims prompt demands facet coverage minimums', () => {
     const p = buildClaimsPrompt('Q?', '[]', 14, false);
@@ -107,5 +108,28 @@ describe('templateReport honesty', () => {
     assert.deepEqual(r.findings[0].cite, ['s1']);
     assert.ok(!JSON.stringify(r).includes('ghost'));
     assert.ok(r.books[0].includes('A. Uthor'));
+  });
+});
+
+describe('buildAppendix (deterministic, zero model cost)', () => {
+  const sources = [
+    { id: 's1', title: 'Charter', url: 'https://a.example/x', tier: 1, domain: 'a.example' },
+    { id: 's2', title: 'Chronicle', url: 'https://b.example/y', tier: 3, domain: 'b.example' },
+  ];
+  const claims = [
+    { text: 'X founded 1901', state: 'supported', supporting: ['s1', 'ghost'], contradicting: ['s2'], confidenceWhy: 'archive' },
+    { text: '', state: 'supported', supporting: [], contradicting: [], confidenceWhy: '' },
+  ];
+  it('lists every claim with resolved sources, drops ghosts and empties', () => {
+    const a = buildAppendix({ claims, sources });
+    assert.equal(a.length, 1);
+    assert.equal(a[0].n, 1);
+    assert.deepEqual(a[0].supporting.map((s) => s.id), ['s1']);
+    assert.deepEqual(a[0].contradicting.map((s) => s.id), ['s2']);
+    assert.equal(a[0].supporting[0].tier, 1);
+    assert.ok(!JSON.stringify(a).includes('ghost'));
+  });
+  it('returns [] for no claims', () => {
+    assert.deepEqual(buildAppendix({ claims: [], sources }), []);
   });
 });

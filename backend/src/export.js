@@ -14,6 +14,11 @@ export function exportMarkdown(r) {
   }).filter(Boolean).join('; ');
   const L = [];
   L.push(`# Research: ${oneLine(r.task?.question) || ''}`, '');
+  if ((r.report?.findings || []).length > 1) {
+    L.push('## Contents', '');
+    for (const f of r.report.findings) L.push(`- ${oneLine(f.heading) || 'Finding'}`);
+    L.push('');
+  }
   L.push(`- Mode: ${r.task?.mode} · Stance: ${r.task?.stance} · Date: ${r.completedAt || ''}`);
   if (oneLine(r.stanceDisclosure)) L.push(`- ${oneLine(r.stanceDisclosure)}`, ''); else L.push('');
   L.push(`## Executive summary`, '', r.report?.executiveSummary || '_No summary produced._', '');
@@ -41,6 +46,17 @@ export function exportMarkdown(r) {
   if (r.report?.uncertainty?.length) { L.push('', '## Uncertainty', ''); for (const u of r.report.uncertainty) L.push(`- ${oneLine(u)}`); }
   if (r.report?.gaps?.length) { L.push('', '## Research gaps', ''); for (const g of r.report.gaps) L.push(`- ${oneLine(g)}`); }
   L.push('', '## Methodology', '', r.report?.methodology || '', '');
+  if ((r.report?.appendix || []).length) {
+    L.push('## Evidence appendix', '');
+    L.push('Every extracted claim with its linked sources (assembled deterministically — no model prose).', '');
+    for (const a of r.report.appendix) {
+      L.push(`### ${a.n}. ${oneLine(a.text)}`, '');
+      L.push(`State: ${a.state}${a.why ? ` — ${oneLine(a.why)}` : ''}`, '');
+      for (const s of a.supporting || []) L.push(`- Supports: [${oneLine(s.title)}](${s.url}) (tier ${s.tier ?? '?'})`);
+      for (const s of a.contradicting || []) L.push(`- Contradicts: [${oneLine(s.title)}](${s.url}) (tier ${s.tier ?? '?'})`);
+      L.push('');
+    }
+  }
   L.push('## Sources', '');
   for (const s of r.sources || []) {
     L.push(`- [${oneLine(s.title || s.url)}](${s.url}) — tier ${s.tier ?? '?'} (${s.sourceType}, ${s.accessibility}${s.verified ? ', inspected' : ', not inspected'})`);
