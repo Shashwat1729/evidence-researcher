@@ -30,8 +30,12 @@ function baseDeps(overrides = {}) {
 
 const task = { question: 'When was X founded, and what caused it?', mode: 'standard', stance: 'neutral' };
 
+// Fat bodies clear the prose-quality gate (~1500 chars each) so only the
+// dedicated thin-prose tests exercise the expansion retry.
+const fat = (s) => `${s} ` + 'Substantive detail with dates, names, numbers, and evidence discussed at length. '.repeat(22);
+
 describe('sectional synthesis (standard mode)', () => {
-  it('writes one full-budget section per beat group, then assembles', async () => {
+  it('writes one full-budget section per beat (standard: one group per beat)', async () => {
     const calls = [];
     const result = await runResearch({ ...task }, {
       key: 'k', emit: () => {},
@@ -39,8 +43,8 @@ describe('sectional synthesis (standard mode)', () => {
         synthesize: async (a) => {
           calls.push({ findingsOnly: !!a.findingsOnly, assembleOnly: !!a.assembleOnly, beats: (a.beats || []).map((b) => b.title), n: (a.assemblyFindings || []).length });
           if (a.findingsOnly) {
-            // 3 findings per group meets perSectionMin (9/3) → no expansion retry.
-            return { findings: [...a.beats.map((b) => ({ heading: b.title, body: `Body for ${b.title} with substance.`, cite: [] })), { heading: 'Extra', body: 'More substance here.', cite: [] }] };
+            // 3 fat findings per group: meets count and prose gates, no retry.
+            return { findings: [...a.beats.map((b) => ({ heading: b.title, body: fat(`Body for ${b.title} with substance.`), cite: [] })), { heading: 'Extra', body: fat('More substance here.'), cite: [] }] };
           }
           return {
             executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
@@ -52,11 +56,11 @@ describe('sectional synthesis (standard mode)', () => {
     });
     const sections = calls.filter((c) => c.findingsOnly);
     const assembly = calls.filter((c) => c.assembleOnly);
-    assert.equal(sections.length, 3, 'standard splits 6 beats into 3 groups');
+    assert.equal(sections.length, 6, 'standard writes one section per beat');
     assert.deepEqual(sections.flatMap((c) => c.beats), arc6.map((b) => b.title), 'every beat covered once, in order');
     assert.equal(assembly.length, 1);
-    assert.equal(assembly[0].n, 9, 'assembly receives all section findings');
-    assert.equal(result.report.findings.length, 9);
+    assert.equal(assembly[0].n, 12, 'assembly receives all section findings');
+    assert.equal(result.report.findings.length, 12);
     assert.ok(!result.report.synthesisFallback, 'full path is not flagged fallback');
   });
 
@@ -67,7 +71,7 @@ describe('sectional synthesis (standard mode)', () => {
         synthesize: async (a) => {
           if (a.findingsOnly) {
             if ((a.beats || []).some((b) => b.title === 'Sites')) throw new Error('quota blip');
-            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: 'Body.', cite: [] })) };
+            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: fat('Body.'), cite: [] })) };
           }
           return {
             executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
@@ -100,7 +104,7 @@ describe('sectional synthesis (standard mode)', () => {
       deps: baseDeps({
         synthesize: async (a) => {
           if (a.findingsOnly) {
-            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: 'Body text here.', cite: [] })) };
+            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: fat('Body text here.'), cite: [] })) };
           }
           throw new Error('assembly down');
         },
@@ -121,7 +125,7 @@ describe('sectional synthesis (standard mode)', () => {
             const n = attempts.filter((x) => x === 'section').length;
             attempts.push('section');
             if (n === 0) throw Object.assign(new Error('slow down'), { status: 429 });
-            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: 'Recovered body.', cite: [] })) };
+            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: fat('Recovered body.'), cite: [] })) };
           }
           return {
             executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
@@ -178,7 +182,43 @@ describe('sectional synthesis (standard mode)', () => {
         },
       }),
     });
-    assert.equal(calls, 3, 'one attempt per group, no pointless retries on 400');
+    assert.equal(calls, 6, 'one attempt per beat group, no pointless retries on 400');
     assert.ok(result.report);
+  });
+
+  it('retries prose-thin sections once even when finding count suffices', async () => {
+    const hints = [];
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async (a) => {
+          if (a.findingsOnly) {
+            hints.push(a.retryHint || '');
+            if (!a.retryHint) {
+              // Enough findings, but each body is a stub → thin prose gate fires.
+              return { findings: (a.beats || []).flatMap((b) => ([
+                { heading: `${b.title} a`, body: 'Stub one.', cite: [] },
+                { heading: `${b.title} b`, body: 'Stub two.', cite: [] },
+                { heading: `${b.title} c`, body: 'Stub three.', cite: [] },
+              ])) };
+            }
+            return {
+              findings: (a.beats || []).map((b) => ({
+                heading: b.title,
+                body: 'Expanded body with dates, names, numbers, and evidence discussed at length across multiple sentences.',
+                cite: [],
+              })),
+            };
+          }
+          return {
+            executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
+            timeline: [], sourceQuality: '', independence: '', books: [], primarySources: [],
+            uncertainty: ['u'], gaps: [], methodology: 'm',
+          };
+        },
+      }),
+    });
+    assert.ok(hints.some((h) => h.includes('chars')), 'retry nudge quantifies the prose shortfall');
+    assert.ok(result.report.findings.every((f) => f.body.length > 20), 'expanded prose kept');
   });
 });

@@ -562,8 +562,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       throwIfStopped();
       const label = `Section ${gi + 1}/${sectionGroups.length}`;
       // Planned work is NEVER skipped on transient quota: rate-limited sections
-      // wait (via post()) and retry here; only truly-failed sections are cut,
-      // and shortfalls get one expansion retry with an explicit nudge.
+      // wait (via post()) and retry here; only truly-failed sections are cut.
+      // Thin sections (too few findings OR too little prose) get one expansion
+      // retry with an explicit nudge — a short section is a quality bug.
+      const needBody = Math.round((DEPTH[task.mode] || DEPTH.standard).minBodyChars * perSectionMin * 0.6);
+      let shortfall = '';
       for (let attempt = 1; ; attempt++) {
         try {
           const sec = await phase('synthesis', () => call(() => D.synthesize({
@@ -572,16 +575,19 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
             documentary: task.documentary, onKeyEvent: keyEvent,
             maxTokens: budget.reportTokens, beats, findingsOnly: true,
             depth: { ...(DEPTH[task.mode] || DEPTH.standard), minFindings: perSectionMin },
-            retryHint: attempt > 1
-              ? `Previous attempt for THESE beats under-delivered. Expand now to at least ${perSectionMin} findings with specifics (dates, names, numbers, evidence).`
+            retryHint: shortfall
+              ? `Previous attempt for THESE beats under-delivered (${shortfall}). Expand now to at least ${perSectionMin} findings with specifics (dates, names, numbers, evidence).`
               : '',
           })));
           const found = Array.isArray(sec?.findings) ? sec.findings : [];
-          if ((found.length === 0 && claims.length > 0) || (found.length > 0 && found.length < perSectionMin)) {
-            if (attempt === 1) {
-              ev('progress', `${label} thin (${found.length}/${perSectionMin}) — expanding with one more call…`);
-              continue;
-            }
+          const bodyChars = found.reduce((n, f) => n + String(f.body || '').length, 0);
+          const thinCount = found.length > 0 && found.length < perSectionMin;
+          const thinProse = found.length > 0 && bodyChars < needBody;
+          if (attempt === 1 && ((found.length === 0 && claims.length > 0) || thinCount || thinProse)) {
+            shortfall = found.length === 0 ? 'no findings'
+              : `${found.length}/${perSectionMin} findings, ~${bodyChars} chars (need ~${needBody})`;
+            ev('progress', `${label} thin (${shortfall}) — expanding with one more call…`);
+            continue;
           }
           ev('progress', `${label}: ${found.length} finding(s)`);
           return found;
@@ -598,11 +604,14 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const merged = settled.flat().filter((f) => f && ((f.heading || f.body || '').trim()));
     if (merged.length) {
       try {
+        // Assembly budget scales with findings: framing 16 findings needs
+        // more room than framing 6. Bounded to protect token budgets.
+        const assemblyTokens = Math.min(8000, 2000 + 400 * merged.length);
         report = await phase('synthesis', () => call(() => D.synthesize({
           key, model: models.synthesis, task, plan, claims, sources,
           contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
           documentary: task.documentary, onKeyEvent: keyEvent,
-          maxTokens: 3500, assemblyFindings: merged, assembleOnly: true,
+          maxTokens: assemblyTokens, assemblyFindings: merged, assembleOnly: true,
         })));
         report.findings = merged;
       } catch (e) {

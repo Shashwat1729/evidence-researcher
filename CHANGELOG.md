@@ -1,7 +1,8 @@
 # Changelog
 
 ## Unreleased
-- Sectional synthesis: one full-budget call per beat group + assembly (3-6× output for deep modes)
+- Patient quota handling: multi-round rate-waits until budget spent (never one-and-done skips)
+- Section rate-limit + thin-prose retries with explicit expansion nudges; longer runtimes
 - Per-section graceful degradation; template fallbacks when sections or assembly fail
 - Richer synthesis input (per-source excerpts, higher caps) at zero extra calls
 - Deterministic evidence appendix: every claim + linked sources, no model cost

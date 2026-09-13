@@ -24,9 +24,9 @@ const VERIFY_SCHEMA = {
   required: ['results'],
 };
 
-export async function verifyFindings({ key, model, findings, sources, onKeyEvent }) {
+export async function verifyFindings({ key, model, findings, sources, onKeyEvent, maxItems = 12 }) {
   const byId = new Map((sources || []).map((s) => [s.id, s]));
-  const items = (findings || []).slice(0, 8).map((f, n) => ({
+  const items = (findings || []).slice(0, maxItems).map((f, n) => ({
     n,
     heading: f.heading || '',
     body: String(f.body || '').slice(0, 800),
@@ -42,8 +42,8 @@ supported: "yes" (excerpts establish it), "partial" (excerpts support part of it
 Findings: ${JSON.stringify(items).slice(0, 12000)}
 Return JSON: {"results": [{"n": 0, "supported": "yes|partial|no", "note": "one sentence"}]}`;
   try {
-    const { data } = await generateJson({ key, model, prompt, schema: VERIFY_SCHEMA, maxTokens: 2048, thinking: 'low', onKeyEvent });
-    return (data.results || []).slice(0, 8).map((r) => ({
+    const { data } = await generateJson({ key, model, prompt, schema: VERIFY_SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });
+    return (data.results || []).slice(0, maxItems).map((r) => ({
       n: Number.isFinite(+r.n) ? +r.n : 0,
       supported: ['yes', 'partial', 'no'].includes(r.supported) ? r.supported : 'partial',
       note: String(r.note || '').slice(0, 300),
