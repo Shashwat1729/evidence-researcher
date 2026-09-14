@@ -7,7 +7,10 @@ import { CLAIM_STATES, isKnownModel } from './config.js';
 let seq = 0;
 export function uid(prefix = 'id') {
   seq += 1;
-  return `${prefix}_${Date.now().toString(36)}_${seq}`;
+  // Random suffix: seq resets per process, so two concurrent runs/servers
+  // could otherwise mint identical ids within the same millisecond.
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${prefix}_${Date.now().toString(36)}_${seq}_${rand}`;
 }
 
 export function createTask({ question, mode = 'standard', stance = 'neutral', hypothesis = '', documentary = false, model = '' }) {
@@ -59,7 +62,7 @@ export function createSource(partial = {}) {
     accessibility: partial.accessibility || 'unknown', // full|partial|metadata-only|unavailable
     passages: partial.passages || [], // [{ text, claimHint }]
     claimsSupported: partial.claimsSupported || [],
-    verified: partial.verified || false, // content actually retrieved/inspected
+    verified: !!partial.verified, // content actually retrieved/inspected
     note: partial.note || '',
   };
 }

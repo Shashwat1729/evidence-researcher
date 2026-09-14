@@ -36,7 +36,10 @@ const NAMED_ENTITIES = {
 function detectCharset(buf, ctype) {
   const fromHeader = (String(ctype || '').match(/charset\s*=\s*["']?([^"';\s]+)/i) || [])[1];
   if (fromHeader) return fromHeader.toLowerCase();
-  const head = buf.slice(0, 4000).toString('latin1');
+  // NOTE: buf is an ArrayBuffer (browser-safe — never Buffer), whose .slice()
+  // returns ArrayBuffer and whose .toString() would just yield
+  // "[object ArrayBuffer]". Decode the head as latin-1 explicitly.
+  const head = new TextDecoder('latin1').decode(buf.slice(0, 4000));
   const meta = head.match(/<meta[^>]+charset\s*=\s*["']?([^"'\s/>]+)/i)
     || head.match(/<meta[^>]+content=["'][^"']*charset\s*=\s*([^"';\s]+)/i);
   return (meta?.[1] || 'utf-8').toLowerCase();

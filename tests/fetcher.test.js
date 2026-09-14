@@ -6,22 +6,30 @@ const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe('charset-aware decoding (no mojibake)', () => {
+  // Production hands decodeBody a real ArrayBuffer (browser-safe path), so
+  // the tests must too — passing Buffers masked a broken meta-scan that
+  // relied on Buffer.toString('latin1').
+  const ab = (str, enc) => {
+    const b = Buffer.from(str, enc);
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  };
   it('decodes UTF-8 as before', () => {
-    const buf = Buffer.from('Caffè — “test”', 'utf8');
+    const buf = ab('Caffè — “test”', 'utf8');
+    assert.ok(buf instanceof ArrayBuffer);
     assert.equal(decodeBody(buf, 'text/html; charset=utf-8'), 'Caffè — “test”');
   });
   it('honors header charset for latin-1 pages', () => {
-    const buf = Buffer.from('Giosuè Carducci', 'latin1');
+    const buf = ab('Giosuè Carducci', 'latin1');
     assert.equal(decodeBody(buf, 'text/html; charset=iso-8859-1'), 'Giosuè Carducci');
     assert.ok(!decodeBody(buf, 'text/html; charset=iso-8859-1').includes('�'));
   });
   it('detects <meta charset> when the header is silent', () => {
     const html = '<html><head><meta charset="windows-1252"></head><body><p>è ù à</p></body></html>';
-    const buf = Buffer.from(html, 'latin1');
+    const buf = ab(html, 'latin1');
     assert.ok(decodeBody(buf, 'text/html').includes('è ù à'));
   });
   it('falls back to utf-8 on unknown labels', () => {
-    const buf = Buffer.from('plain ascii', 'utf8');
+    const buf = ab('plain ascii', 'utf8');
     assert.equal(decodeBody(buf, 'text/html; charset=bogus-99'), 'plain ascii');
   });
 });
@@ -35,11 +43,14 @@ describe('entity decoding', () => {
 });
 
 describe('fetchPage resolution + politeness', () => {
-  const latin1Page = () => Buffer.from(
-    '<html><head><title>Giosuè Test</title><link rel="canonical" href="/canon/path"></head>' +
-    `<body><p>${'Contenuto di prova con caratteri accentati è ù à. '.repeat(12)}</p></body></html>`,
-    'latin1',
-  );
+  const latin1Page = () => {
+    const b = Buffer.from(
+      '<html><head><title>Giosuè Test</title><link rel="canonical" href="/canon/path"></head>' +
+      `<body><p>${'Contenuto di prova con caratteri accentati è ù à. '.repeat(12)}</p></body></html>`,
+      'latin1',
+    );
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  };
   function mockRouter({ fail429once = false } = {}) {
     let retried = false;
     globalThis.fetch = async (url) => {

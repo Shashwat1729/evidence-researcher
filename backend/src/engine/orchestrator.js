@@ -300,27 +300,31 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('progress', `${allResults.length} raw results collected`);
 
   // ---- COLLECT: dedup → sources → classify → fetch ----
+  // Single record builder shared by the initial batch AND follow-up searches,
+  // so gap/contradiction sources get identical classification, hints, and
+  // accessibility — never second-class records.
+  const toSourceRecord = (r) => {
+    const isBook = /books|openlibrary|google.*books/i.test(r.via || '') || r.category === 'books';
+    const isPaper = /academic|arxiv|crossref|openalex|doi/i.test(r.via || '');
+    // Redirect URLs carry no real domain; hint it from the chunk title (e.g. "unibo.it")
+    // BEFORE classification so domain hints (institutional/social/scholarly) apply.
+    const rawHost = domainOf(r.url);
+    const hinted = (rawHost === 'vertexaisearch.cloud.google.com' && r.title) ? (r.title.split('/')[0].toLowerCase().replace(/^www\./, '') || rawHost) : rawHost;
+    const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '', sourceType: isBook ? 'book' : isPaper ? 'paper' : 'webpage', domainHint: hinted });
+    const src = createSource({
+      url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url,
+      domain: hinted || rawHost, discoveredVia: r.via,
+      sourceType: isBook ? 'book' : isPaper ? 'paper' : /reddit|quora|twitter|x\.com|facebook/i.test(r.url + ' ' + hinted) ? 'social' : 'webpage',
+      tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity,
+      accessibility: isBook || isPaper ? 'metadata-only' : 'unknown',
+    });
+    if (r.snippet) src.passages = [{ text: r.snippet.slice(0, 900), claimHint: 'grounding excerpt' }];
+    return src;
+  };
   const toSources = (results) => {
     const { unique, duplicates } = deduplicate(results.map((r) => ({ url: r.url, title: r.title, text: r.snippet || '', snippet: r.snippet || '', via: r.via, category: r.category })));
     if (duplicates.length) ev('progress', `Deduplicated ${duplicates.length} copy/track-variant URL(s)`);
-    return unique.slice(0, budget.maxSources).map((r) => {
-      const isBook = /books|openlibrary|google.*books/i.test(r.via || '') || r.category === 'books';
-      const isPaper = /academic|arxiv|crossref|openalex|doi/i.test(r.via || '');
-      // Redirect URLs carry no real domain; hint it from the chunk title (e.g. "unibo.it")
-      // BEFORE classification so domain hints (institutional/social/scholarly) apply.
-      const rawHost = domainOf(r.url);
-      const hinted = (rawHost === 'vertexaisearch.cloud.google.com' && r.title) ? (r.title.split('/')[0].toLowerCase().replace(/^www\./, '') || rawHost) : rawHost;
-      const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '', sourceType: isBook ? 'book' : isPaper ? 'paper' : 'webpage', domainHint: hinted });
-      const src = createSource({
-        url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url,
-        domain: hinted || rawHost, discoveredVia: r.via,
-        sourceType: isBook ? 'book' : isPaper ? 'paper' : /reddit|quora|twitter|x\.com|facebook/i.test(r.url + ' ' + hinted) ? 'social' : 'webpage',
-        tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity,
-        accessibility: isBook || isPaper ? 'metadata-only' : 'unknown',
-      });
-      if (r.snippet) src.passages = [{ text: r.snippet.slice(0, 900), claimHint: 'grounding excerpt' }];
-      return src;
-    });
+    return unique.slice(0, budget.maxSources).map(toSourceRecord);
   };
 
   let sources = toSources(allResults);
@@ -506,19 +510,44 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     // follow-up searches run in parallel (×4); merging stays sequential
     // so dedup/canonicalization sees a stable source list.
     let added = 0;
+    const newSources = [];
     const followResults = await pool(followups.slice(0, 6), Math.min(4, searchConcurrency), (f, i) => sleep(Math.min(i, 3) * searchStagger).then(() => doSearchWithKey(f, f.category)));
     for (const rs of followResults) {
       const fresh = rs.filter((r) => !sources.some((s) => canonicalize(s.url) === canonicalize(r.url)));
-      for (const r of fresh.slice(0, 4)) {
+      // Intra-batch dedup, same as the initial batch: near-duplicates link as
+      // relatedCopies instead of becoming false independent confirmations.
+      const { unique } = deduplicate(fresh.map((r) => ({ url: r.url, title: r.title, text: r.snippet || '', snippet: r.snippet || '', via: r.via, category: r.category })));
+      for (const r of unique.slice(0, 4)) {
         if (sources.length >= budget.maxSources) break;
-        const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '' });
-        const ns = createSource({ url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url, domain: domainOf(r.url), discoveredVia: r.via, tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity });
-        if (r.snippet) ns.passages = [{ text: r.snippet.slice(0, 900), claimHint: 'grounding excerpt' }];
+        const ns = toSourceRecord(r);
         sources.push(ns);
+        newSources.push(ns);
         added++;
       }
     }
     if (added) ev('progress', `${added} additional source(s) from gap/contradiction search`);
+    // Follow-up sources never passed through the read phase — give the best
+    // of them full text too (bounded: non-quick only, ≤3, within fetch
+    // budget, stops on cancel/deadline/token-cap like the main fetch).
+    if (newSources.length && task.mode !== 'quick') {
+      const room = Math.max(0, (budget.maxFetches ?? 0) - stats.fetches);
+      const topUp = newSources
+        .filter((s) => s.sourceType !== 'book' && !isRedirect(s.url) && !s.verified)
+        .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9))
+        .slice(0, Math.min(3, room));
+      if (topUp.length) {
+        ev('progress', `Fetching ${topUp.length} follow-up source(s) for full text…`);
+        for (const s of topUp) {
+          if (isCancelled() || Date.now() > deadline || overTokenCap()) break;
+          stats.fetches++;
+          try {
+            applyFetch(s, await D.fetch(s.url));
+          } catch (e) {
+            applyFetch(s, { ok: false, reason: String(e.message || 'fetch failed').slice(0, 120) });
+          }
+        }
+      }
+    }
     if (!added && !contradictions.length) break;
   }
   stats.phases.analyze = Date.now() - tAnalyze;

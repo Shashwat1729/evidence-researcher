@@ -21,9 +21,13 @@ export const geminiSearchProvider = {
   async search(query, { key, model, timeoutMs, onUsage, onKeyEvent } = {}) {
     const r = await groundedSearch({ key, model, query, timeoutMs, onKeyEvent });
     onUsage?.(r.usage);
+    // NOTE: groundingChunkIndices refer to positions in the ORIGINAL chunks
+    // array, so the snippet must be resolved BEFORE filtering (otherwise one
+    // dropped chunk shifts every later passage onto the wrong source).
     return r.chunks
+      .map((c, i) => ({ ...c, snippet: snippetForChunk(r.text, r.supports, i) }))
       .filter((c) => c.url && c.url.startsWith('http'))
-      .map((c, i) => normalizeResult({ url: c.url, title: c.title, snippet: snippetForChunk(r.text, r.supports, i) }, 'grounding'));
+      .map((c) => normalizeResult(c, 'grounding'));
   },
   /** Raw grounded call (exposes queries + synthesized text for gap detection). */
   async searchRaw(query, opts = {}) {
