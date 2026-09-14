@@ -68,6 +68,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     synthesis: task.model || MODEL_CONFIG.synthesis,
   };
   const stats = { modelCalls: 0, searchCalls: 0, fetches: 0, tokensIn: 0, tokensOut: 0, keyRotations: 0, phases: {}, fetchIssues: {}, startedAt: new Date(started).toISOString() };
+  // Pipeline stage for progress UX: plan → search → read → analyze →
+  // provenance → synthesize → verify → done. Attached to every event so the
+  // frontend can show the current phase and live counters without guessing.
+  let currentPhase = 'plan';
   const track = (u) => { if (u) { stats.tokensIn += u.in || 0; stats.tokensOut += u.out || 0; } };
   const overTokenCap = () => stats.tokensOut >= budget.maxTokensOut;
   // usage auto-tracked: every model-returning dep reports { usage } with real API counts
@@ -76,7 +80,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const call = async (fn) => { throwIfStopped(); stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
   const deadline = started + budget.maxRuntimeMs;
 
-  const ev = (type, message, data = {}) => emit({ type, message, ...data, at: new Date().toISOString() });
+  const ev = (type, message, data = {}) => emit({
+    type, message, phase: currentPhase,
+    stats: { modelCalls: stats.modelCalls, searchCalls: stats.searchCalls, fetches: stats.fetches, tokensIn: stats.tokensIn, tokensOut: stats.tokensOut },
+    ...data, at: new Date().toISOString(),
+  });
   const keyEvent = (info) => {
     if (info?.type === 'rotated') {
       stats.keyRotations++;
@@ -136,6 +144,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('plan', 'Research plan created', { plan });
 
   // ---- SEARCH (parallel grounding ×5, academic/books overlapped) ----
+  currentPhase = 'search';
   let allResults = [];
   const doSearch = async (q, category, explicitKey = key) => {
     // check+reserve is synchronous (no await between) → race-free under pool()
@@ -318,6 +327,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('sources', `${sources.length} sources discovered`, { count: sources.length });
 
   // fetch top candidates: prefer low-tier (authoritative) + diverse domains.
+  currentPhase = 'read';
   // Grounding redirects (vertexaisearch) carry no fetchable URL — they already
   // have a grounded excerpt as fallback passage, so skip the network fetch.
   const isRedirect = (u) => u.includes('vertexaisearch.cloud.google.com');
@@ -425,6 +435,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const maxIter = plan.complexity === 'low' && task.mode === 'quick' ? 1 : budget.maxIterations;
 
   const tAnalyze = Date.now();
+  currentPhase = 'analyze';
   for (let i = 1; i <= maxIter; i++) {
     throwIfStopped();
     if (Date.now() > deadline) break;
@@ -523,6 +534,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
 
   // ---- PROVENANCE ----
+  currentPhase = 'provenance';
   ev('progress', 'Checking source independence…');
   if (task.mode === 'quick') {
     // Quick: heuristic only, no model call to stay under free-tier quota.
@@ -539,6 +551,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('progress', provenance.note);
 
   // ---- SYNTHESIS ----
+  currentPhase = 'synthesize';
   ev('progress', 'Synthesizing final report…');
   // Empty-handed is still an answer, not a crash — but with zero sources AND
   // zero claims there is nothing honest to report, so fail explicitly.
@@ -655,6 +668,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // Cross-evaluation: verify findings against their cited excerpts (1 call, skip in quick).
   let verification = [];
   if (task.mode !== 'quick') {
+    currentPhase = 'verify';
     ev('progress', 'Cross-checking findings against cited excerpts…');
     try {
       verification = await phase('verify', () => call(() => D.verify({ key, model: models.analysis, findings: report.findings || [], sources, onKeyEvent: keyEvent })));
@@ -678,6 +692,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       : 'Research stance: neutral.',
     completedAt: new Date().toISOString(),
   };
+  currentPhase = 'done';
   ev('done', 'Research complete', { stats: result.stats });
   return result;
 }

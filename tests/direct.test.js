@@ -46,6 +46,25 @@ describe('static-mode helpers', () => {
     assert.ok(seen.includes('plan') && seen.includes('claims') && seen.includes('done'));
   });
 
+  it('aborted signal cancels before any work (cancel button actually stops static runs)', async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let called = false;
+    await assert.rejects(
+      runDirect(
+        { question: 'Is this ok?', mode: 'quick', stance: 'neutral' },
+        {
+          key: 'k',
+          emit: () => {},
+          signal: ctrl.signal,
+          deps: { plan: async () => { called = true; return {}; } },
+        },
+      ),
+      (e) => e.code === 'CANCELLED',
+    );
+    assert.equal(called, false, 'no model call may fire after cancel');
+  });
+
   it('local persistence degrades gracefully without localStorage (node)', () => {
     assert.equal(saveLocalResult({ id: 'x' }), false);
     assert.equal(loadLocalResult('x'), null);

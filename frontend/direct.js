@@ -49,12 +49,15 @@ export async function apiAvailable(base = '') {
   }
 }
 
-export async function runDirect(input, { key, emit = () => {}, deps = {} } = {}) {
+export async function runDirect(input, { key, emit = () => {}, deps = {}, signal } = {}) {
   if (!key) {
     throw Object.assign(new Error('Enter a Gemini API key to run in static mode.'), { status: 401 });
   }
+  // Cooperative cancellation (mirrors the server's isCancelled refcount):
+  // the engine checks this before every model call and loop iteration.
+  const isCancelled = () => signal?.aborted === true;
   const runResearch = await loadEngine();
-  return runResearch(input, { key, emit, deps });
+  return runResearch(input, { key, emit, deps, isCancelled });
 }
 
 const RESULT_PREFIX = 'er_result_';

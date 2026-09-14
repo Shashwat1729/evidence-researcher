@@ -168,27 +168,82 @@ function goHome(notice, kind = '') {
   else $('#notice').classList.add('hidden');
 }
 
+// Pipeline phases in order, with the display title and bar anchor each maps to.
+// The bar only ever reflects reached milestones — never guesses ahead.
+const PHASES = {
+  plan: ['Planning research…', 8],
+  search: ['Searching the web…', 28],
+  read: ['Reading sources…', 48],
+  analyze: ['Analyzing evidence…', 66],
+  provenance: ['Checking independence…', 78],
+  synthesize: ['Writing report…', 90],
+  verify: ['Verifying citations…', 96],
+  done: ['Complete', 100],
+};
+
+function fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+function fmtNum(n) {
+  n = n || 0;
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
 function run(body) {
   $('#askView').classList.add('hidden');
   $('#resultView').classList.add('hidden');
   $('#progressView').classList.remove('hidden');
+  $('#progressTitle').textContent = 'Researching…';
   $('#progressFill').style.width = '8%';
   $('#steps').innerHTML = '';
+  $('#liveStats').textContent = '';
   $('#skeleton').classList.remove('hidden');
-  let progress = 8;
+  const t0 = Date.now();
+  const live = { stats: null, sources: 0, claims: 0, phase: 'plan', bar: 8, stepped: false };
+  const renderLive = () => {
+    const s = live.stats || {};
+    const parts = [`${fmtElapsed(Date.now() - t0)} elapsed`];
+    if (s.searchCalls) parts.push(`${s.searchCalls} searches`);
+    if (live.sources) parts.push(`${live.sources} sources`);
+    if (live.claims) parts.push(`${live.claims} claims`);
+    if (s.modelCalls) parts.push(`${s.modelCalls} model calls`);
+    if ((s.tokensIn || 0) + (s.tokensOut || 0)) parts.push(`${fmtNum((s.tokensIn || 0) + (s.tokensOut || 0))} tokens`);
+    $('#liveStats').textContent = parts.join(' · ');
+  };
+  const setPhase = (phase) => {
+    if (!phase || !PHASES[phase]) return;
+    live.phase = phase;
+    $('#progressTitle').textContent = PHASES[phase][0];
+    live.bar = Math.max(live.bar, PHASES[phase][1]);
+    $('#progressFill').style.width = live.bar + '%';
+  };
+  const timer = setInterval(renderLive, 1000);
   const step = (cls, text) => {
+    if (!live.stepped) { live.stepped = true; $('#skeleton').classList.add('hidden'); }
     const d = document.createElement('div');
     d.className = 'step';
     d.innerHTML = `<span class="${cls}">${cls === 'ok' ? '✓' : cls === 'warn' ? '!' : '→'}</span> ${escapeHtml(text)}`;
-    $('#steps').appendChild(d);
-    // Animate progress bar
-    progress = Math.min(92, progress + (cls === 'ok' ? 12 : cls === 'run' ? 4 : 2));
-    $('#progressFill').style.width = progress + '%';
+    const steps = $('#steps');
+    steps.appendChild(d);
+    steps.scrollTop = steps.scrollHeight;
     return d;
+  };
+  // Hooks shared with handleEvent so both SSE and static runs update one UI.
+  const hooks = {
+    onTerminal: () => finish(),
+    onPhase: setPhase,
+    onStats: (stats, extra = {}) => {
+      if (stats) live.stats = stats;
+      if (extra.sources != null) live.sources = extra.sources;
+      if (extra.claims != null) live.claims = extra.claims;
+      renderLive();
+    },
   };
   const keys = getStoredKeys();
   const model = body.model || getStoredModel() || '';
   const finish = () => {
+    clearInterval(timer);
     running = false;
     if (currentAbort) { currentAbort = null; }
     $('#start').disabled = false;
@@ -214,7 +269,7 @@ function run(body) {
   };
   if (staticMode) {
     const key = keys[0] || '';
-    runDirectFlow(body, key, step, finish, abort.signal, keys, model);
+    runDirectFlow(body, key, step, finish, abort.signal, keys, model, hooks);
     return;
   }
   // Build headers with multi-key and model support
@@ -275,7 +330,7 @@ function run(body) {
         for (const p of parts) {
           const line = p.split('\n').find((l) => l.startsWith('data:'));
           if (!line) continue;
-          try { handleEvent(JSON.parse(line.slice(5)), step); }
+          try { handleEvent(JSON.parse(line.slice(5)), step, hooks); }
           catch { /* keep-alive */ }
         }
       }
@@ -304,7 +359,7 @@ function run(body) {
 }
 
 // Static-mode run: same engine, executed in-page via frontend/direct.js.
-async function runDirectFlow(body, key, step, finish, signal, allKeys = [], model = '') {
+async function runDirectFlow(body, key, step, finish, signal, allKeys = [], model = '', hooks = {}) {
   const keys = allKeys.length ? allKeys : (key ? [key] : []);
   if (!keys.length) {
     const msg = 'Static mode needs a Gemini API key — click "API key" above to enter one (stored in this browser only).';
@@ -319,7 +374,7 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
     const { runDirect, saveLocalResult } = await import(`./direct.js${staticSuffix()}`);
     step('run', `Static mode: running with ${keys.length} key(s)${model ? ` · model ${model}` : ''}…`);
     // Pass all keys and model for rotation — handles any topic dynamically
-    const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step) });
+    const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step, hooks), signal });
     if (signal?.aborted) { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
     saveLocalResult(result);
     showResult(result);
@@ -334,14 +389,22 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
   }
 }
 
-function handleEvent(ev, step) {
+function handleEvent(ev, step, hooks = {}) {
   if (ev.type === 'error') {
     step('warn', 'Error: ' + ev.message);
     // Terminal: the server ends the stream right after. Land home with the
     // message instead of stranding the user on the progress view.
     // (If a result already rendered, leave it alone.)
     if ($('#resultView').classList.contains('hidden')) goHome('Error: ' + ev.message, 'error');
+    hooks.onTerminal?.();
     return;
+  }
+  if (ev.phase) hooks.onPhase?.(ev.phase);
+  if (ev.stats || ev.type === 'sources' || ev.type === 'claims') {
+    hooks.onStats?.(ev.stats || null, {
+      ...(ev.type === 'sources' && ev.count != null ? { sources: ev.count } : {}),
+      ...(ev.type === 'claims' && ev.count != null ? { claims: ev.count } : {}),
+    });
   }
   if (ev.type === 'result') return showResult(ev.result);
   if (ev.type === 'plan') {
@@ -351,7 +414,6 @@ function handleEvent(ev, step) {
   }
   if (ev.type === 'sources' || ev.type === 'claims') return step('ok', ev.message);
   step(ev.type === 'warning' ? 'warn' : ev.type === 'done' ? 'ok' : 'run', ev.message || ev.type);
-  if (ev.stats) { const s = ev.stats; $('#liveStats').textContent = `model calls ${s.modelCalls} · searches ${s.searchCalls} · fetched ${s.fetches ?? 0}` + (((s.tokensIn || 0) + (s.tokensOut || 0)) ? ` · ${((s.tokensIn || 0) + (s.tokensOut || 0)).toLocaleString()} tokens (API-reported)` : ''); }
 }
 
 // ---------- dashboard ----------

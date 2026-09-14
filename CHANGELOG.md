@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Honest research progress: backend phase + live stats on every event, phase-anchored bar, elapsed timer, auto-scroll
+- Static-mode Cancel actually stops the run (signal → engine isCancelled); terminal errors clean up timers
 - Patient quota handling: multi-round rate-waits until budget spent (never one-and-done skips)
 - Section rate-limit + thin-prose retries with explicit expansion nudges; longer runtimes
 - Per-section graceful degradation; template fallbacks when sections or assembly fail
