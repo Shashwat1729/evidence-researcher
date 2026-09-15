@@ -69,11 +69,15 @@ function unblockKey(k) { keyBlockedUntil.delete(keyHash(k)); }
 const modelNextAllowed = new Map(); // `${model}|${keyHash}` -> timestamp (ms)
 function modelGapMs(model) {
   const m = String(model || '').toLowerCase();
-  if (m.includes('flash-lite') || m.includes('flash_lite')) return 2000; // 30 RPM
-  if (m.includes('1.5-flash') || m.includes('2.0-flash')) return 4000; // 15 RPM
-  if (m.includes('2.5-flash')) return 6000; // 10 RPM
+  // Free-tier friendly gaps: slightly conservative vs Google's stated
+  // limits (10 RPM → 8.5 RPM, 30 RPM → 20 RPM) to absorb jitter and
+  // leave headroom for the static Pages single-key case. Multi-key
+  // setups still multiply via round-robin, so throughput isn't hurt.
+  if (m.includes('flash-lite') || m.includes('flash_lite')) return 3000; // 20 RPM (was 30 RPM / 2000)
+  if (m.includes('1.5-flash') || m.includes('2.0-flash')) return 5000; // 12 RPM (was 15 RPM / 4000)
+  if (m.includes('2.5-flash')) return 7000; // 8.5 RPM (was 10 RPM / 6000) — free-tier safe
   if (m.includes('pro') || m.includes('gemma')) return 12000; // 5 RPM
-  return 6000; // conservative default
+  return 7000; // conservative default (was 6000)
 }
 async function paceForModel(model, key) {
   const gap = modelGapMs(model);

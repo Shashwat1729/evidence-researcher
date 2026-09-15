@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-13f';
+const STATIC_V = '2026-09-15a';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -394,7 +394,11 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
   } catch (e) {
     if (signal?.aborted || e.name === 'AbortError') { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
     const raw = e.message || 'research failed';
-    const msg = /quota|rate|429/i.test(raw) ? 'Gemini rate limit reached. Wait a minute and retry, or add more API keys (they rotate automatically).' : raw;
+    // Distinguish daily quota vs per-minute vs no evidence.
+    let msg = raw;
+    if (/RPD|daily quota/i.test(raw)) msg = 'Daily Gemini quota exhausted (resets at midnight Pacific). Add a key from a different project or a billed project for higher limits, or try Quick mode which uses fewer calls.';
+    else if (/quota|rate|429/i.test(raw)) msg = 'Gemini rate limit reached. Wait a minute and retry, or add more API keys from different projects (they rotate automatically). Quick mode uses ~5 calls vs Standard ~21 — try Quick for free-tier keys.';
+    else if (/Insufficient evidence/i.test(raw)) msg = raw + ' (Try Quick mode, rephrase, or check that free academic sources are reachable — some networks block them.)';
     step('warn', 'Error: ' + msg);
     goHome('Error: ' + msg, 'error');
   } finally {
@@ -465,6 +469,13 @@ function showResult(r) {
   } catch { /* private mode */ }
   $('#progressView').classList.add('hidden');
   $('#resultView').classList.remove('hidden');
+  // Fallback inventory banner: synthesis used evidence inventory due to quota.
+  if (r.report?.synthesisFallback) {
+    showNotice('Model quota was hit — this report is an evidence inventory from gathered sources. Add more API keys (different projects) or try Quick mode for faster results.', '');
+    step('warn', 'Quota hit — showing evidence inventory from gathered sources.');
+  } else {
+    $('#notice').classList.add('hidden');
+  }
   renderTab('overview');
 }
 
@@ -487,9 +498,11 @@ function renderTab(tab) {
   r.stats = r.stats || {};
   r.report = r.report || {};
   if (tab === 'overview') {
+    const fallbackBanner = r.report?.synthesisFallback ? `<div class="banner" style="margin: .8rem 0; padding: .6rem .8rem; background: var(--warn-bg, #3a2c12); border: 1px solid var(--warn, #d4a017); border-radius: 6px;">⚠ Evidence inventory — model synthesis was unavailable (quota). Sources and claims below are real and cited; read the Sources/Claims tabs for raw evidence.</div>` : '';
     el.innerHTML = `<h2>${escapeHtml(r.task.question)}</h2>
       <p><span class="pill">${r.task.mode}</span><span class="pill">${r.task.stance}</span>
-      <span class="pill">${r.sources.length} sources</span><span class="pill">${r.claims.length} claims</span></p>
+      <span class="pill">${r.sources.length} sources</span><span class="pill">${r.claims.length} claims</span>${r.report?.synthesisFallback ? '<span class="pill" style="background: var(--warn, #d4a017); color: #000;">inventory</span>' : ''}</p>
+      ${fallbackBanner}
       <p>${escapeHtml(r.stanceDisclosure || '')}</p>
       <h3>Executive summary</h3><p>${escapeHtml(r.report?.executiveSummary || '')}</p>
       <h3>What we can establish</h3><ul>${(r.report?.established || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>

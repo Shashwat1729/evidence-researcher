@@ -4,14 +4,20 @@
 import { groundedSearch } from '../gemini.js';
 import { normalizeResult } from './base.js';
 
-function snippetForChunk(text, supports, idx) {
-  if (!text || !supports?.length) return text ? text.slice(0, 700) : '';
+function snippetForChunk(text, supports, idx, fallbackTitle = '') {
+  const fallback = fallbackTitle ? `Grounded source: ${fallbackTitle}` : '';
+  if (!text || !supports?.length) {
+    const t = (text || '').trim();
+    if (t) return t.slice(0, 700);
+    return fallback.slice(0, 700);
+  }
   const segs = supports
     .filter((s) => (s.groundingChunkIndices || []).includes(idx))
     .map((s) => text.slice(s.segment?.startIndex || 0, s.segment?.endIndex || text.length))
     .join(' ')
     .trim();
-  return (segs || text).slice(0, 700);
+  const out = (segs || text || fallback).trim();
+  return out.slice(0, 700);
 }
 
 export const geminiSearchProvider = {
@@ -25,7 +31,7 @@ export const geminiSearchProvider = {
     // array, so the snippet must be resolved BEFORE filtering (otherwise one
     // dropped chunk shifts every later passage onto the wrong source).
     return r.chunks
-      .map((c, i) => ({ ...c, snippet: snippetForChunk(r.text, r.supports, i) }))
+      .map((c, i) => ({ ...c, snippet: snippetForChunk(r.text, r.supports, i, c.title || query) }))
       .filter((c) => c.url && c.url.startsWith('http'))
       .map((c) => normalizeResult(c, 'grounding'));
   },

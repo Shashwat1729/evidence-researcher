@@ -110,17 +110,32 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
   // fast with a clear message instead of hanging for many minutes.
   // Browser-safe: no bare `process` (static Pages build has none).
+  // Default 300s aligns with gemini.js post() budget — shorter values left
+  // synthesis with no time to wait patiently ("time can be more but results
+  // should be best"). Env QUOTA_WAIT_BUDGET_MS overrides.
   const quotaWaitBudget = () => {
     const penv = (typeof process !== 'undefined' && process.env) || {};
-    return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS || 120_000));
+    return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS || 300_000));
   };
   const quotaErr = () => Object.assign(
     new Error('Gemini quota exhausted — waited for refills but none arrived. Retry in a few minutes, add another API key, or use a shallower mode.'),
     { status: 429, code: 'QUOTA_EXHAUSTED' },
   );
+  // Hoisted for quota-fallback: when quota hits AFTER we have evidence,
+  // we degrade to an evidence inventory instead of hard-failing with no result.
+  let _sourcesRef = null;
+  let _allResultsRef = null;
+  let _planRef = null;
   const throwIfStopped = () => {
     if (isCancelled()) throw cancelledErr();
-    if ((stats.quotaWaitMs || 0) >= quotaWaitBudget()) throw quotaErr();
+    if ((stats.quotaWaitMs || 0) >= quotaWaitBudget()) {
+      // If we already have sources, signal degraded quota — caller will
+      // synthesize a fallback report instead of throwing with no result.
+      if ((_sourcesRef && _sourcesRef.length) || (_allResultsRef && _allResultsRef.length)) {
+        throw Object.assign(quotaErr(), { _hasEvidence: true });
+      }
+      throw quotaErr();
+    }
   };
   // Phase timing (observability): accumulates wall-clock ms per pipeline stage.
   const phase = async (name, fn) => {
@@ -152,9 +167,25 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     throw Object.assign(new Error('Not a research question. ' + (planData.clarify || 'Please ask something to investigate.')), { status: 400 });
   }
   const plan = createPlan(planData);
+  _planRef = plan;
   // adaptive: low-complexity quick stays quick; disagreement later escalates
   let escalated = false;
   ev('plan', 'Research plan created', { plan });
+
+  // Graceful quota degradation: any quota error AFTER we have evidence
+  // produces an evidence inventory instead of a hard failure with no result.
+  // This is what makes Pages usable on a single free-tier key where standard
+  // mode would otherwise 429 mid-run and show "api limit exceeded" with nothing.
+  let _quotaFallbackReport = null;
+  const isQuotaError = (e) => e && (e._hasEvidence || e.code === 'QUOTA_EXHAUSTED' || e.code === 'RPD_EXHAUSTED' || e.status === 429);
+  const maybeFallback = (e) => {
+    const hasEvidence = (_sourcesRef && _sourcesRef.length) || (_allResultsRef && _allResultsRef.length);
+    if (isQuotaError(e) && hasEvidence) {
+      ev('warning', `Quota exhausted mid-run — assembling evidence inventory from gathered sources instead (${(_sourcesRef || _allResultsRef || []).length} sources).`);
+      return true;
+    }
+    return false;
+  };
 
   // ---- SEARCH (parallel grounding ×5, academic/books overlapped) ----
   currentPhase = 'search';
@@ -346,7 +377,21 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   };
 
   let sources = toSources(allResults);
+  _allResultsRef = allResults;
+  _sourcesRef = sources;
   ev('sources', `${sources.length} sources discovered`, { count: sources.length });
+  // Wrap the remaining heavy model steps (fetch → claims → provenance →
+  // synthesis) so a quota hit after evidence was gathered degrades to an
+  // evidence inventory instead of a hard "api limit exceeded" with no report.
+  let claims = [];
+  let contradictions = [];
+  let gaps = [];
+  let provenance = { groups: [], relations: [], note: '' };
+  let iterations = [];
+  let report = null;
+  let verification = [];
+  let _fromQuotaFallback = false;
+  try {
 
   // fetch top candidates: prefer low-tier (authoritative) + diverse domains.
   currentPhase = 'read';
@@ -449,11 +494,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
 
   // ---- ITERATIVE LOOP: claims → review → gaps/contradictions → more search ----
-  let claims = [];
-  let contradictions = [];
-  let gaps = [];
-  let provenance = { groups: [], relations: [], note: '' };
-  const iterations = [];
+  // (claims/contradictions/gaps/provenance/iterations/report declared above for quota fallback)
+  iterations.length = 0;
   const maxIter = plan.complexity === 'low' && task.mode === 'quick' ? 1 : budget.maxIterations;
 
   const tAnalyze = Date.now();
@@ -608,7 +650,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       { status: 502, code: 'NO_EVIDENCE' },
     );
   }
-  let report;
+  // report already declared outside try
   const sectionGroups = task.mode === 'quick' ? [] : partitionBeats(plan.arc, budget.sections || 1);
   if (sectionGroups.length > 1) {
     // Sectional synthesis: one full-budget findings call per beat group, then
@@ -725,9 +767,21 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // appendix: deterministic claim-by-claim evidence ledger (zero model cost)
   report.appendix = buildAppendix({ claims, sources });
 
+  // Close quota-aware try started after sources — handle mid-run quota hits gracefully.
+  } catch (e) {
+    if (maybeFallback(e)) {
+      _fromQuotaFallback = true;
+      report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
+      ev('warning', 'Report generated from evidence inventory due to quota — open Sources/Books tabs for raw evidence.');
+    } else {
+      throw e;
+    }
+  }
+
   // Cross-evaluation: verify findings against their cited excerpts (1 call, skip in quick).
-  let verification = [];
-  if (task.mode !== 'quick') {
+  // (verification already declared outside try)
+  verification = [];
+  if (task.mode !== 'quick' && !_fromQuotaFallback) {
     currentPhase = 'verify';
     ev('progress', 'Cross-checking findings against cited excerpts…');
     try {
