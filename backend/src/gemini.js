@@ -62,6 +62,27 @@ function blockKey(k, ms) {
 }
 function unblockKey(k) { keyBlockedUntil.delete(keyHash(k)); }
 
+// Per-model pacing: free-tier limits are per model (e.g., 30 RPM for Lite,
+// 10 RPM for Flash). Pacing proactively avoids 429s instead of reactively
+// waiting. Next-allowed timestamp ensures even concurrent calls are spaced.
+const modelNextAllowed = new Map(); // model -> timestamp (ms)
+function modelGapMs(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('flash-lite') || m.includes('flash_lite')) return 2000; // 30 RPM
+  if (m.includes('1.5-flash') || m.includes('2.0-flash')) return 4000; // 15 RPM
+  if (m.includes('2.5-flash')) return 6000; // 10 RPM
+  if (m.includes('pro') || m.includes('gemma')) return 12000; // 5 RPM
+  return 6000; // conservative default
+}
+async function paceForModel(model) {
+  const gap = modelGapMs(model);
+  const next = modelNextAllowed.get(model) || 0;
+  const wait = next - Date.now();
+  // Reserve next slot before waiting so concurrent callers queue correctly
+  modelNextAllowed.set(model, Math.max(next, Date.now()) + gap);
+  if (wait > 0) await sleep(wait);
+}
+
 const isKeyError = (err) =>
   err?.status === 401 || err?.status === 403 ||
   (err?.status === 400 && /api key|key not valid|API_KEY_INVALID/i.test(err?.message || ''));

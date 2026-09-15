@@ -4,7 +4,7 @@
 [![Pages](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/pages.yml/badge.svg)](https://github.com/Shashwat1729/evidence-researcher/actions/workflows/pages.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**An evidence-first deep research agent powered by Gemini.** Ask anything from
+**Built by [Shashwat Bajpai](https://github.com/Shashwat1729) — an evidence-first deep research agent** that uses Gemini as its reasoning engine. Ask anything from
 *"When was X founded?"* to *"What caused the collapse of the Western Roman Empire?"*
 and get an auditable, citation-backed research report — not a chatbot answer.
 
