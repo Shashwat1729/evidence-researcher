@@ -88,10 +88,19 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const keyEvent = (info) => {
     if (info?.type === 'rotated') {
       stats.keyRotations++;
-      ev('progress', `Switching to next available API key…`);
+      // Silent rotation — user shouldn't see internal key switching.
+      // Only emit if it becomes a pattern (many rotations = quota issue).
+      if (stats.keyRotations % 3 === 0) {
+        ev('progress', `Balancing load across API keys…`);
+      }
     } else if (info?.type === 'rate-wait') {
       stats.quotaWaitMs = (stats.quotaWaitMs || 0) + (info.waitMs || 0);
-      ev('progress', `Brief pause to respect API limits — continuing in ${Math.ceil((info.waitMs || 0) / 1000)}s…`);
+      // Silent wait — don't show "Brief pause" as a scary progress step.
+      // The research is still progressing, just pacing to respect API limits.
+      // Only log if wait is very long (>30s) as informational.
+      if ((info.waitMs || 0) > 30000) {
+        ev('progress', `Pacing API requests to stay within limits…`);
+      }
     }
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails

@@ -634,10 +634,74 @@ $('#addKey').addEventListener('click', () => {
   const inputs = $('#keyList').querySelectorAll('input');
   if (inputs.length) inputs[inputs.length - 1].focus();
 });
-$('#saveKey').addEventListener('click', () => {
-  // Collect all keys from list
+$('#saveKey').addEventListener('click', async () => {
+  // Collect all keys, handling comma/newline separated pastes in single field
   const inputs = $('#keyList').querySelectorAll('input');
-  const keys = [...inputs].map(i => i.value.trim()).filter(Boolean);
+  let keys = [];
+  for (const inp of inputs) {
+    const raw = inp.value.trim();
+    if (!raw) continue;
+    // Handle pasted "key1, key2" or "key1\nkey2" in one field
+    if (raw.includes(',') || raw.includes('\n') || raw.startsWith('[')) {
+      try {
+        const parsed = raw.startsWith('[') ? JSON.parse(raw) : raw.split(/[,;\n]+/);
+        for (const k of parsed) {
+          const v = String(k || '').trim();
+          if (v) keys.push(v);
+        }
+      } catch { keys.push(raw); }
+    } else {
+      keys.push(raw);
+    }
+  }
+  keys = [...new Set(keys.map(k => k.trim()).filter(Boolean))].slice(0, 5);
+  if (keys.length === 0) {
+    showNotice('No valid keys to save.', 'error');
+    return;
+  }
+  // Validate keys with lightweight server check (no quota burn)
+  const saveBtn = $('#saveKey');
+  const origText = saveBtn.textContent;
+  saveBtn.textContent = 'Validating…';
+  saveBtn.disabled = true;
+  try {
+    const res = await fetch('/api/keys/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.results) {
+      const validKeys = [];
+      const invalid = [];
+      for (let i = 0; i < keys.length; i++) {
+        const r = data.results[i];
+        if (r?.valid) validKeys.push(keys[i]);
+        else invalid.push(r?.masked || keys[i].slice(0, 8) + '…');
+      }
+      if (invalid.length && validKeys.length === 0) {
+        showNotice(`All keys invalid: ${invalid.join(', ')} — please check and try again.`, 'error');
+        saveBtn.textContent = origText;
+        saveBtn.disabled = false;
+        return;
+      }
+      if (invalid.length) {
+        showNotice(`Removed ${invalid.length} invalid key(s): ${invalid.join(', ')}`, 'error');
+        keys = validKeys;
+      } else if (data.results.some(r => r.warning)) {
+        const warnings = data.results.filter(r => r.warning).map(r => r.masked).join(', ');
+        showNotice(`Keys valid but quota exceeded (will work after reset): ${warnings}`, '');
+      } else {
+        showNotice(`Validated ${keys.length} key(s) — all working!`, '');
+      }
+    }
+  } catch (e) {
+    // Validation failed (offline/static mode) — save anyway, will be checked on use
+    console.warn('Key validation failed, saving anyway:', e.message);
+  } finally {
+    saveBtn.textContent = origText;
+    saveBtn.disabled = false;
+  }
   if (keys.length) {
     localStorage.setItem('gemini_keys', JSON.stringify(keys));
     localStorage.setItem('gemini_key', keys[0]);
@@ -647,6 +711,7 @@ $('#saveKey').addEventListener('click', () => {
   $('#modelSelect').value = model;
   $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
   $('#keyCount').classList.toggle('hidden', keys.length === 0);
+  renderKeyList();
   $('#keyDialog').close();
 });
 $('#forgetKey').addEventListener('click', () => {

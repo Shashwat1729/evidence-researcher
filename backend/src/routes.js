@@ -61,6 +61,42 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     maxKeysPerRequest: 5,
   }));
 
+  // Validate pasted keys with a lightweight model-list call (no quota burn on research).
+  // Body: { keys: string[] } -> { results: [{ valid: bool, masked: string, error?: string }] }
+  // Invalid keys are automatically flagged for removal; valid keys are kept.
+  r.post('/keys/validate', async (req, res) => {
+    const keys = Array.isArray(req.body?.keys) ? req.body.keys : [];
+    if (!keys.length) return res.status(400).json({ error: 'No keys provided' });
+    if (keys.length > 5) return res.status(400).json({ error: 'Max 5 keys per request' });
+    const masked = (k) => k.slice(0, 6) + '…' + k.slice(-4);
+    const results = await Promise.all(keys.map(async (k) => {
+      const key = String(k || '').trim();
+      if (!key || key.length < 20) return { valid: false, masked: masked(key), error: 'Too short to be a valid key' };
+      if (!key.startsWith('AIza')) return { valid: false, masked: masked(key), error: 'Invalid format (should start with AIza)' };
+      try {
+        // Lightweight validation: list models (1 token, minimal quota)
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        let resp;
+        try {
+          resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, { signal: ctrl.signal });
+        } finally { clearTimeout(t); }
+        if (resp.ok) return { valid: true, masked: masked(key) };
+        const data = await resp.json().catch(() => ({}));
+        const msg = data?.error?.message || `HTTP ${resp.status}`;
+        if (resp.status === 400 && /API key not valid/i.test(msg)) return { valid: false, masked: masked(key), error: 'Invalid API key' };
+        if (resp.status === 403) return { valid: false, masked: masked(key), error: 'Permission denied (check API enabled)' };
+        // 429 or other transient — key is valid but quota/billing issue
+        if (resp.status === 429) return { valid: true, masked: masked(key), warning: 'Key valid but quota exceeded (try later)' };
+        return { valid: false, masked: masked(key), error: msg.slice(0, 80) };
+      } catch (e) {
+        if (e.name === 'AbortError') return { valid: false, masked: masked(key), error: 'Timeout' };
+        return { valid: false, masked: masked(key), error: (e.message || 'Unknown error').slice(0, 80) };
+      }
+    }));
+    res.json({ results });
+  });
+
   // SSE research run. Query/body: question, mode, stance, hypothesis, documentary, model, fresh.
   r.post('/research', researchLimiter, async (req, res) => {
     // Multi-key: x-gemini-key (single) and/or x-gemini-keys (JSON array, max 5).
