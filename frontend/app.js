@@ -53,8 +53,8 @@ async function init() {
     // Populate model selectors
     if (cfg.models && Array.isArray(cfg.models)) {
       const opts = cfg.models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
-      $('#modelSelect').innerHTML = '<option value="">Auto (server default)</option>' + opts;
-      $('#modelInput').innerHTML = '<option value="">Auto (server default)</option>' + opts;
+      $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
+      $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
       const savedModel = getStoredModel();
       if (savedModel) {
         $('#modelSelect').value = savedModel;
@@ -84,17 +84,30 @@ async function init() {
   $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
   $('#keyCount').classList.toggle('hidden', keys.length === 0);
   renderKeyList();
-  // Model selector change handlers
+  // Model selector change handlers with Auto preview
+  function updateModelHint(value) {
+    const hint = $('#modelHint');
+    if (!hint) return;
+    if (!value) {
+      hint.style.display = 'block';
+      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--ok)">Gemini 2.0 Flash-Lite</span> for planning & analysis (30 RPM, fastest) + <span style="color: var(--acc)">Gemini 2.5 Flash</span> for research & synthesis (10 RPM, highest quality). Spreads load across models to multiply quota.';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
   $('#modelSelect').addEventListener('change', () => {
     const v = $('#modelSelect').value;
     localStorage.setItem('gemini_model', v);
     $('#modelInput').value = v;
+    updateModelHint(v);
   });
   $('#modelInput').addEventListener('change', () => {
     const v = $('#modelInput').value;
     localStorage.setItem('gemini_model', v);
     $('#modelSelect').value = v;
+    updateModelHint(v);
   });
+  updateModelHint(getStoredModel());
 }
 
 function renderKeyList() {
