@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Single waiting indicator per episode (no "Brief pause" spam, no silence); resumed clears it; per-operation re-arm
+- Per-call wait budgets: searches fail fast (45s quick / 90s), synthesis stays patient; resumed event on recovery
 - Honest research progress: backend phase + live stats on every event, phase-anchored bar, elapsed timer, auto-scroll
 - Follow-up source parity: shared record builder + intra-batch dedup + bounded full-text top-up fetch
 - Fixed grounding snippet misattribution (chunk-index shift after filtering)

@@ -128,7 +128,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // round, until the wait budget is spent. Only 429s are waited for (quota
 // refills); other errors fail fast so real problems surface immediately.
 // Timeouts/bad requests fail fast, never rotated, never retried.
-// onKeyEvent receives { type:'rotated'|'rate-wait', ... } — never key values.
+// onKeyEvent receives { type:'rotated'|'rate-wait'|'resumed', ... } — never key values.
 async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent, rateWaitBudgetMs, model } = {}) {
   if (!keys.length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
   const penv = (typeof process !== 'undefined' && process.env) || {};
@@ -145,6 +145,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
   let firstErr = null;
   let waitedMs = 0;
   let round = 0;
+  let waited = false;
   for (;;) {
     round++;
     let round429 = null;
@@ -163,6 +164,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
         preferredIdx = ki;
         unblockKey(keys[ki]); // success clears block
+        if (waited) onKeyEvent?.({ type: 'resumed' });
         return data;
       } catch (e) {
         if (e?.name === 'AbortError') throw e;
@@ -216,6 +218,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     const wait = hinted > 0 ? Math.min(hinted, 60000) : (8000 + Math.floor(Math.random() * 4000));
     if (waitedMs + wait > budget) break; // budget spent → honest failure below
     waitedMs += wait;
+    waited = true;
     onKeyEvent?.({ type: 'rate-wait', waitMs: wait });
     await sleep(wait);
   }
@@ -364,12 +367,12 @@ export async function generateJson({ key, model, prompt, system = '', schema, te
 
 /** Grounded search: one Gemini call with the google_search tool.
  *  Returns { text, queries, chunks, supports } — chunks become Sources. */
-export async function groundedSearch({ key, model, query, timeoutMs, onKeyEvent, thinking }) {
+export async function groundedSearch({ key, model, query, timeoutMs, onKeyEvent, thinking, rateWaitBudgetMs }) {
   const data = await postThinking((k) => endpoint(model, k), {
     contents: [{ parts: [{ text: query }] }],
     tools: [{ google_search: {} }],
     generationConfig: { temperature: 1.0, maxOutputTokens: 2048 },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model }, model, thinking);
+  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model, rateWaitBudgetMs }, model, thinking);
   const g = extractGrounding(data);
   return { text: extractText(data), ...g, usage: extractUsage(data), raw: data };
 }

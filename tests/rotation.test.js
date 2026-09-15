@@ -56,6 +56,37 @@ describe('API key rotation', () => {
     assert.ok(!JSON.stringify(events).includes('KEY_'), 'rotation events must never contain key material');
   });
 
+  it('emits resumed after waiting then succeeding', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const events = [];
+    let calls = 0;
+    const limited = () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '1s' }] } });
+    mockFetch(async () => { calls++; return calls === 1 ? limited() : jsonResponse(200, okPayload); });
+    const r = await generate({ key: '', model: 'm', prompt: 'hi', onKeyEvent: (e) => events.push(e) });
+    assert.equal(r.text, 'hi');
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['rate-wait', 'resumed'],
+      'exactly one wait and one resume — no spam, no silence',
+    );
+  });
+
+  it('honors a tiny per-call budget and fails fast with QUOTA_EXHAUSTED', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const saved = process.env.QUOTA_WAIT_BUDGET_MS;
+    process.env.QUOTA_WAIT_BUDGET_MS = '0';
+    try {
+      mockFetch(async () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '120s' }] } }));
+      const t0 = Date.now();
+      const err = await generate({ key: '', model: 'm', prompt: 'hi' }).catch((e) => e);
+      assert.equal(err.code, 'QUOTA_EXHAUSTED');
+      assert.ok(Date.now() - t0 < 10_000, 'must not sleep through a 120s hint on zero budget');
+    } finally {
+      if (saved === undefined) delete process.env.QUOTA_WAIT_BUDGET_MS;
+      else process.env.QUOTA_WAIT_BUDGET_MS = saved;
+    }
+  });
+
   it('fails over on invalid-key 400, then throws first error when all keys fail', async () => {
     mockFetch(async () => jsonResponse(400, { error: { message: 'API key not valid', status: 'INVALID_ARGUMENT' } }));
     await assert.rejects(generate({ key: '', model: 'm', prompt: 'hi' }), /API key not valid/);

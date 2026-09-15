@@ -29,8 +29,8 @@ import { splitEnrichment } from './enrich.js';
 export const defaultDeps = {
   plan: (args) => planResearch({ ...args, model: args.model || MODEL_CONFIG.planner }),
   queries: (args) => generateQueries(args),
-  search: async (q, _category, { key, model, onUsage, onKeyEvent }) =>
-    geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent }),
+  search: async (q, _category, { key, model, onUsage, onKeyEvent, rateWaitBudgetMs }) =>
+    geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent, rateWaitBudgetMs }),
   academic: (question) => searchAcademic(question),
   books: (question, limit, opts) => searchBooks(question, limit, opts),
   expandBooks: (args) => expandBookQueries(args.topic, args),
@@ -77,7 +77,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // usage auto-tracked: every model-returning dep reports { usage } with real API counts
   // Cancellation is cooperative: checked before every model call and loop —
   // a disconnected client stops burning quota within seconds.
-  const call = async (fn) => { throwIfStopped(); stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
+  const call = async (fn) => { throwIfStopped(); waitNoticeShown = false; stats.modelCalls++; const r = await fn(); track(r?.usage); return r; };
   const deadline = started + budget.maxRuntimeMs;
 
   const ev = (type, message, data = {}) => emit({
@@ -85,6 +85,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     stats: { modelCalls: stats.modelCalls, searchCalls: stats.searchCalls, fetches: stats.fetches, tokensIn: stats.tokensIn, tokensOut: stats.tokensOut },
     ...data, at: new Date().toISOString(),
   });
+  // One waiting notice per episode per operation: repeated waits inside one
+  // episode stay silent (no spam), a resumed event or a new top-level
+  // operation re-arms the notice (no silence during genuinely new stalls).
+  let waitNoticeShown = false;
   const keyEvent = (info) => {
     if (info?.type === 'rotated') {
       stats.keyRotations++;
@@ -92,8 +96,15 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       // rotation is internal. No UI noise.
     } else if (info?.type === 'rate-wait') {
       stats.quotaWaitMs = (stats.quotaWaitMs || 0) + (info.waitMs || 0);
-      // Fully silent — pacing is preemptive (per-key per-model gaps),
-      // waits are expected and not an error. Never show "Brief pause" steps.
+      // One calm notice per waiting episode (not per wait): the user asked
+      // for NO "brief pause" spam, but total silence during minutes of
+      // waiting looks frozen. The next real progress supersedes this.
+      if (!waitNoticeShown) {
+        waitNoticeShown = true;
+        ev('progress', 'Waiting for API quota — research continues automatically…');
+      }
+    } else if (info?.type === 'resumed') {
+      waitNoticeShown = false;
     }
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
@@ -147,15 +158,20 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
 
   // ---- SEARCH (parallel grounding ×5, academic/books overlapped) ----
   currentPhase = 'search';
+  // Per-search wait budget: searches are cheap and numerous — a single stuck
+  // search must fail fast (academic/books/free sources still produce a result)
+  // instead of burning the whole run quota-wait budget silently.
+  const searchWaitMs = task.mode === 'quick' ? 45_000 : 90_000;
   let allResults = [];
   const doSearch = async (q, category, explicitKey = key) => {
     // check+reserve is synchronous (no await between) → race-free under pool()
     throwIfStopped();
     if (!alive() || overTokenCap()) return [];
+    waitNoticeShown = false;
     stats.searchCalls++;
     ev('progress', `Searching: ${q.q || q}`, { category });
     try {
-      const rs = await D.search(q, category, { key: explicitKey, model: models.research, timeoutMs: searchTimeoutMs, onUsage: track, onKeyEvent: keyEvent });
+      const rs = await D.search(q, category, { key: explicitKey, model: models.research, timeoutMs: searchTimeoutMs, onUsage: track, onKeyEvent: keyEvent, rateWaitBudgetMs: searchWaitMs });
       return rs.map((r) => ({ ...r, category }));
     } catch (e) {
       ev('warning', `Search failed (${(e.message || '').slice(0, 100)})`, { query: q.q || q });

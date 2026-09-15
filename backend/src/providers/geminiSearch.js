@@ -18,8 +18,8 @@ export const geminiSearchProvider = {
   name: 'gemini-grounding',
   // Single implementation: grounded call → normalized results. onUsage receives
   // real API token counts; onKeyEvent announces key rotation (never values).
-  async search(query, { key, model, timeoutMs, onUsage, onKeyEvent } = {}) {
-    const r = await groundedSearch({ key, model, query, timeoutMs, onKeyEvent });
+  async search(query, { key, model, timeoutMs, onUsage, onKeyEvent, rateWaitBudgetMs } = {}) {
+    const r = await groundedSearch({ key, model, query, timeoutMs, onKeyEvent, rateWaitBudgetMs });
     onUsage?.(r.usage);
     // NOTE: groundingChunkIndices refer to positions in the ORIGINAL chunks
     // array, so the snippet must be resolved BEFORE filtering (otherwise one
