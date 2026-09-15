@@ -62,10 +62,11 @@ function blockKey(k, ms) {
 }
 function unblockKey(k) { keyBlockedUntil.delete(keyHash(k)); }
 
-// Per-model pacing: free-tier limits are per model (e.g., 30 RPM for Lite,
-// 10 RPM for Flash). Pacing proactively avoids 429s instead of reactively
-// waiting. Next-allowed timestamp ensures even concurrent calls are spaced.
-const modelNextAllowed = new Map(); // model -> timestamp (ms)
+// Per-key-per-model pacing: free-tier limits are per model per project.
+// With 5 keys from 5 projects, 2.5 Flash gives 5×10=50 RPM effective, not 10.
+// Pacing per key+model ensures even distribution actually multiplies throughput.
+// Without per-key, 5 keys sharing one global bucket would still be 10 RPM.
+const modelNextAllowed = new Map(); // `${model}|${keyHash}` -> timestamp (ms)
 function modelGapMs(model) {
   const m = String(model || '').toLowerCase();
   if (m.includes('flash-lite') || m.includes('flash_lite')) return 2000; // 30 RPM
@@ -74,12 +75,14 @@ function modelGapMs(model) {
   if (m.includes('pro') || m.includes('gemma')) return 12000; // 5 RPM
   return 6000; // conservative default
 }
-async function paceForModel(model) {
+async function paceForModel(model, key) {
   const gap = modelGapMs(model);
-  const next = modelNextAllowed.get(model) || 0;
+  const hash = key ? keyHash(key) : 'nokey';
+  const mapKey = `${model}|${hash}`;
+  const next = modelNextAllowed.get(mapKey) || 0;
   const wait = next - Date.now();
   // Reserve next slot before waiting so concurrent callers queue correctly
-  modelNextAllowed.set(model, Math.max(next, Date.now()) + gap);
+  modelNextAllowed.set(mapKey, Math.max(next, Date.now()) + gap);
   if (wait > 0) await sleep(wait);
 }
 
@@ -126,7 +129,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // refills); other errors fail fast so real problems surface immediately.
 // Timeouts/bad requests fail fast, never rotated, never retried.
 // onKeyEvent receives { type:'rotated'|'rate-wait', ... } — never key values.
-async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent, rateWaitBudgetMs } = {}) {
+async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent, rateWaitBudgetMs, model } = {}) {
   if (!keys.length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
   const penv = (typeof process !== 'undefined' && process.env) || {};
   // Default 5 minutes — user explicitly says "time can be more but results should be best"
@@ -154,6 +157,8 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     let hadAvailable = available.length > 0;
     for (let o = 0; o < tryOrder.length; o++) {
       const ki = tryOrder[o];
+      // Preemptive pacing per key+model to avoid hitting RPM in the first place
+      if (model) await paceForModel(model, keys[ki]);
       try {
         const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
         preferredIdx = ki;
@@ -304,14 +309,14 @@ export async function generate({ key, model, prompt, system = '', temperature = 
     contents: [{ parts: [{ text: prompt }] }],
     ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
     generationConfig: { temperature, maxOutputTokens: maxTokens },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent });
+  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model });
   return { text: extractText(data), usage: extractUsage(data), raw: data };
 }
 
 /** Structured JSON generation with schema; falls back to fenced-JSON extraction. */
 export async function generateJson({ key, model, prompt, system = '', schema, temperature = 0.2, maxTokens = 4096, timeoutMs, onKeyEvent, thinking }) {
   const keys = getKeys(key);
-  const opts = { timeoutMs, keys, onKeyEvent };
+  const opts = { timeoutMs, keys, onKeyEvent, model };
   const run = (body) => postThinking((k) => endpoint(model, k), body, opts, model, thinking);
   let data;
   try {
@@ -346,7 +351,7 @@ export async function generateJson({ key, model, prompt, system = '', schema, te
     const fix = await post((k) => endpoint(model, k), {
       contents: [{ parts: [{ text: `Your previous response was not valid JSON. Re-emit ONLY the JSON value — no prose, no fences, no commentary.\n\nPrevious response:\n${text.slice(0, 6000)}` }] }],
       generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
-    }, { timeoutMs, keys, onKeyEvent });
+    }, { timeoutMs, keys, onKeyEvent, model });
     const text2 = extractText(fix);
     const usage2 = extractUsage(fix);
     return {
@@ -364,7 +369,7 @@ export async function groundedSearch({ key, model, query, timeoutMs, onKeyEvent,
     contents: [{ parts: [{ text: query }] }],
     tools: [{ google_search: {} }],
     generationConfig: { temperature: 1.0, maxOutputTokens: 2048 },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent }, model, thinking);
+  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model }, model, thinking);
   const g = extractGrounding(data);
   return { text: extractText(data), ...g, usage: extractUsage(data), raw: data };
 }
@@ -376,7 +381,7 @@ export async function urlContext({ key, model, prompt, urls, timeoutMs, onKeyEve
     contents: [{ parts: [{ text: `${prompt}\n\nConsult these URLs:\n${quoted}` }] }],
     tools: [{ url_context: {} }],
     generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent }, model, thinking);
+  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model }, model, thinking);
   return { text: extractText(data), grounding: extractGrounding(data), usage: extractUsage(data), raw: data };
 }
 
