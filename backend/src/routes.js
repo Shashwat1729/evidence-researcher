@@ -129,7 +129,15 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     const sendError = (e) => {
       const status = e.status || 500;
       let msg = e.message || 'research failed';
-      if (status === 429 || /quota|rate|429/i.test(msg)) msg = 'Gemini rate limit reached. Wait a minute and retry, or use a shallower mode.';
+      // These are already retried patiently in gemini.js; if they surface here,
+      // the wait budget was truly exhausted. Handle gracefully with fallback info.
+      if (e.code === 'RPD_EXHAUSTED') {
+        msg = 'Daily API quota exhausted (resets at midnight PT). Try a billed project for higher limits. Partial results may still be available from cache.';
+      } else if (e.code === 'QUOTA_EXHAUSTED' || status === 429 || /quota|rate|429/i.test(msg)) {
+        // This should rarely happen now that gemini.js waits patiently (5 min).
+        // If it does, suggest adding keys from different projects (per-project quota).
+        msg = 'API quota temporarily exhausted after patient retries. Add keys from different Google Cloud projects to multiply quota, or try again shortly. Partial results may be in cache.';
+      }
       if (/API key|API_KEY|key not valid/i.test(msg)) msg = 'Invalid Gemini API key. Check the key and try again.';
       send({ type: 'error', message: msg });
     };

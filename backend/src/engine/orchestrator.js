@@ -634,11 +634,24 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
           ev('progress', `${label}: ${found.length} finding(s)`);
           return found;
         } catch (e) {
-          if ((e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED') && attempt < 3) {
-            ev('progress', `${label} rate-limited — quota wait done, retrying (attempt ${attempt + 1})…`);
+          // Patient retry for quota — user said "time can be more but results should be best"
+          // Never skip on transient 429; wait and retry until budget or deadline.
+          // Only skip on non-retryable errors (400, etc.) or after many attempts.
+          const isQuota = e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED' || e?.code === 'RPD_EXHAUSTED';
+          const isRetryable = isQuota || e?.status === 502 || e?.status === 503;
+          if (isRetryable && attempt < 5 && Date.now() < deadline - 5000 && !isCancelled()) {
+            const waitHint = e?.retryAfter ? ` (retry after ${Math.ceil(e.retryAfter/1000)}s)` : '';
+            ev('progress', `${label} temporarily unavailable${waitHint} — retrying (${attempt + 1}/5)…`);
+            // Wait a bit before retry — let quota refill, with backoff
+            const waitMs = isQuota ? 8000 + Math.floor(Math.random() * 4000) : 2000 * attempt;
+            await new Promise(r => setTimeout(r, waitMs));
             continue;
           }
-          ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
+          if (isQuota) {
+            ev('progress', `${label} quota still exhausted after retries — will be covered in fallback inventory`);
+          } else {
+            ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
+          }
           return [];
         }
       }

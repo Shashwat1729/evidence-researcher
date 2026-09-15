@@ -21,6 +21,17 @@ with your own Gemini key — grounding search, academic discovery, claims,
 provenance, cited report, exports. No server, no signup; page fetches may be
 limited by site CORS policies (recorded honestly, never bypassed).
 
+### Screenshots
+
+<table>
+<tr>
+<td><img src="docs/screenshots/ask-desktop.png" alt="Research form on desktop — question, mode cards, stance" width="100%"><br><em>Desktop — ask with mode cards and stance</em></td>
+<td><img src="docs/screenshots/ask-mobile.png" alt="Mobile view — responsive research form" width="100%"><br><em>Mobile — fully responsive</em></td>
+</tr>
+</table>
+
+> Screenshots are captured headlessly at 1440×960 and 390×844 from the live Pages build (`scripts/build-pages.js` verifies every import resolves, so screenshots never go stale).
+
 ## Quickstart (local, 2 minutes)
 
 Requirements: Node.js ≥ 20. Get a free Gemini key at https://aistudio.google.com/apikey.

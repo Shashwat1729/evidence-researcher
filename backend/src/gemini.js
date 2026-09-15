@@ -38,10 +38,12 @@ function endpoint(model, key) {
   return `${API_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
 }
 
-// Process-wide preferred-key hint (perf only: skip a known-dead key first).
-// Benign under concurrency — worst case one wasted attempt before rotation.
+// Even distribution + per-key blocking for multi-key setups.
+// Keys from DIFFERENT projects have independent quotas — even round-robin
+// multiplies throughput. Keys from same project share quota (per Google docs).
 let preferredIdx = 0;
-export function resetKeyState() { preferredIdx = 0; for (const k of keyBlockedUntil.keys()) keyBlockedUntil.delete(k); }
+let globalCallCounter = 0;
+export function resetKeyState() { preferredIdx = 0; globalCallCounter = 0; for (const k of keyBlockedUntil.keys()) keyBlockedUntil.delete(k); }
 
 // Per-key blocked-until tracking for multi-key rotation.
 // IMPORTANT: Per Google docs, rate limits are PER PROJECT, not per key.
@@ -66,14 +68,28 @@ const isKeyError = (err) =>
 
 const isTransient = (status) => status === 429 || status === 502 || status === 503;
 
-/** Honor Google's RetryInfo retryDelay (capped at 30s); else bounded backoff. */
+/** Honor Google's RetryInfo retryDelay or Retry-After header; else 0 (caller decides).
+ *  Caps at 5 minutes for RPM; values >2 min are treated as RPD (hours) by caller.
+ *  Never invents a 30s default — that was the source of the hardcoded "waiting 30s" users saw. */
 function retryDelayMs(err, fallbackMs) {
+  // Prefer Retry-After header if present (more accurate than details)
+  try {
+    const hdr = err?.headers?.['retry-after'] || err?.headers?.['Retry-After'];
+    if (hdr) {
+      const secs = parseFloat(String(hdr).trim());
+      if (Number.isFinite(secs)) return Math.max(500, Math.ceil(secs * 1000));
+    }
+  } catch { /* ignore */ }
   try {
     const details = err?.data?.error?.details || [];
     for (const d of details) {
       if (typeof d.retryDelay === 'string') {
         const m = d.retryDelay.match(/([\d.]+)\s*s/);
-        if (m) return Math.min(30_000, Math.max(500, Math.ceil(parseFloat(m[1]) * 1000)));
+        if (m) return Math.max(500, Math.ceil(parseFloat(m[1]) * 1000));
+      }
+      // Also check retryInfo field variant
+      if (d.retryDelay && typeof d.retryDelay === 'object' && d.retryDelay.seconds) {
+        return Math.max(500, parseInt(d.retryDelay.seconds, 10) * 1000);
       }
     }
   } catch { /* ignore malformed details */ }
@@ -97,7 +113,11 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
   // We wait patiently for RPM, but fail fast on RPD and fall back to evidence inventory.
   const budget = Number.isFinite(rateWaitBudgetMs) ? Math.max(0, rateWaitBudgetMs)
     : Math.max(0, Number(penv.QUOTA_WAIT_BUDGET_MS || 300_000));
-  const order = keys.map((_, i) => (preferredIdx + i) % keys.length);
+  // Even round-robin from first call: ensures load is spread across all keys
+  // proactively, not only on failures. This multiplies throughput when keys
+  // are from different projects (per-project quota).
+  const startIdx = globalCallCounter++ % keys.length;
+  const order = keys.map((_, i) => (startIdx + i) % keys.length);
   let firstErr = null;
   let waitedMs = 0;
   let round = 0;
@@ -124,7 +144,9 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         if (e.status === 429) {
           round429 = round429 || e;
           // Block this key for the hinted duration (per-key, not global)
-          const blockMs = retryDelayMs(e, 0) || 15000;
+          // Use actual Retry-After when available; fallback is small (6-10s) based on 10 RPM free tier, not hardcoded 15-30s.
+          const hintedMs = retryDelayMs(e, 0);
+          const blockMs = hintedMs || (8000 + Math.floor(Math.random() * 4000));
           blockKey(keys[ki], Math.min(blockMs, 120000));
           if (hadAvailable && tryOrder.length > 1 && o + 1 < tryOrder.length) {
             onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'rate-limit' });
@@ -163,7 +185,9 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         status: 429, code: 'RPD_EXHAUSTED', retryAfter: hinted,
       });
     }
-    const wait = hinted > 0 ? Math.min(hinted, 60000) : Math.min(60000, 15000 * round);
+    // Use actual Retry-After when available; fallback is small jitter (6-10s for 10 RPM free tier)
+    // Previous hardcoded 15s*round (e.g., 30s on round 2) was arbitrary — now dynamic.
+    const wait = hinted > 0 ? Math.min(hinted, 60000) : (8000 + Math.floor(Math.random() * 4000));
     if (waitedMs + wait > budget) break; // budget spent → honest failure below
     waitedMs += wait;
     onKeyEvent?.({ type: 'rate-wait', waitMs: wait });
