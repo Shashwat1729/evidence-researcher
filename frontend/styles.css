@@ -242,11 +242,20 @@ main { max-width: 1100px; margin: 0 auto; padding: 1.6rem 1.2rem 2rem }
 .sk-line.short { width: 60% }
 @keyframes sk { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
 
-/* Tabs */
-.tabs { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: 1rem; padding: .35rem; background: var(--bg-elev); border: 1px solid var(--line); border-radius: 12px; width: fit-content; max-width: 100% }
+/* Tabs — horizontally scrollable on mobile (never wrap into 3 rows) */
+.tabs {
+  display: flex; flex-wrap: nowrap; gap: .3rem; margin-bottom: 1rem; padding: .35rem;
+  background: var(--bg-elev); border: 1px solid var(--line); border-radius: 12px;
+  max-width: 100%; overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.tabs::-webkit-scrollbar { display: none }
 .tabs button {
+  flex: 0 0 auto; scroll-snap-align: start;
   background: transparent; border: 1px solid transparent; color: var(--mut);
   padding: .45rem .7rem; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s;
+  white-space: nowrap;
 }
 .tabs button:hover { color: var(--txt); background: var(--card) }
 .tabs button.active { background: var(--card); color: var(--txt-strong); border-color: var(--line); box-shadow: var(--shadow-sm) }
@@ -322,6 +331,46 @@ svg.graph { width: 100%; height: 420px; background: var(--bg-elev); border: 1px 
   max-width: 1100px; margin: 2rem auto 0; padding: 1rem 1.2rem;
   border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 1rem;
   font-size: 12px; color: var(--mut); flex-wrap: wrap;
+}
+
+/* ── Mobile (390px) — premium, not just stacked ── */
+@media (max-width: 480px) {
+  main { padding: 1rem .9rem 1.5rem }
+  .topbar-inner { padding: .6rem .9rem; gap: .6rem }
+  .brand { gap: .6rem; min-width: 0 }
+  .brand-mark { width: 32px; height: 32px; font-size: 16px; border-radius: 8px; flex-shrink: 0 }
+  .brand-text strong { font-size: 13px }
+  .brand-text span { font-size: 10px }
+  .top-actions { gap: .35rem; flex-shrink: 0 }
+  .top-actions .select { padding: .4rem .45rem; font-size: 12px; max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .top-actions .btn { padding: .4rem .55rem; font-size: 13px }
+  .hero { gap: 1.2rem }
+  .hero h1 { font-size: clamp(1.55rem, 7vw, 1.9rem); margin: .6rem 0 .5rem }
+  .hero .sub { font-size: 14px }
+  .ask-card { padding: 1rem .9rem }
+  .card { padding: 1rem .9rem }
+  .lbl textarea { min-height: 96px }
+  .mode-card { padding: .8rem .8rem .7rem }
+  .segmented { max-width: 100%; overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none }
+  .segmented::-webkit-scrollbar { display: none }
+  .segmented span { font-size: 12px; padding: .32rem .6rem; white-space: nowrap }
+  .advanced summary { padding: .6rem .8rem }
+  .check { font-size: 12.5px }
+  .ask-actions { flex-direction: column; align-items: stretch }
+  .ask-actions .btn.large { width: 100%; justify-content: center }
+  .trust-item { padding: .7rem .75rem }
+  .progress-head h2 { font-size: 15px }
+  .tabs { padding: .3rem; gap: .25rem }
+  .tabs button { padding: .4rem .6rem; font-size: 12.5px }
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap }
+  table th, table td { white-space: nowrap }
+  #histList > div { flex-direction: column; align-items: flex-start; gap: .5rem }
+  #histList > div .btn { align-self: stretch; justify-content: center }
+  dialog { width: calc(100% - 1.2rem); max-width: none; margin: 1rem auto }
+  .dialog-form { padding: 1rem }
+  .row { gap: .4rem }
+  .row .btn { flex: 1 1 auto }
+  .footer { flex-direction: column; gap: .4rem; padding: .9rem }
 }
 
 @media (prefers-reduced-motion: reduce) {
