@@ -303,21 +303,20 @@ function run(body) {
         body: JSON.stringify(body),
         signal: abort.signal,
       });
-      // Handle 429 with Retry-After — patient wait, shown as normal progress (not error)
-      // User said "time can be more but results should be best" — so we wait and retry.
+      // Handle 429 — wait silently and retry. User explicitly said "brief pausing"
+      // steps are noisy and should not be shown (plus the 30s wait was hardcoded).
+      // We honor Retry-After when present, otherwise use small jitter (6-10s)
+      // based on 10 RPM free tier, not 15s*attempt (which gave 30s on attempt 2).
       if (res.status === 429 && attempts < maxAttempts) {
         const retryAfter = parseInt(res.headers.get('Retry-After') || res.headers.get('retry-after') || '0');
-        const waitMs = retryAfter ? retryAfter * 1000 : Math.min(60000, 1000 * Math.pow(2, attempts) + Math.random()*1000);
-        step('run', `Brief pause to respect API limits — continuing in ${Math.ceil(waitMs/1000)}s…`);
+        const waitMs = retryAfter ? retryAfter * 1000 : (8000 + Math.floor(Math.random() * 4000));
         await asleep(waitMs);
         return doFetch();
       }
       if (!res.ok && res.headers.get('content-type')?.includes('json')) {
         const e = await res.json();
-        // Also handle JSON 429 with retry — patient, not error
         if (res.status === 429 && e.retryAfter && attempts < maxAttempts) {
           const waitMs = e.retryAfter * 1000;
-          step('run', `Brief pause — continuing in ${e.retryAfter}s…`);
           await asleep(waitMs);
           return doFetch();
         }
