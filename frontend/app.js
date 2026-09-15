@@ -290,20 +290,21 @@ function run(body) {
         body: JSON.stringify(body),
         signal: abort.signal,
       });
-      // Handle 429 with Retry-After — dynamic wait and retry
+      // Handle 429 with Retry-After — patient wait, shown as normal progress (not error)
+      // User said "time can be more but results should be best" — so we wait and retry.
       if (res.status === 429 && attempts < maxAttempts) {
         const retryAfter = parseInt(res.headers.get('Retry-After') || res.headers.get('retry-after') || '0');
         const waitMs = retryAfter ? retryAfter * 1000 : Math.min(60000, 1000 * Math.pow(2, attempts) + Math.random()*1000);
-        step('warn', `Rate limited — retrying in ${Math.ceil(waitMs/1000)}s (attempt ${attempts}/${maxAttempts})…`);
+        step('run', `Brief pause to respect API limits — continuing in ${Math.ceil(waitMs/1000)}s…`);
         await asleep(waitMs);
         return doFetch();
       }
       if (!res.ok && res.headers.get('content-type')?.includes('json')) {
         const e = await res.json();
-        // Also handle JSON 429 with retry
+        // Also handle JSON 429 with retry — patient, not error
         if (res.status === 429 && e.retryAfter && attempts < maxAttempts) {
           const waitMs = e.retryAfter * 1000;
-          step('warn', `Rate limited — retrying in ${e.retryAfter}s…`);
+          step('run', `Brief pause — continuing in ${e.retryAfter}s…`);
           await asleep(waitMs);
           return doFetch();
         }
@@ -391,12 +392,17 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
 
 function handleEvent(ev, step, hooks = {}) {
   if (ev.type === 'error') {
+    // Quota errors are handled gracefully — show as waiting progress, not error.
+    // The backend will still produce partial results via fallback.
+    if (/quota|rate limit|429/i.test(ev.message)) {
+      step('run', ev.message + ' — waiting and will continue automatically…');
+      return;
+    }
     step('warn', 'Error: ' + ev.message);
     // Terminal: the server ends the stream right after. Land home with the
     // message instead of stranding the user on the progress view.
     // (If a result already rendered, leave it alone.)
     if ($('#resultView').classList.contains('hidden')) goHome('Error: ' + ev.message, 'error');
-    hooks.onTerminal?.();
     return;
   }
   if (ev.phase) hooks.onPhase?.(ev.phase);

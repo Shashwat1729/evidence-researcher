@@ -41,7 +41,24 @@ function endpoint(model, key) {
 // Process-wide preferred-key hint (perf only: skip a known-dead key first).
 // Benign under concurrency — worst case one wasted attempt before rotation.
 let preferredIdx = 0;
-export function resetKeyState() { preferredIdx = 0; }
+export function resetKeyState() { preferredIdx = 0; for (const k of keyBlockedUntil.keys()) keyBlockedUntil.delete(k); }
+
+// Per-key blocked-until tracking for multi-key rotation.
+// IMPORTANT: Per Google docs, rate limits are PER PROJECT, not per key.
+// Multiple keys from the SAME project share quota — rotation only helps
+// if keys are from DIFFERENT projects. We track per-key to handle the
+// cross-project case correctly, and per-project would ideally require
+// project ID extraction (not available from key alone).
+const keyBlockedUntil = new Map(); // keyHash -> timestamp (ms)
+function keyHash(k) { return String(k || '').slice(0, 12); }
+function isKeyBlocked(k) {
+  const until = keyBlockedUntil.get(keyHash(k));
+  return until && Date.now() < until;
+}
+function blockKey(k, ms) {
+  keyBlockedUntil.set(keyHash(k), Date.now() + Math.max(1000, ms));
+}
+function unblockKey(k) { keyBlockedUntil.delete(keyHash(k)); }
 
 const isKeyError = (err) =>
   err?.status === 401 || err?.status === 403 ||
@@ -75,8 +92,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], onKeyEvent, rateWaitBudgetMs } = {}) {
   if (!keys.length) throw Object.assign(new Error('GEMINI_API_KEY is required'), { status: 401 });
   const penv = (typeof process !== 'undefined' && process.env) || {};
+  // Default 5 minutes — user explicitly says "time can be more but results should be best"
+  // RPD (daily) exhaustion has Retry-After of hours; RPM (per-minute) is seconds.
+  // We wait patiently for RPM, but fail fast on RPD and fall back to evidence inventory.
   const budget = Number.isFinite(rateWaitBudgetMs) ? Math.max(0, rateWaitBudgetMs)
-    : Math.max(0, Number(penv.QUOTA_WAIT_BUDGET_MS || 120_000));
+    : Math.max(0, Number(penv.QUOTA_WAIT_BUDGET_MS || 300_000));
   const order = keys.map((_, i) => (preferredIdx + i) % keys.length);
   let firstErr = null;
   let waitedMs = 0;
@@ -84,28 +104,65 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
   for (;;) {
     round++;
     let round429 = null;
-    for (let o = 0; o < order.length; o++) {
-      const ki = order[o];
+    // Build ordered list skipping currently-blocked keys (per-key tracking).
+    // Per Google docs, limits are per PROJECT, so keys from same project share
+    // quota — but keys from DIFFERENT projects have independent quotas. Tracking
+    // per-key lets cross-project setups actually multiply throughput.
+    const available = order.filter(ki => !isKeyBlocked(keys[ki]));
+    const tryOrder = available.length ? available : order;
+    let hadAvailable = available.length > 0;
+    for (let o = 0; o < tryOrder.length; o++) {
+      const ki = tryOrder[o];
       try {
         const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
-        preferredIdx = ki; // sticky: skip known-dead keys first next time
+        preferredIdx = ki;
+        unblockKey(keys[ki]); // success clears block
         return data;
       } catch (e) {
         if (e?.name === 'AbortError') throw e;
         firstErr = firstErr || e;
-        if (e.status === 429) round429 = round429 || e;
-        if ((isTransient(e.status) || isKeyError(e)) && o + 1 < order.length) {
-          onKeyEvent?.({ type: 'rotated', keyIndex: order[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
-          continue; // next key immediately, no sleep
+        if (e.status === 429) {
+          round429 = round429 || e;
+          // Block this key for the hinted duration (per-key, not global)
+          const blockMs = retryDelayMs(e, 0) || 15000;
+          blockKey(keys[ki], Math.min(blockMs, 120000));
+          if (hadAvailable && tryOrder.length > 1 && o + 1 < tryOrder.length) {
+            onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'rate-limit' });
+            continue;
+          }
+        } else if ((isTransient(e.status) || isKeyError(e)) && o + 1 < tryOrder.length) {
+          onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
+          continue;
         }
-        if (!(isTransient(e.status) || isKeyError(e))) throw e; // key-independent: fail fast
-        // last key exhausted with transient/key error → wait logic below
+        if (!(isTransient(e.status) || isKeyError(e))) throw e;
+      }
+    }
+    // If we skipped blocked keys and none were available, wait for earliest unblock
+    if (!hadAvailable) {
+      const waits = order.map(ki => {
+        const until = keyBlockedUntil.get(keyHash(keys[ki])) || 0;
+        return Math.max(0, until - Date.now());
+      });
+      const minWait = Math.min(...waits);
+      if (minWait > 0 && minWait <= 120000 && waitedMs + minWait <= budget) {
+        waitedMs += minWait;
+        onKeyEvent?.({ type: 'rate-wait', waitMs: minWait });
+        await sleep(minWait);
+        continue; // retry with fresh blocked checks
       }
     }
     // All keys tried this round. Only 429s are worth waiting for (per-minute
     // buckets refill); anything else fails fast with the first error.
+    // Distinguish RPM (seconds, wait helps) vs RPD (hours, wait is futile —
+    // fall back to evidence inventory instead of hanging for hours).
     if (!round429 || round429.status !== 429) throw firstErr;
     const hinted = retryDelayMs(round429, 0);
+    if (hinted > 120000) {
+      // RPD/day quota — Retry-After is hours, not seconds. Waiting won't help.
+      throw Object.assign(new Error('Daily quota (RPD) exhausted — try again after midnight PT, or use a billed project. Partial results will be assembled from gathered evidence.'), {
+        status: 429, code: 'RPD_EXHAUSTED', retryAfter: hinted,
+      });
+    }
     const wait = hinted > 0 ? Math.min(hinted, 60000) : Math.min(60000, 15000 * round);
     if (waitedMs + wait > budget) break; // budget spent → honest failure below
     waitedMs += wait;

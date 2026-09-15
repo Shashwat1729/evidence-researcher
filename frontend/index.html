@@ -188,10 +188,11 @@
     <h3>API keys & model</h3>
     <p id="serverKeyNote" class="hint"></p>
 
-    <label class="lbl">Gemini API keys (add up to 5 — they rotate on rate limits)
+    <label class="lbl">Gemini API keys (add up to 5 — auto-rotates on rate limits)
       <div id="keyList" class="key-list"></div>
       <button type="button" id="addKey" class="btn ghost small">+ Add key</button>
-      <span class="hint">Stored in <b>this browser only</b> (localStorage). Sent to <b>your backend</b> per run, never persisted server-side.</span>
+      <span class="hint">Stored in <b>this browser only</b> (localStorage). Sent to <b>your backend</b> per run, never persisted server-side.<br>
+      <b>Tip:</b> Keys from <b>different Google Cloud projects</b> have independent quotas and multiply throughput. Keys from the same project share the same quota (per Google docs).</span>
     </label>
 
     <label class="lbl">Model

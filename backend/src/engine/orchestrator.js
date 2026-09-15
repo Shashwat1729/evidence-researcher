@@ -88,10 +88,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const keyEvent = (info) => {
     if (info?.type === 'rotated') {
       stats.keyRotations++;
-      ev('progress', `API key ${info.reason === 'rate-limit' ? 'rate-limited' : 'rejected'} — switched to fallback key`);
+      ev('progress', `Switching to next available API key…`);
     } else if (info?.type === 'rate-wait') {
       stats.quotaWaitMs = (stats.quotaWaitMs || 0) + (info.waitMs || 0);
-      ev('progress', `Quota limited — waiting ~${Math.ceil((info.waitMs || 0) / 1000)}s for the per-minute bucket, then retrying`);
+      ev('progress', `Brief pause to respect API limits — continuing in ${Math.ceil((info.waitMs || 0) / 1000)}s…`);
     }
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
