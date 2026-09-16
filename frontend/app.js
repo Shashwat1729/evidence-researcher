@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-16b';
+const STATIC_V = '2026-09-16c';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -481,9 +481,11 @@ function showResult(r) {
   $('#progressView').classList.add('hidden');
   $('#resultView').classList.remove('hidden');
   // Fallback inventory banner: synthesis used evidence inventory due to quota.
+  // NOTE: showResult is global — only globals (showNotice) may be used here,
+  // never the run-scoped step() (that crashed rendering with
+  // "step is not defined", discarding a completed result).
   if (r.report?.synthesisFallback) {
     showNotice('Model quota was hit — this report is an evidence inventory from gathered sources. Add more API keys (different projects) or try Quick mode for faster results.', '');
-    step('warn', 'Quota hit — showing evidence inventory from gathered sources.');
   } else {
     $('#notice').classList.add('hidden');
   }
