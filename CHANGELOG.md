@@ -2,7 +2,7 @@
 
 ## Unreleased
 - Dynamic rate limiting: adaptive AIMD pacing per key+model (429s double the gap up to 8x, successes ease back; class-based floors, never per-version hardcodes); pacing state reset between runs (also halved rotation test time)
-- Verified-live model catalog (2.5-flash/lite/pro; retired 1.5/2.0 ids map to Auto via canonicalizeModel so stale saved preferences never dead-run); defaults now 2.5-flash-lite for planning/analysis
+- Verified-live model catalog (2.5-flash/lite/pro; retired 1.5/2.0 ids map to Auto via canonicalizeModel so stale saved preferences never dead-run); defaults corrected to 2.5-flash for ALL roles after a live run showed 2.5-flash-lite is unavailable to new free-tier keys (lite stays in the picker for keys that have it)
 - Graceful quota degradation: mid-run quota exhaustion after evidence gathered yields an evidence inventory (synthesisFallback) instead of "api limit exceeded" with no result; UI shows inventory banner
 - Empty-grounding guard: sources with no excerpt text still carry a title fallback so passages are never silently empty
 - Global quota budget aligned to 300s (was 120s, starving patient synthesis retries)

@@ -6,15 +6,17 @@
 const env = (typeof process !== 'undefined' && process.env) || {};
 
 export const MODEL_CONFIG = {
-  // Spread quota across models: per Google docs, limits are per model per project.
-  // Using different models for different roles multiplies effective throughput.
-  // Verified live 2026-09-16 via GET /v1beta/models: gemini-2.0-flash-lite and
-  // the entire 1.5/2.0 families are retired; 2.5-flash + 2.5-flash-lite exist.
-  // Lite (high-RPM class) for lightweight planning/analysis; Flash (10 RPM)
-  // for grounding-heavy research/synthesis where quality matters most.
-  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash-lite',
+  // One proven default for all roles. Verified live 2026-09-16 two ways:
+  // GET /v1beta/models shows 2.5-flash + 2.5-flash-lite exist, BUT a real
+  // free-tier run showed 2.5-flash-lite is "no longer available to new
+  // users" — defaulting planning/analysis to it yields zero claims for most
+  // new keys. gemini-2.5-flash (10 RPM) works on new keys, so it is the
+  // default everywhere; keys with lite access can still pick it in the UI
+  // or via PLANNER_MODEL/ANALYSIS_MODEL env to spread quota across models
+  // (limits are per model per project).
+  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
   research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash-lite',
+  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
   synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
 };
 
@@ -101,7 +103,7 @@ export const STANCES = ['neutral', 'lean', 'adversarial', 'steelman', 'comparati
 // because limits are per model per project.
 export const AVAILABLE_MODELS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', blurb: 'Default — best balance of depth and free-tier quota (10 RPM).' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', blurb: 'Fastest, most quota headroom — best for planning.' },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', blurb: 'Fastest, most quota headroom — only if your key has access (unavailable to some new keys).' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', blurb: 'Deepest reasoning; much lower free-tier limits (5 RPM) — prefer paid keys.' },
 ];
 
