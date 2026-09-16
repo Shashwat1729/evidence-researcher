@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Dynamic rate limiting: adaptive AIMD pacing per key+model (429s double the gap up to 8x, successes ease back; class-based floors, never per-version hardcodes); pacing state reset between runs (also halved rotation test time)
+- Verified-live model catalog (2.5-flash/lite/pro; retired 1.5/2.0 ids map to Auto via canonicalizeModel so stale saved preferences never dead-run); defaults now 2.5-flash-lite for planning/analysis
+- Graceful quota degradation: mid-run quota exhaustion after evidence gathered yields an evidence inventory (synthesisFallback) instead of "api limit exceeded" with no result; UI shows inventory banner
+- Empty-grounding guard: sources with no excerpt text still carry a title fallback so passages are never silently empty
+- Global quota budget aligned to 300s (was 120s, starving patient synthesis retries)
 - Single waiting indicator per episode (no "Brief pause" spam, no silence); resumed clears it; per-operation re-arm
 - Per-call wait budgets: searches fail fast (45s quick / 90s), synthesis stays patient; resumed event on recovery
 - Honest research progress: backend phase + live stats on every event, phase-anchored bar, elapsed timer, auto-scroll

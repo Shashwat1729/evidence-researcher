@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { runResearch } from './engine/orchestrator.js';
 import { getKeys } from './gemini.js';
-import { AVAILABLE_MODELS, isKnownModel } from './config.js';
+import { AVAILABLE_MODELS, canonicalizeModel, isKnownModel } from './config.js';
 import { academicCache } from './cache.js';
 import { createRateLimiter } from './middleware/security.js';
 import { exportMarkdown, exportHtml } from './export.js';
@@ -129,6 +129,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     if (!STANCES_LIST.includes(input.stance)) {
       return res.status(400).json({ error: `Unknown research stance "${input.stance}".` });
     }
+    input.model = canonicalizeModel(input.model);
     if (input.model && !isKnownModel(input.model)) {
       return res.status(400).json({ error: 'Unknown model. Use one offered by GET /api/config.' });
     }

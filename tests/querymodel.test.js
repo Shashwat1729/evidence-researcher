@@ -104,8 +104,19 @@ describe('model picker', () => {
   });
   it('validation accepts empty (default) and known, rejects unknown', () => {
     assert.equal(validateResearchBody({ question: 'Is this ok?', model: '' }).length, 0);
-    assert.equal(validateResearchBody({ question: 'Is this ok?', model: 'gemini-2.0-flash' }).length, 0);
+    assert.equal(validateResearchBody({ question: 'Is this ok?', model: 'gemini-2.5-flash-lite' }).length, 0);
     assert.ok(validateResearchBody({ question: 'Is this ok?', model: 'turbo-9000' }).some((m) => /model/i.test(m)));
+  });
+  it('retired model ids degrade to Auto instead of 400 (stale saved preferences)', async () => {
+    const { canonicalizeModel } = await import('../backend/src/config.js');
+    assert.equal(canonicalizeModel('gemini-2.0-flash'), '');
+    assert.equal(canonicalizeModel('gemini-2.0-flash-lite'), '');
+    assert.equal(canonicalizeModel('gemini-1.5-flash'), '');
+    assert.equal(canonicalizeModel(''), '');
+    assert.equal(canonicalizeModel('gemini-2.5-flash'), 'gemini-2.5-flash');
+    assert.equal(canonicalizeModel('turbo-9000'), 'turbo-9000', 'truly unknown ids still surface for validation');
+    assert.equal(validateResearchBody({ question: 'Is this ok?', model: 'gemini-2.0-flash' }).length, 0);
+    assert.equal(validateResearchBody({ question: 'Is this ok?', model: 'gemini-2.0-flash-lite' }).length, 0);
   });
 });
 
@@ -116,8 +127,8 @@ describe('orchestrator model override + book wiring', () => {
     const planQueries = ['general', 'scholarly', 'primary-evidence', 'books', 'alternative-explanations', 'counter-evidence', 'disagreement', 'institutional']
       .map((c, i) => ({ q: `Harappan civilization angle ${i}`, category: c }));
     const result = await runResearch(
-      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.0-flash' },
-      {
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.5-flash' },
+       {
         key: 'k', emit: () => {},
         deps: {
           plan: async (a) => { seen.models.push(['plan', a.model]); return { domain: 'history', complexity: 'low', steps: ['a'], linesOfInquiry: ['g'], queries: planQueries, bookVariants: ['harappan books', 'indus valley'] }; },
@@ -144,7 +155,7 @@ describe('orchestrator model override + book wiring', () => {
     );
     assert.ok(result.id);
     assert.ok(seen.models.length >= 4);
-    assert.ok(seen.models.every(([, m]) => m === 'gemini-2.0-flash'), JSON.stringify(seen.models));
+    assert.ok(seen.models.every(([, m]) => m === 'gemini-2.5-flash'), JSON.stringify(seen.models));
     assert.ok(seen.academic.some((q) => q.includes('harappan')), JSON.stringify(seen.academic));
     assert.ok(seen.books.some(([q]) => q.includes('harappan')), JSON.stringify(seen.books));
     assert.ok(seen.books.every(([, lim]) => lim === 6), 'standard bookLimit wires through');
@@ -160,8 +171,8 @@ describe('orchestrator model override + book wiring', () => {
     const seen = { queriesCalls: 0, expandCalls: 0, bookOpts: [] };
     const mk = (id) => ({ id, text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' });
     const result = await runResearch(
-      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.0-flash' },
-      {
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral', model: 'gemini-2.5-flash' },
+       {
         key: 'k', emit: () => {},
         deps: {
           plan: async () => ({ domain: 'history', complexity: 'low', steps: ['a'], linesOfInquiry: ['g'] }),

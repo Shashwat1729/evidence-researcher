@@ -2,7 +2,7 @@
 // ResearchTask → ResearchPlan → SearchTask → Source → Claim → Evidence →
 // Contradiction → ResearchIteration → ResearchResult → ResearchReport
 
-import { CLAIM_STATES, isKnownModel } from './config.js';
+import { CLAIM_STATES, canonicalizeModel, isKnownModel } from './config.js';
 
 let seq = 0;
 export function uid(prefix = 'id') {
@@ -20,7 +20,7 @@ export function createTask({ question, mode = 'standard', stance = 'neutral', hy
     mode, stance,
     hypothesis: String(hypothesis || '').trim(),
     documentary: !!documentary,
-    model: String(model || '').trim(),
+    model: canonicalizeModel(model),
     createdAt: new Date().toISOString(),
   };
 }

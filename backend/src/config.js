@@ -7,13 +7,14 @@ const env = (typeof process !== 'undefined' && process.env) || {};
 
 export const MODEL_CONFIG = {
   // Spread quota across models: per Google docs, limits are per model per project.
-  // Using different models for different roles multiplies effective throughput
-  // (e.g., 30 RPM on Lite + 10 RPM on Flash vs 10 RPM on all).
-  // Flash-Lite (30 RPM, 1500 RPD) for lightweight planning/analysis; Flash (10 RPM)
+  // Using different models for different roles multiplies effective throughput.
+  // Verified live 2026-09-16 via GET /v1beta/models: gemini-2.0-flash-lite and
+  // the entire 1.5/2.0 families are retired; 2.5-flash + 2.5-flash-lite exist.
+  // Lite (high-RPM class) for lightweight planning/analysis; Flash (10 RPM)
   // for grounding-heavy research/synthesis where quality matters most.
-  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.0-flash-lite',
+  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash-lite',
   research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.0-flash-lite',
+  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash-lite',
   synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
 };
 
@@ -90,21 +91,36 @@ export const MODES = {
 export const STANCES = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
 
 // Curated Gemini models offered in the UI picker (alongside the API key).
-// Free-tier limits per Google docs (approx, varies by date):
-// - 2.5 Flash: 10 RPM / 250K TPM / 500 RPD (shared with Flash-Lite)
-// - 2.0 Flash: 15 RPM / 1M TPM / 1500 RPD
+// Verified live 2026-09-16 via GET /v1beta/models — the 1.5/2.0 families are
+// retired, so only 2.5-family ids are offered. Free-tier limits per Google
+// docs (approx, varies by date):
+// - 2.5 Flash: 10 RPM / 250K TPM / 500 RPD
+// - 2.5 Flash-Lite: high-headroom class for planning/analysis
 // - 2.5 Pro: 5 RPM / 250K TPM / 25 RPD (very low free tier)
 // Using different models for different roles multiplies effective throughput
 // because limits are per model per project.
 export const AVAILABLE_MODELS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', blurb: 'Default — best balance of depth and free-tier quota (10 RPM).' },
-  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', blurb: 'Lighter and faster; generous limits (15 RPM), slightly less depth.' },
-  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash-Lite', blurb: 'Fastest, most quota headroom (30 RPM) — best for planning.' },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', blurb: 'Fastest, most quota headroom — best for planning.' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', blurb: 'Deepest reasoning; much lower free-tier limits (5 RPM) — prefer paid keys.' },
 ];
 
 export function isKnownModel(id) {
   return AVAILABLE_MODELS.some((m) => m.id === id);
+}
+
+// Retired model ids (verified gone 2026-09-16). Saved preferences and old
+// clients may still send them — map to '' (Auto) instead of failing, so a
+// stale picker value degrades to server defaults rather than a dead run.
+const RETIRED_MODELS = new Set([
+  'gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro',
+  'gemini-2.0-flash', 'gemini-2.0-flash-lite',
+]);
+/** Map a model id to itself, '' for retired/empty (Auto), else unchanged. */
+export function canonicalizeModel(id) {
+  const v = String(id || '').trim();
+  if (!v || RETIRED_MODELS.has(v)) return '';
+  return v;
 }
 
 export const STANCE_GUARDRAIL =

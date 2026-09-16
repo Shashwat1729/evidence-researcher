@@ -43,7 +43,13 @@ function endpoint(model, key) {
 // multiplies throughput. Keys from same project share quota (per Google docs).
 let preferredIdx = 0;
 let globalCallCounter = 0;
-export function resetKeyState() { preferredIdx = 0; globalCallCounter = 0; for (const k of keyBlockedUntil.keys()) keyBlockedUntil.delete(k); }
+export function resetKeyState() {
+  preferredIdx = 0;
+  globalCallCounter = 0;
+  keyBlockedUntil.clear();
+  modelNextAllowed.clear();
+  paceMult.clear();
+}
 
 // Per-key blocked-until tracking for multi-key rotation.
 // IMPORTANT: Per Google docs, rate limits are PER PROJECT, not per key.
@@ -62,27 +68,49 @@ function blockKey(k, ms) {
 }
 function unblockKey(k) { keyBlockedUntil.delete(keyHash(k)); }
 
-// Per-key-per-model pacing: free-tier limits are per model per project.
-// With 5 keys from 5 projects, 2.5 Flash gives 5×10=50 RPM effective, not 10.
-// Pacing per key+model ensures even distribution actually multiplies throughput.
-// Without per-key, 5 keys sharing one global bucket would still be 10 RPM.
+// Per-key-per-model pacing with ADAPTIVE gaps (AIMD, TCP-style).
+// Why dynamic: Gemini exposes no quota headers, and per-model RPM limits
+// change without notice (the 2.0 family retired silently in Sep 2026).
+// So instead of hardcoding "model X = N RPM", we start from a conservative
+// floor per model CLASS and adapt to observed signals: every 429 doubles the
+// gap for that key+model (up to 8×), every success halves it back toward the
+// floor. Floors are class-based (lite/flash/pro), never per-version, so a
+// future "gemini-4-flash" still paces sanely on day one.
+// With 5 keys from 5 projects, effective throughput still multiplies via
+// round-robin — pacing is per key+model, never a global bucket.
 const modelNextAllowed = new Map(); // `${model}|${keyHash}` -> timestamp (ms)
-function modelGapMs(model) {
+const paceMult = new Map(); // `${model}|${keyHash}` -> current multiplier (≥1)
+const PACE_MAX_MULT = 8;
+/** Conservative floor gap per model class. Class-based, not version-based. */
+export function paceFloorMs(model) {
   const m = String(model || '').toLowerCase();
-  // Free-tier friendly gaps: slightly conservative vs Google's stated
-  // limits (10 RPM → 8.5 RPM, 30 RPM → 20 RPM) to absorb jitter and
-  // leave headroom for the static Pages single-key case. Multi-key
-  // setups still multiply via round-robin, so throughput isn't hurt.
-  if (m.includes('flash-lite') || m.includes('flash_lite')) return 3000; // 20 RPM (was 30 RPM / 2000)
-  if (m.includes('1.5-flash') || m.includes('2.0-flash')) return 5000; // 12 RPM (was 15 RPM / 4000)
-  if (m.includes('2.5-flash')) return 7000; // 8.5 RPM (was 10 RPM / 6000) — free-tier safe
-  if (m.includes('pro') || m.includes('gemma')) return 12000; // 5 RPM
-  return 7000; // conservative default (was 6000)
+  if (m.includes('pro') || m.includes('gemma') || m.includes('ultra')) return 12000; // ~5 RPM class
+  if (m.includes('lite')) return 3000; // high-headroom class (~20 RPM effective)
+  if (m.includes('flash')) return 7000; // standard class (~8.5 RPM effective, grounding-safe)
+  return 7000; // unknown models pace conservatively
+}
+function paceKey(model, key) {
+  return `${model}|${key ? keyHash(key) : 'nokey'}`;
+}
+/** Current effective gap (floor × adaptive multiplier). Exported for tests. */
+export function currentPaceGap(model, key) {
+  return paceFloorMs(model) * (paceMult.get(paceKey(model, key)) || 1);
+}
+/** A 429 was observed: back off (double, capped). Exported for tests. */
+export function notePaceBackoff(model, key) {
+  const k = paceKey(model, key);
+  paceMult.set(k, Math.min(PACE_MAX_MULT, (paceMult.get(k) || 1) * 2));
+}
+/** A call succeeded: ease back toward the floor (halve, floored at 1). Exported for tests. */
+export function notePaceSuccess(model, key) {
+  const k = paceKey(model, key);
+  const next = (paceMult.get(k) || 1) / 2;
+  if (next <= 1) paceMult.delete(k);
+  else paceMult.set(k, next);
 }
 async function paceForModel(model, key) {
-  const gap = modelGapMs(model);
-  const hash = key ? keyHash(key) : 'nokey';
-  const mapKey = `${model}|${hash}`;
+  const gap = currentPaceGap(model, key);
+  const mapKey = paceKey(model, key);
   const next = modelNextAllowed.get(mapKey) || 0;
   const wait = next - Date.now();
   // Reserve next slot before waiting so concurrent callers queue correctly
@@ -168,6 +196,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
         preferredIdx = ki;
         unblockKey(keys[ki]); // success clears block
+        if (model) notePaceSuccess(model, keys[ki]); // adaptive pacing: ease off
         if (waited) onKeyEvent?.({ type: 'resumed' });
         return data;
       } catch (e) {
@@ -175,6 +204,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         firstErr = firstErr || e;
         if (e.status === 429) {
           round429 = round429 || e;
+          if (model) notePaceBackoff(model, keys[ki]); // adaptive pacing: back off
           // Block this key for the hinted duration (per-key, not global)
           // Use actual Retry-After when available; fallback is small (6-10s) based on 10 RPM free tier, not hardcoded 15-30s.
           const hintedMs = retryDelayMs(e, 0);

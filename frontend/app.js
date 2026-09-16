@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-15a';
+const STATIC_V = '2026-09-16a';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -55,10 +55,21 @@ async function init() {
       const opts = cfg.models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
       $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
       $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
+      // Drop retired saved ids (e.g. gemini-2.0-flash-lite): a stale picker
+      // value would otherwise send a dead model id and fail every run.
       const savedModel = getStoredModel();
-      if (savedModel) {
+      if (savedModel && cfg.models.some((m) => m.id === savedModel)) {
         $('#modelSelect').value = savedModel;
         $('#modelInput').value = savedModel;
+      } else if (savedModel) {
+        localStorage.removeItem('gemini_model');
+      }
+    } else if (staticMode || !apiOk) {
+      // Static Pages mode has no /api/config: prune retired saved ids anyway
+      // so a stale value can never select a dead model.
+      const savedModel = getStoredModel();
+      if (savedModel && /^(gemini-(1\.5|2\.0)-|gemini-1\.5)/.test(savedModel)) {
+        localStorage.removeItem('gemini_model');
       }
     }
   } catch { /* offline → static mode */ }
@@ -90,7 +101,7 @@ async function init() {
     if (!hint) return;
     if (!value) {
       hint.style.display = 'block';
-      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--ok)">Gemini 2.0 Flash-Lite</span> for planning & analysis (30 RPM, fastest) + <span style="color: var(--acc)">Gemini 2.5 Flash</span> for research & synthesis (10 RPM, highest quality). Spreads load across models to multiply quota.';
+      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--ok)">Gemini 2.5 Flash-Lite</span> for planning & analysis (high headroom, fastest) + <span style="color: var(--acc)">Gemini 2.5 Flash</span> for research & synthesis (10 RPM, highest quality). Spreads load across models to multiply quota.';
     } else {
       hint.style.display = 'none';
     }
