@@ -481,9 +481,9 @@ function showResult(r) {
   $('#progressView').classList.add('hidden');
   $('#resultView').classList.remove('hidden');
   // Fallback inventory banner: synthesis used evidence inventory due to quota.
-  // NOTE: showResult is global — only globals (showNotice) may be used here,
-  // never the run-scoped step() (that crashed rendering with
-  // "step is not defined", discarding a completed result).
+  // NOTE: do NOT call step() here — showResult is also driven by SSE
+  // handleEvent where step is not in scope; step-in-showResult crashed Pages
+  // with "step is not defined" and left the user on a blank home view.
   if (r.report?.synthesisFallback) {
     showNotice('Model quota was hit — this report is an evidence inventory from gathered sources. Add more API keys (different projects) or try Quick mode for faster results.', '');
   } else {
