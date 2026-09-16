@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-16c';
+const STATIC_V = '2026-09-16d';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -405,10 +405,12 @@ async function runDirectFlow(body, key, step, finish, signal, allKeys = [], mode
   } catch (e) {
     if (signal?.aborted || e.name === 'AbortError') { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
     const raw = e.message || 'research failed';
-    // Distinguish daily quota vs per-minute vs no evidence.
+    // Distinguish daily quota vs per-minute vs no evidence. Be blunt about
+    // same-project keys: rotation across keys that share one project quota
+    // changes nothing, and "wait a minute" is wrong advice for daily limits.
     let msg = raw;
     if (/RPD|daily quota/i.test(raw)) msg = 'Daily Gemini quota exhausted (resets at midnight Pacific). Add a key from a different project or a billed project for higher limits, or try Quick mode which uses fewer calls.';
-    else if (/quota|rate|429/i.test(raw)) msg = 'Gemini rate limit reached. Wait a minute and retry, or add more API keys from different projects (they rotate automatically). Quick mode uses ~5 calls vs Standard ~21 — try Quick for free-tier keys.';
+    else if (/quota|rate|429/i.test(raw)) msg = `All ${keys.length} saved key(s) are rate-limited. Keys from the SAME Google Cloud project share ONE quota — extra keys only help when each comes from a different project (AI Studio → separate projects). Per-minute limits reset in ~1 min; daily limits reset at midnight PT. Quick mode uses ~5 Gemini calls vs Standard ~21.`;
     else if (/Insufficient evidence/i.test(raw)) msg = raw + ' (Try Quick mode, rephrase, or check that free academic sources are reachable — some networks block them.)';
     step('warn', 'Error: ' + msg);
     goHome('Error: ' + msg, 'error');

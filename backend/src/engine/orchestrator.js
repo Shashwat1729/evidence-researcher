@@ -118,7 +118,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS || 300_000));
   };
   const quotaErr = () => Object.assign(
-    new Error('Gemini quota exhausted — waited for refills but none arrived. Retry in a few minutes, add another API key, or use a shallower mode.'),
+    new Error('Gemini quota exhausted — waited for refills but none arrived. Per-minute limits reset in ~1 min; daily limits reset at midnight PT. Extra keys only help when each comes from a different Google Cloud project (same-project keys share one quota). Or use a shallower mode.'),
     { status: 429, code: 'QUOTA_EXHAUSTED' },
   );
   // Hoisted for quota-fallback: when quota hits AFTER we have evidence,
@@ -194,17 +194,25 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // instead of burning the whole run quota-wait budget silently.
   const searchWaitMs = task.mode === 'quick' ? 45_000 : 90_000;
   let allResults = [];
+  // Grounding-dead detection: when EVERY attempted grounding search fails
+  // with a quota error (common on thin free-tier keys), the honest failure
+  // cause is quota — not the question. Counted separately from the pool
+  // abort above, which only fires on large batches that trip the budget.
+  let searchAttempts = 0;
+  let searchQuotaFails = 0;
   const doSearch = async (q, category, explicitKey = key) => {
     // check+reserve is synchronous (no await between) → race-free under pool()
     throwIfStopped();
     if (!alive() || overTokenCap()) return [];
     waitNoticeShown = false;
     stats.searchCalls++;
+    searchAttempts++;
     ev('progress', `Searching: ${q.q || q}`, { category });
     try {
       const rs = await D.search(q, category, { key: explicitKey, model: models.research, timeoutMs: searchTimeoutMs, onUsage: track, onKeyEvent: keyEvent, rateWaitBudgetMs: searchWaitMs });
       return rs.map((r) => ({ ...r, category }));
     } catch (e) {
+      if (isQuotaError(e)) searchQuotaFails++;
       ev('warning', `Search failed (${(e.message || '').slice(0, 100)})`, { query: q.q || q });
       return [];
     }
@@ -306,9 +314,30 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const explicit = keys.length > 1 ? keys[(searchIdx++) % keys.length] : key;
     return doSearch(q, cat, explicit);
   };
-  const found = await phase('search', () => pool(batch, searchConcurrency, (q, i) => sleep(Math.min(i, searchConcurrency - 1) * searchStagger).then(() => doSearchWithKey(q, q.category))));
-  for (const rs of found) allResults.push(...rs);
+  // Quota-resilient search: if the grounding pool aborts on quota (global
+  // wait budget spent across concurrent searches), do NOT discard the run —
+  // free academic/book jobs cost zero quota and may already hold evidence.
+  // Settle them first; a truly empty haul still fails honestly below.
+  let searchAbortedOnQuota = false;
+  try {
+    const found = await phase('search', () => pool(batch, searchConcurrency, (q, i) => sleep(Math.min(i, searchConcurrency - 1) * searchStagger).then(() => doSearchWithKey(q, q.category))));
+    for (const rs of found) allResults.push(...rs);
+  } catch (e) {
+    // Cancel and non-quota failures still abort: only quota gets the
+    // settle-free-evidence treatment (anything else would mask real bugs).
+    if (e?.name === 'AbortError' || !isQuotaError(e)) throw e;
+    searchAbortedOnQuota = true;
+    ev('warning', `Grounding searches aborted on quota (${String(e.message || '').slice(0, 100)}) — settling free academic/book sources before deciding…`);
+  }
   await phase('search', () => Promise.all(extraJobs));
+  // Grounding dead on quota even without a pool abort (small batches never
+  // trip the budget — every attempt just fails): same treatment. Free sources
+  // above may still have saved the run; the flag only decides the failure
+  // cause below and skips futile top-up grounding calls.
+  if (!searchAbortedOnQuota && searchAttempts > 0 && searchQuotaFails >= searchAttempts) {
+    searchAbortedOnQuota = true;
+    if (!allResults.length) ev('warning', 'All grounded searches failed on quota — relying on free academic/book sources…');
+  }
   // Free-provider fallback: if grounding returned NOTHING (quota outage) and
   // the mode skipped academic/books, run them anyway — they cost zero Gemini
   // quota and can rescue the run. No key/model passed so book-variant
@@ -336,8 +365,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   // Diversity guarantee: if grounding clustered on <3 domains, top up with
   // scholarly/primary/book angles (template queries — no extra model call).
-  // Skip for quick: quota is too tight for top-ups.
-  if (task.mode !== 'quick' && domainCount(allResults) < 3) {
+  // Skip for quick (quota too tight) and after a quota abort (more grounding
+  // calls are futile — free sources already settled above).
+  if (task.mode !== 'quick' && !searchAbortedOnQuota && domainCount(allResults) < 3) {
     const room = Math.max(0, budget.maxSearches - stats.searchCalls);
     const topups = diversityTopups(task.question, Math.min(3, room));
     if (topups.length) {
@@ -644,7 +674,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ev('progress', 'Synthesizing final report…');
   // Empty-handed is still an answer, not a crash — but with zero sources AND
   // zero claims there is nothing honest to report, so fail explicitly.
+  // Honest cause matters: after a quota abort the question isn't the problem,
+  // the quota is — report QUOTA_EXHAUSTED (with its reset guidance), not
+  // NO_EVIDENCE (which would send the user rephrasing a fine question).
   if (!sources.length && !claims.length) {
+    if (searchAbortedOnQuota) throw quotaErr();
     throw Object.assign(
       new Error('Insufficient evidence: searches, academic sources, and fetches all came back empty. Try rephrasing, a broader question, or standard/deep mode.'),
       { status: 502, code: 'NO_EVIDENCE' },
