@@ -70,6 +70,17 @@ describe('repairFindingCites', () => {
     repairFindingCites(noClaims, []);
     assert.deepEqual(noClaims.findings, []);
   });
+  it('derives findings without heading/body echo (label + full text once)', () => {
+    const long = { findings: [] };
+    const text = 'The Harappan Civilization developed through three main phases with specific dates and extensive detail beyond sixty characters.';
+    repairFindingCites(long, [{ id: 'c9', text, state: 'supported', supporting: ['s1'], contradicting: [], confidenceWhy: 'archive' }]);
+    const f = long.findings[0];
+    assert.ok(f.heading.length <= 61, `heading is a short label, got ${f.heading.length} chars`);
+    assert.ok(f.heading.endsWith('…'), 'long headings are ellipsized');
+    assert.ok(f.body.includes(text), 'body carries the full text once');
+    assert.ok(!f.body.includes('Uninterpreted extract'), 'no per-finding suffix noise (banner says it once)');
+    assert.notEqual(f.heading, text, 'heading is a label, not a full-text repeat');
+  });
 });
 
 describe('ensureReportCompleteness', () => {

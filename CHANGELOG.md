@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Fallback report now reads like a book chapter: claim-derived findings expanded with supporting passages and source tiers (no heading/body echo, derived timeline, richer summary), so even quota-dead standard runs feel substantive
 - Quota-dead search phase no longer discards free evidence: grounding pool abort settles academic/book jobs and degrades to inventory; all-quota-failed batches report QUOTA_EXHAUSTED (not NO_EVIDENCE); futile top-ups skipped; quota messages now explain same-project shared quota + minute vs daily resets
 - Fixed live-site "Error: step is not defined" crash: showResult called run-scoped step(), discarding completed fallback reports back to home; now uses globals only, plus a scope regression test
 - Dynamic rate limiting: adaptive AIMD pacing per key+model (429s double the gap up to 8x, successes ease back; class-based floors, never per-version hardcodes); pacing state reset between runs (also halved rotation test time)

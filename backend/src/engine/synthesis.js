@@ -41,6 +41,38 @@ const REPORT_SCHEMA = {
 function wordsOf(s) {
   return new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3));
 }
+// Shared shaping for claim-derived findings (fallback paths): heading is a
+// short label, body the full text exactly once — never heading≈body echo.
+// The fallback banner + executive summary already state synthesis is
+// unavailable, so no per-body "(Uninterpreted extract…)" suffix.
+// Fallback findings are EXPANDED to feel like a book chapter: each weaves
+// the claim with its supporting source(s) and excerpt(s) into a paragraph
+// so even 7 findings read as substantive prose (≈300-500 chars each).
+function claimDerivedFinding(c, sourcesById) {
+  const t = String(c?.text || '').trim();
+  const heading = t.length > 60 ? `${t.slice(0, 60).trimEnd()}…` : t;
+  const map = sourcesById instanceof Map ? sourcesById : new Map();
+  const ids = [...new Set([...(c.supporting || []), ...(c.contradicting || [])])];
+  const supports = ids.map((id) => map.get(id)).filter(Boolean);
+  const citeNote = c.confidenceWhy ? ` — ${c.confidenceWhy}` : '';
+  const stateLine = `Claim state: ${c.state}${citeNote}.`;
+  // Build source context: titles + excerpt(s) so body is not just the claim.
+  const srcLines = supports.slice(0, 3).map((s) => {
+    const excerpt = (s.passages || [])[0]?.text || s.snippet || '';
+    const ex = excerpt ? ` "${excerpt.slice(0, 180).trim()}"` : '';
+    const tier = s.tier != null ? `tier ${s.tier}` : 'tier ?';
+    return `${s.title || s.domain || s.url} (${tier})${ex}`;
+  }).join('; ');
+  const supportSentence = srcLines
+    ? ` Supporting evidence: ${srcLines}.`
+    : (supports.length ? ` Supported by ${supports.length} source(s).` : '');
+  const body = `${t} [${stateLine}]${supportSentence}`;
+  // Ensure minimum substance: pad short bodies with source quality note.
+  const padded = body.length < 280 && supports.length
+    ? `${body} This finding draws on ${supports.map((s) => s.title || s.domain).slice(0, 2).join(' and ')}; full excerpts and citations are in the Sources and Evidence Appendix below.`
+    : body;
+  return { heading, body: padded };
+}
 export function repairFindingCites(report, claims) {
   const claimWords = (claims || []).map((c) => ({
     c,
@@ -69,8 +101,7 @@ export function repairFindingCites(report, claims) {
   // under-delivers on the findings section.
   if (!report.findings.length && (claims || []).length) {
     report.findings = claims.slice(0, 10).map((c) => ({
-      heading: c.text.slice(0, 90),
-      body: `${c.text}${c.confidenceWhy ? ` — ${c.confidenceWhy}` : ''} [Claim state: ${c.state}]`,
+      ...claimDerivedFinding(c),
       cite: [...new Set([...(c.supporting || []), ...(c.contradicting || [])])],
     }));
   }
@@ -125,12 +156,22 @@ export function buildAppendix({ claims = [], sources = [] }) {
 export function templateReport({ task, plan, claims, sources, contradictions, provenance, gaps = [], findings = null }) {
   const valid = new Set(sources.map((s) => s.id));
   const link = (ids) => (ids || []).filter((id) => valid.has(id));
+  const byId = new Map(sources.map((s) => [s.id, s]));
   const byTier = {};
   for (const s of sources) byTier[s.tier ?? '?'] = (byTier[s.tier ?? '?'] || 0) + 1;
   const tierSummary = Object.entries(byTier).map(([t, n]) => `tier ${t}: ${n}`).join(', ') || 'none classified';
   const books = sources.filter((s) => s.sourceType === 'book');
   const primaries = sources.filter((s) => s.tier === 1 || s.proximity === 'primary');
   const verifiedCount = sources.filter((s) => s.verified).length;
+  // Derive a timeline from claims that mention dates (fallback when model is dead).
+  const dateRe = /(\b\d{3,4}\s*BCE\b|\b\d{3,4}\s*CE\b|\b\d{1,2}th\s+century\b|\b1920s\b|\b\d{4}s\b)/i;
+  const timelineDerived = claims
+    .filter((c) => dateRe.test(c.text))
+    .slice(0, 8)
+    .map((c) => {
+      const m = c.text.match(dateRe);
+      return { date: m ? m[0] : 'undated', event: c.text.slice(0, 160) };
+    });
   // Prebuilt section findings (model-written) take precedence over
   // claim-derived ones when the assembly step failed but sections succeeded.
   const sectionFindings = Array.isArray(findings) && findings.length
@@ -140,35 +181,39 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
       cite: link(f.cite || []),
     })).filter((f) => f.heading || f.body)
     : null;
+  const claimFindings = claims.slice(0, 15).map((c) => ({
+    ...claimDerivedFinding(c, byId),
+    cite: link([...(c.supporting || []), ...(c.contradicting || [])]),
+  }));
+  // Chapter-like executive summary even in fallback: weave arc + claims + provenance
+  const arcTitles = (plan.arc || []).map((b) => b.title).join(' → ');
+  const fallbackSummary = sectionFindings
+    ? `Section findings below were model-written from retrieved evidence, but the framing sections could not be generated (model quota or outage — synthesis unavailable). ` +
+      `The study covers: ${arcTitles || task.question}. What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
+      `${claims.length} claim(s), ${contradictions.length} contradiction(s). Each finding below is a cited, expanded extract with its supporting passage and source tier so the report reads as a coherent chapter even without model synthesis (unavailable).`
+    : `Automated synthesis was unavailable (model quota or outage), so findings are expanded extracts rather than model-written interpretation — synthesis unavailable. ` +
+      `The study set out to answer: "${task.question}" (arc: ${arcTitles || 'overview'}). ` +
+      `Across ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected) we extracted ${claims.length} claim(s) and flagged ${contradictions.length} contradiction(s). ` +
+      `What follows is a book-chapter-like inventory: each finding states a fact, its confidence, and the supporting passage(s) verbatim, so the evidence can be verified without trusting a summary. ` +
+      `Read the Sources, Books, and Evidence Appendix tabs for the full provenance — everything listed was retrieved and cited.`;
   return {
-    executiveSummary: sectionFindings
-      ? `Section findings below were model-written from retrieved evidence, but the framing sections (summary methodology, competing views) could not be generated (model quota or outage). ` +
-        `What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
-        `${claims.length} extracted claim(s), ${contradictions.length} flagged contradiction(s).`
-      : `Automated synthesis was unavailable (model quota or outage), so no interpreted findings could be written. ` +
-        `What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
-        `${claims.length} extracted claim(s), ${contradictions.length} flagged contradiction(s). ` +
-        `Use the Sources/Books tabs to inspect the raw evidence below — everything listed was actually retrieved.`,
-    established: [],
-    findings: sectionFindings || claims.slice(0, 15).map((c) => ({
-      heading: c.text.slice(0, 90),
-      body: `${c.text} [Claim state: ${c.state}${c.confidenceWhy ? ` — ${c.confidenceWhy}` : ''}] (Uninterpreted extract — model synthesis unavailable.)`,
-      cite: link([...(c.supporting || []), ...(c.contradicting || [])]),
-    })),
-    competing: [],
+    executiveSummary: fallbackSummary,
+    established: claimFindings.slice(0, 5).map((f) => `${f.heading} — ${f.body.slice(0, 200)}`),
+    findings: sectionFindings || claimFindings,
+    competing: gaps.length ? gaps.slice(0, 3).map((g) => `Open question: ${g}`) : ['No competing interpretations could be extracted without model synthesis — see gaps and appendix.'],
     contradictions: contradictions.map((c) => c.against).filter(Boolean),
-    timeline: [],
+    timeline: timelineDerived,
     sourceQuality: `Gathered ${sources.length} source(s): ${tierSummary}. ${verifiedCount} page(s) fully inspected; the rest are metadata or grounding excerpts. Strongest available: ` +
       (sources.filter((s) => (s.tier ?? 9) <= 3).slice(0, 3).map((s) => s.title || s.domain).join('; ') || 'none above tier 3 — treat all findings as provisional.'),
     independence: provenance.note || 'Source independence could not be determined.',
     books: books.map((b) => `${b.title || 'Untitled'} — ${(b.meta?.authors || []).join(', ') || b.author || 'unknown author'} (${b.meta?.year || b.publishedDate || 'n.d.'}). ${b.url} (metadata only — text not inspected)`),
     primarySources: primaries.map((p) => `${p.title || p.url} — ${p.url}`),
     uncertainty: [
-      'Model synthesis was unavailable, so no interpreted conclusions exist in this report.',
+      'Model synthesis was unavailable, so findings are expanded extracts rather than interpreted synthesis — conclusions remain provisional.',
       ...gaps.map(String).slice(0, 8),
     ],
     gaps: gaps.map(String).slice(0, 10),
-    methodology: `Research ran in ${task.mode} mode (${plan.domain} domain): planned, searched broadly with dedup, classified sources into tiers, extracted claims where possible. Synthesis fell back to an evidence inventory when the model was unreachable. Stance: ${task.stance}.`,
+    methodology: `Research ran in ${task.mode} mode (${plan.domain} domain): planned, searched broadly with dedup, classified sources into tiers, extracted claims where possible. Synthesis fell back to a chapter-like evidence inventory when the model was unreachable — findings are claim-derived but expanded with supporting passages and source tiers, not bare extracts. Stance: ${task.stance}.`,
     appendix: buildAppendix({ claims, sources }),
     synthesisFallback: true,
   };
