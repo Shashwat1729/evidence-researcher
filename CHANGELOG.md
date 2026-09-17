@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Synthesis success path hardened so the chapter actually gets written: global per-model shared pause (a 429 pauses ALL keys — same-project keys share one bucket), pacing waits capped at 60s + budgeted/surfaced (fixes silent unbounded stall), exact server Retry-After attached to quota errors and honored by section retries, searches capped at 40% of the wait budget (synthesis reserve), partial results preserved on pool abort
+- Per-mode standards differentiated: deep sections get bigger budgets (10240), finding-body minimums strictly increase (900→1100→1200); cold-open story hook in synthesis/assembly prompts for chapter modes (quick stays lean)
 - Fallback report now reads like a book chapter: claim-derived findings expanded with supporting passages and source tiers (no heading/body echo, derived timeline, richer summary), so even quota-dead standard runs feel substantive
 - Quota-dead search phase no longer discards free evidence: grounding pool abort settles academic/book jobs and degrades to inventory; all-quota-failed batches report QUOTA_EXHAUSTED (not NO_EVIDENCE); futile top-ups skipped; quota messages now explain same-project shared quota + minute vs daily resets
 - Fixed live-site "Error: step is not defined" crash: showResult called run-scoped step(), discarding completed fallback reports back to home; now uses globals only, plus a scope regression test

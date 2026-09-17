@@ -139,4 +139,19 @@ describe('API key rotation', () => {
       else process.env.QUOTA_WAIT_BUDGET_MS = saved;
     }
   });
+
+  it('quota errors carry the server exact wait (retryAfter ms) for timed retries', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const saved = process.env.QUOTA_WAIT_BUDGET_MS;
+    process.env.QUOTA_WAIT_BUDGET_MS = '0';
+    try {
+      mockFetch(async () => jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '45s' }] } }));
+      const err = await generate({ key: '', model: 'm', prompt: 'hi' }).catch((e) => e);
+      assert.equal(err.code, 'QUOTA_EXHAUSTED');
+      assert.equal(err.retryAfter, 45000, 'section retries honor this exactly instead of guessing');
+    } finally {
+      if (saved === undefined) delete process.env.QUOTA_WAIT_BUDGET_MS;
+      else process.env.QUOTA_WAIT_BUDGET_MS = saved;
+    }
+  });
 });

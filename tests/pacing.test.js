@@ -2,6 +2,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   paceFloorMs, currentPaceGap, notePaceBackoff, notePaceSuccess, resetKeyState,
+  noteSharedBackoff, paceForModel, PACE_MAX_WAIT_MS,
 } from '../backend/src/gemini.js';
 
 describe('adaptive pacing (dynamic rate limits)', () => {
@@ -55,5 +56,71 @@ describe('adaptive pacing (dynamic rate limits)', () => {
     assert.equal(currentPaceGap('gemini-2.5-flash', 'K1'), 14000);
     resetKeyState();
     assert.equal(currentPaceGap('gemini-2.5-flash', 'K1'), 7000);
+  });
+
+  it('a 429 pauses ALL keys for that model (shared project bucket)', async (t) => {
+    // Node 24 mock timers: sync tick() fires mocked sleeps; the returned
+    // `waited` is the computed stall another key would have sat through.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      noteSharedBackoff('m', 5000);
+      const p = paceForModel('m', 'OTHER_KEY');
+      t.mock.timers.tick(6000);
+      const waited = await p;
+      assert.ok(waited >= 4500 && waited <= 5500, `shared pause honored, waited ${waited}ms`);
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
+
+  it('single pace waits are capped (no unbounded silent reservation growth)', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      // Drive the multiplier to max, then stack reservations rapidly (the old
+      // divergence: each round reserved further ahead than real time).
+      notePaceBackoff('m', 'K');
+      notePaceBackoff('m', 'K');
+      notePaceBackoff('m', 'K');
+      for (let i = 0; i < 5; i++) {
+        const p = paceForModel('m', 'K');
+        t.mock.timers.tick(PACE_MAX_WAIT_MS + 1000);
+        await p;
+      }
+      const p = paceForModel('m', 'K');
+      t.mock.timers.tick(PACE_MAX_WAIT_MS + 1000);
+      const waited = await p;
+      assert.ok(waited <= PACE_MAX_WAIT_MS, `capped at ${PACE_MAX_WAIT_MS}, got ${waited}`);
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
+
+  it('pace waits are reported via rate-wait events (no silent stalls)', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      noteSharedBackoff('m', 2000);
+      const seen = [];
+      const p = paceForModel('m', 'K', (info) => seen.push(info));
+      t.mock.timers.tick(3000);
+      await p;
+      assert.equal(seen.length, 1, 'exactly one rate-wait event');
+      assert.equal(seen[0].type, 'rate-wait');
+      assert.ok(seen[0].waitMs >= 1500, `waitMs surfaced, got ${seen[0].waitMs}`);
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
+
+  it('resetKeyState clears the shared pause too', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      noteSharedBackoff('m', 60000);
+      resetKeyState();
+      const t0 = Date.now();
+      await paceForModel('m', 'K');
+      assert.ok(Date.now() - t0 < 1000, 'no pause after reset');
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 });

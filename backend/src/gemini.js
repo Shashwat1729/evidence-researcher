@@ -49,6 +49,7 @@ export function resetKeyState() {
   keyBlockedUntil.clear();
   modelNextAllowed.clear();
   paceMult.clear();
+  sharedPauseUntil.clear();
 }
 
 // Per-key blocked-until tracking for multi-key rotation.
@@ -108,14 +109,39 @@ export function notePaceSuccess(model, key) {
   if (next <= 1) paceMult.delete(k);
   else paceMult.set(k, next);
 }
-async function paceForModel(model, key) {
+// Global per-model shared pause: a 429 on ANY key proves the underlying
+// project bucket is hot — same-project keys share it, so per-key pacing alone
+// cannot prevent pile-on (5 keys × per-key gaps still hammer one 10-RPM
+// bucket). All keys pause for that model until the pause expires, which is
+// what lets late-pipeline calls (synthesis) succeed instead of drowning in
+// retry storms. Timestamp-based, decays naturally. Exported for tests.
+const sharedPauseUntil = new Map(); // model -> timestamp (ms)
+/** Record a global pause for a model after a 429. Exported for tests. */
+export function noteSharedBackoff(model, waitMs) {
+  const m = String(model || '');
+  const until = Date.now() + Math.max(0, waitMs || 0);
+  if (until > (sharedPauseUntil.get(m) || 0)) sharedPauseUntil.set(m, until);
+}
+// Single pace wait cap: bounds any one stall AND the reservation below, so
+// repeated rounds on a dead key cannot accumulate an unbounded silent wait
+// (the reservation used to grow faster than real time — a hang with no
+// events and no budget accounting). Exported for tests.
+export const PACE_MAX_WAIT_MS = 60_000;
+/** Pace for a model across keys; returns ms actually waited. Exported for tests. */
+export async function paceForModel(model, key, onKeyEvent) {
   const gap = currentPaceGap(model, key);
   const mapKey = paceKey(model, key);
   const next = modelNextAllowed.get(mapKey) || 0;
-  const wait = next - Date.now();
-  // Reserve next slot before waiting so concurrent callers queue correctly
-  modelNextAllowed.set(mapKey, Math.max(next, Date.now()) + gap);
-  if (wait > 0) await sleep(wait);
+  const sharedWait = Math.max(0, (sharedPauseUntil.get(String(model || '')) || 0) - Date.now());
+  const wait = Math.min(Math.max(next - Date.now(), sharedWait), PACE_MAX_WAIT_MS);
+  // Reserve next slot before waiting so concurrent callers queue correctly,
+  // but never more than the cap ahead — unbounded reservation was a silent hang.
+  modelNextAllowed.set(mapKey, Math.min(Math.max(next, Date.now()) + gap, Date.now() + PACE_MAX_WAIT_MS));
+  if (wait > 0) {
+    onKeyEvent?.({ type: 'rate-wait', waitMs: wait });
+    await sleep(wait);
+  }
+  return wait;
 }
 
 const isKeyError = (err) =>
@@ -190,8 +216,14 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     let hadAvailable = available.length > 0;
     for (let o = 0; o < tryOrder.length; o++) {
       const ki = tryOrder[o];
-      // Preemptive pacing per key+model to avoid hitting RPM in the first place
-      if (model) await paceForModel(model, keys[ki]);
+      // Preemptive pacing per key+model to avoid hitting RPM in the first place.
+      // Pacing waits are budgeted and surfaced like any other quota wait (they
+      // used to be silent and unbounded — a hang with no events).
+      if (model) {
+        const pw = await paceForModel(model, keys[ki], onKeyEvent);
+        waitedMs += pw;
+        if (pw > 0) waited = true;
+      }
       try {
         const data = await attemptKey(urlFor(keys[ki]), body, timeoutMs, retries);
         preferredIdx = ki;
@@ -210,6 +242,12 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
           const hintedMs = retryDelayMs(e, 0);
           const blockMs = hintedMs || (8000 + Math.floor(Math.random() * 4000));
           blockKey(keys[ki], Math.min(blockMs, 120000));
+          // NOTE: no global pause here — untried keys must fail over
+          // INSTANTLY (cross-project rotation is the fast path). The shared
+          // pause engages below, only when every key is exhausted and we are
+          // about to wait: that 429 storm proves the project bucket itself
+          // is hot, so ALL keys back off instead of piling on round after
+          // round — the pile-on is what starved synthesis.
           if (hadAvailable && tryOrder.length > 1 && o + 1 < tryOrder.length) {
             onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'rate-limit' });
             continue;
@@ -232,14 +270,24 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         waitedMs += minWait;
         onKeyEvent?.({ type: 'rate-wait', waitMs: minWait });
         await sleep(minWait);
+        // The explicit wait already spaced the retry — drop stale pacing
+        // reservations so the next round doesn't stall twice on old gaps.
+        if (model) for (const ki of order) modelNextAllowed.delete(paceKey(model, keys[ki]));
         continue; // retry with fresh blocked checks
       }
     }
     // All keys tried this round. Only 429s are worth waiting for (per-minute
     // buckets refill); anything else fails fast with the first error.
-    // Distinguish RPM (seconds, wait helps) vs RPD (hours, wait is futile —
-    // fall back to evidence inventory instead of hanging for hours).
+    // Distinguish RPM (seconds, wait helps) vs RPD/billing (hours or hard
+    // cap, wait is futile — fall back to evidence inventory instead of
+    // hanging for hours). The billing message has no RetryInfo.
     if (!round429 || round429.status !== 429) throw firstErr;
+    const msgBilling = /billing|check your plan/i.test(round429.message || '');
+    if (msgBilling) {
+      throw Object.assign(new Error('Billing quota exceeded — no amount of waiting will refill the per-project daily/plan limit. Add a billed project or wait until reset.'), {
+        status: 429, code: 'RPD_EXHAUSTED', retryAfter: 0,
+      });
+    }
     const hinted = retryDelayMs(round429, 0);
     if (hinted > 120000) {
       // RPD/day quota — Retry-After is hours, not seconds. Waiting won't help.
@@ -251,13 +299,21 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     // Previous hardcoded 15s*round (e.g., 30s on round 2) was arbitrary — now dynamic.
     const wait = hinted > 0 ? Math.min(hinted, 60000) : (8000 + Math.floor(Math.random() * 4000));
     if (waitedMs + wait > budget) break; // budget spent → honest failure below
+    // Every key exhausted: engage the global per-model pause so the next
+    // round (and any concurrent caller) backs off instead of re-hammering.
+    if (model) noteSharedBackoff(model, wait);
     waitedMs += wait;
     waited = true;
     onKeyEvent?.({ type: 'rate-wait', waitMs: wait });
     await sleep(wait);
+    // Same stale-reservation drop as above: the explicit wait did the spacing.
+    if (model) for (const ki of order) modelNextAllowed.delete(paceKey(model, keys[ki]));
   }
+  // Attach the server's exact wait (ms) so callers can honor it precisely
+  // instead of guessing — section retries use it for server-timed backoff.
   throw Object.assign(firstErr || new Error('Gemini quota exhausted'), {
     status: firstErr?.status ?? 429, code: 'QUOTA_EXHAUSTED',
+    retryAfter: retryDelayMs(firstErr, 0) || retryDelayMs(round429, 0) || 0,
   });
 }
 

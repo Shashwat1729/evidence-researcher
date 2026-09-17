@@ -64,7 +64,9 @@ export const MODES = {
     maxModelCalls: 50,
     maxRuntimeMs: 1_200_000,
     maxTokensOut: 500_000,
-    reportTokens: 8192,
+    // Deep sections get a bigger per-call budget than standard (was equal at
+    // 8192 — same synthesis depth for 2.4x the evidence made no sense).
+    reportTokens: 10240,
     sections: 8,
     contradictionPasses: 2,
     bookLimit: 10,

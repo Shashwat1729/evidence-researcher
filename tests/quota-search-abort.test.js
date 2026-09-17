@@ -1,6 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { runResearch } from '../backend/src/engine/orchestrator.js';
+import {
+  runResearch, searchQuotaCapMs, sectionRetryWaitMs, SEARCH_BUDGET_SHARE,
+} from '../backend/src/engine/orchestrator.js';
 
 // Regression tests for the live Pages failure: thin/dead quota killed runs
 // with "rate limit reached" and nothing shown, even when free academic/book
@@ -73,5 +75,95 @@ describe('quota-dead search phase (Pages static-mode scenario)', () => {
     ).then(() => null, (e) => e);
     assert.ok(err, 'run fails (nothing honest to show)');
     assert.equal(err.code, 'QUOTA_EXHAUSTED', `right advice (wait/retry), got: ${err?.code} ${err?.message}`);
+  });
+
+  it('search phase is capped so synthesis keeps a wait reserve', async () => {
+    // Global 30s → searches may wait at most 12s. Each mocked search burns
+    // 5s of waits then succeeds: wave 1 (3 calls, 15s accumulated) trips the
+    // cap, wave 2 aborts fast — while claims/synthesis still have patience.
+    let searchCalls = 0;
+    // Genuinely different URLs, titles, AND vocab — near-duplicate
+    // detection would otherwise merge them and the test would measure
+    // dedup, not the wait-budget cap.
+    const texts = [
+      'Granaries at Harappa stored barley and wheat on raised brick platforms dated to 2600 BCE.',
+      'Unicorn seals identified merchants across Mohenjo-daro trading houses and distant ports.',
+      'Lothal dockyard linked the city to ocean routes through an engineered tidal basin.',
+    ];
+    const rec = (i) => ({
+      url: `https://example.org/r${i}`,
+      title: ['Granary platforms', 'Unicorn seals', 'Lothal dockyard'][i],
+      snippet: texts[i],
+      via: 'grounding',
+    });
+    const deps = baseDeps({
+      search: async (q, cat, o) => {
+        const n = searchCalls++;
+        o?.onKeyEvent?.({ type: 'rate-wait', waitMs: 5000 });
+        return [rec(n)];
+      },
+      academic: async () => [],
+      claims: async () => [{ id: 'c1', text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' }],
+      synthesize: async () => ({
+        executiveSummary: 'e', findings: [{ heading: 'H', body: 'B', cite: [] }],
+        uncertainty: ['u'], methodology: 'm',
+      }),
+      verify: async () => [],
+    });
+    const result = await runResearch(
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+      { key: 'k1', emit: () => {}, deps },
+    );
+    assert.equal(searchCalls, 3, 'search phase stopped at the cap instead of burning the reserve');
+    assert.ok(result.sources.length >= 3, 'wave-1 evidence survived');
+    assert.equal(result.report?.synthesisFallback, undefined, 'model synthesis completed — no fallback');
+  });
+
+  it('synthesis retries quota failures with server-timed waits and succeeds', async () => {
+    // The production success path: sections 429 twice (exact 100ms waits),
+    // then succeed — the report must be model-written, not an inventory.
+    let synthCalls = 0;
+    const plan2beats = () => ({
+      domain: 'history', complexity: 'medium', steps: ['a'], linesOfInquiry: ['g'],
+      queries: CATS.map((c, i) => ({ q: `Harappan civilization angle ${i}`, category: c })),
+      bookVariants: ['harappan books'],
+      arc: [{ title: 'Origins', focus: 'where' }, { title: 'Decline', focus: 'why' }],
+    });
+    const rec = { url: 'https://example.org/r', title: 'Rec', snippet: 'evidence', via: 'grounding' };
+    const deps = baseDeps({
+      plan: async () => plan2beats(),
+      search: async () => [rec],
+      academic: async () => [],
+      claims: async () => [{ id: 'c1', text: 'X.', state: 'supported', supporting: ['s1'], contradicting: [], confidenceWhy: 'w' }],
+      synthesize: async (a) => {
+        if (a.assembleOnly) {
+          return { executiveSummary: 'full story', uncertainty: ['u'], methodology: 'm' };
+        }
+        synthCalls++;
+        if (synthCalls <= 2) {
+          throw Object.assign(new Error('hot bucket'), { status: 429, code: 'QUOTA_EXHAUSTED', retryAfter: 100 });
+        }
+        return { findings: [{ heading: `H${synthCalls}`, body: 'substantive prose '.repeat(40), cite: ['s1'] }] };
+      },
+      verify: async () => [],
+    });
+    const result = await runResearch(
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+      { key: 'k1', emit: () => {}, deps },
+    );
+    assert.ok(synthCalls >= 3, `retried through quota pressure, calls: ${synthCalls}`);
+    assert.equal(result.report?.synthesisFallback, undefined, 'model-written report — never an inventory');
+    assert.ok((result.report?.findings || []).length >= 2, 'both beats written');
+  });
+
+  it('wait helpers are pure and server-timed', () => {
+    assert.equal(SEARCH_BUDGET_SHARE, 0.4);
+    assert.equal(searchQuotaCapMs(300000), 120000, 'searches cap at 40% of the global budget');
+    assert.equal(searchQuotaCapMs(30000), 12000);
+    assert.equal(searchQuotaCapMs(0), 0);
+    assert.equal(sectionRetryWaitMs({ retryAfter: 53000 }, 1), 53000, 'exact server wait honored');
+    assert.equal(sectionRetryWaitMs({ retryAfter: 999999 }, 1), 60000, 'exact wait capped at 60s');
+    assert.equal(sectionRetryWaitMs({}, 1), 15000, 'escalating fallback starts at 15s');
+    assert.equal(sectionRetryWaitMs({}, 4), 60000, 'escalating fallback caps at 60s');
   });
 });

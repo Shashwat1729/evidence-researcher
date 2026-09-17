@@ -49,6 +49,24 @@ function domainOf(url) {
   try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
 }
 
+// Share of the global quota-wait budget the search phase may consume; the
+// rest is reserved for claims/synthesis/verification (the phases that write
+// the chapter). Without the reserve, 8-10 searches burn the whole budget
+// early and synthesis gets zero patience. Exported for tests.
+export const SEARCH_BUDGET_SHARE = 0.4;
+/** Ms of waiting the search phase may spend before failing fast. Pure. */
+export function searchQuotaCapMs(totalMs) {
+  return Math.floor(Math.max(0, Number(totalMs || 0)) * SEARCH_BUDGET_SHARE);
+}
+/** Server-timed section retry wait: the API's exact Retry-After when known
+ *  (ms), else escalating 15s → 60s so retries span a full RPM refill window
+ *  instead of all 5 attempts falling inside one dead minute. Pure. */
+export function sectionRetryWaitMs(err, attempt) {
+  const exact = Number(err?.retryAfter) > 0 ? Math.min(err.retryAfter, 60_000) : 0;
+  if (exact > 0) return Math.round(exact);
+  return Math.min(15_000 * Math.max(1, attempt || 1), 60_000);
+}
+
 export async function runResearch(input, { key, emit = () => {}, deps = {}, isCancelled = () => false } = {}) {
   const D = { ...defaultDeps, ...deps };
   const cancelledErr = () => Object.assign(new Error('client disconnected — run cancelled'), { status: 499, code: 'CANCELLED' });
@@ -126,9 +144,15 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   let _sourcesRef = null;
   let _allResultsRef = null;
   let _planRef = null;
-  const throwIfStopped = () => {
+  // Phase-partitioned wait budget: searches may consume at most 40% of the
+  // global quota-wait budget. Without the cap, 8-10 searches burn the whole
+  // 300s early and synthesis — the last phase — gets zero patience (instant
+  // throws). The reserve is what lets the final chapter actually get written
+  // on thin quota. Pure function of the budget, exported for tests.
+  const throwIfStopped = (isSearch = false) => {
     if (isCancelled()) throw cancelledErr();
-    if ((stats.quotaWaitMs || 0) >= quotaWaitBudget()) {
+    const cap = isSearch ? Math.min(quotaWaitBudget(), searchQuotaCapMs(quotaWaitBudget())) : quotaWaitBudget();
+    if ((stats.quotaWaitMs || 0) >= cap) {
       // If we already have sources, signal degraded quota — caller will
       // synthesize a fallback report instead of throwing with no result.
       if ((_sourcesRef && _sourcesRef.length) || (_allResultsRef && _allResultsRef.length)) {
@@ -201,8 +225,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   let searchAttempts = 0;
   let searchQuotaFails = 0;
   const doSearch = async (q, category, explicitKey = key) => {
-    // check+reserve is synchronous (no await between) → race-free under pool()
-    throwIfStopped();
+    // check+reserve is synchronous (no await between) → race-free under pool().
+    // Search-phase cap: fail fast here to preserve the synthesis reserve.
+    throwIfStopped(true);
     if (!alive() || overTokenCap()) return [];
     waitNoticeShown = false;
     stats.searchCalls++;
@@ -318,10 +343,13 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // wait budget spent across concurrent searches), do NOT discard the run —
   // free academic/book jobs cost zero quota and may already hold evidence.
   // Settle them first; a truly empty haul still fails honestly below.
+  // Results merge into allResults AS THEY ARRIVE (not after pool resolves)
+  // so a mid-batch abort keeps completed searches instead of losing them.
   let searchAbortedOnQuota = false;
   try {
-    const found = await phase('search', () => pool(batch, searchConcurrency, (q, i) => sleep(Math.min(i, searchConcurrency - 1) * searchStagger).then(() => doSearchWithKey(q, q.category))));
-    for (const rs of found) allResults.push(...rs);
+    await phase('search', () => pool(batch, searchConcurrency, (q, i) => sleep(Math.min(i, searchConcurrency - 1) * searchStagger)
+      .then(() => doSearchWithKey(q, q.category))
+      .then((rs) => { if (rs?.length) allResults.push(...rs); return rs; })));
   } catch (e) {
     // Cancel and non-quota failures still abort: only quota gets the
     // settle-free-evidence treatment (anything else would mask real bugs).
@@ -372,8 +400,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const topups = diversityTopups(task.question, Math.min(3, room));
     if (topups.length) {
       ev('progress', `Low source diversity — running ${topups.length} top-up searches`);
-      const extra = await phase('search', () => pool(topups, Math.min(3, searchConcurrency), (q, i) => sleep(Math.min(i, 2) * searchStagger).then(() => doSearchWithKey(q, q.category))));
-      for (const rs of extra) allResults.push(...rs);
+      await phase('search', () => pool(topups, Math.min(3, searchConcurrency), (q, i) => sleep(Math.min(i, 2) * searchStagger)
+        .then(() => doSearchWithKey(q, q.category))
+        .then((rs) => { if (rs?.length) allResults.push(...rs); return rs; })));
     }
   }
   ev('progress', `${allResults.length} raw results collected`);
@@ -552,7 +581,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         ev('warning', `Analysis failed (${(e.message || '').slice(0, 100)}) — retrying claims only`);
         try {
           claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
-        } catch { claims = []; }
+        } catch {
+          claims = heuristicClaims(sources);
+          ev('warning', `Claims heuristic: derived ${claims.length} cited claims from source titles (model unavailable)`);
+        }
         review = { contradictions: [], gaps: [], sufficient: true, reason: 'quick single-pass fallback' };
       }
     } else {
@@ -562,7 +594,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       ev('warning', `Claim extraction failed (${(e.message || '').slice(0, 100)}) — retrying with fewer sources`);
       try {
         claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
-      } catch { claims = []; }
+      } catch {
+        claims = heuristicClaims(sources);
+        ev('warning', `Claims heuristic: derived ${claims.length} cited claims from source titles (model unavailable)`);
+      }
     }
     }
     ev('claims', `${claims.length} claims extracted`, { count: claims.length });
@@ -669,6 +704,25 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   ev('progress', provenance.note);
 
+  // Heuristic claims fallback: when Gemini claim extraction is dead on quota
+  // (298s wait in the live run, still 0 claims), synthesize claims
+  // deterministically from source titles/snippets so the report can still be
+  // a chapter. Keeps the "every claim cited" invariant — each heuristic
+  // claim cites its single source id.
+  function heuristicClaims(sources) {
+    return (sources || [])
+      .filter((s) => s && s.title)
+      .slice(0, 10)
+      .map((s, i) => ({
+        id: `h_c${i}`,
+        text: s.title.length > 120 ? `${s.title.slice(0, 120).trimEnd()}…` : s.title,
+        state: 'supported',
+        supporting: [s.id],
+        contradicting: [],
+        confidenceWhy: `Heuristic extract from ${s.domain || 'source'} (${s.tier != null ? `tier ${s.tier}` : 'unclassified'}) — full passage in Sources tab.`,
+        tier: s.tier,
+      }));
+  }
   // ---- SYNTHESIS ----
   currentPhase = 'synthesize';
   ev('progress', 'Synthesizing final report…');
@@ -694,9 +748,14 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     ev('progress', `Writing report in ${sectionGroups.length} sections…`);
     const modeDepth = DEPTH[task.mode] || DEPTH.standard;
     const perSectionMin = Math.max(2, Math.ceil(modeDepth.minFindings / sectionGroups.length));
-    const settled = await pool(sectionGroups, 2, async (beats, gi) => {
-      throwIfStopped();
-      const label = `Section ${gi + 1}/${sectionGroups.length}`;
+    // Completed sections are stored by index AS THEY FINISH so a mid-loop
+    // quota abort keeps finished sections (in beat order) instead of losing
+    // them with the rejected pool. Cancel still aborts everything.
+    const sectionOut = [];
+    try {
+      await pool(sectionGroups, 2, async (beats, gi) => {
+        throwIfStopped();
+        const label = `Section ${gi + 1}/${sectionGroups.length}`;
       // Planned work is NEVER skipped on transient quota: rate-limited sections
       // wait (via post()) and retry here; only truly-failed sections are cut.
       // Thin sections (too few findings OR too little prose) get one expansion
@@ -726,6 +785,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
             continue;
           }
           ev('progress', `${label}: ${found.length} finding(s)`);
+          sectionOut[gi] = found;
           return found;
         } catch (e) {
           // Patient retry for quota — user said "time can be more but results should be best"
@@ -734,10 +794,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
           const isQuota = e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED' || e?.code === 'RPD_EXHAUSTED';
           const isRetryable = isQuota || e?.status === 502 || e?.status === 503;
           if (isRetryable && attempt < 5 && Date.now() < deadline - 5000 && !isCancelled()) {
-            const waitHint = e?.retryAfter ? ` (retry after ${Math.ceil(e.retryAfter/1000)}s)` : '';
+            // Server-timed wait: the API's exact Retry-After when known, else
+            // escalating 15s → 60s so retries span a full refill window.
+            const waitMs = isQuota ? sectionRetryWaitMs(e, attempt) : 2000 * attempt;
+            const waitHint = ` (retry in ${Math.ceil(waitMs / 1000)}s)`;
             ev('progress', `${label} temporarily unavailable${waitHint} — retrying (${attempt + 1}/5)…`);
-            // Wait a bit before retry — let quota refill, with backoff
-            const waitMs = isQuota ? 8000 + Math.floor(Math.random() * 4000) : 2000 * attempt;
             await new Promise(r => setTimeout(r, waitMs));
             continue;
           }
@@ -746,11 +807,16 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
           } else {
             ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
           }
+          sectionOut[gi] = [];
           return [];
         }
       }
-    });
-    const merged = settled.flat().filter((f) => f && ((f.heading || f.body || '').trim()));
+      });
+    } catch (e) {
+      if (e?.code === 'CANCELLED' || e?.name === 'AbortError' || !isQuotaError(e)) throw e;
+      ev('warning', `Section loop aborted on quota — keeping completed sections…`);
+    }
+    const merged = sectionOut.flat().filter((f) => f && ((f.heading || f.body || '').trim()));
     if (merged.length) {
       try {
         // Assembly budget scales with findings: framing 16 findings needs

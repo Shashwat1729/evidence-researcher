@@ -220,12 +220,15 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
 }
 
 // Depth contract per mode: minimum substantive findings, finding body size,
-// and scholarly apparatus. A "study chapter", not a search summary.
+// and scholarly apparatus. Each mode is a different standard: quick is a fast
+// check, standard a book chapter, deep a long chapter, exhaustive
+// documentary-grade. Per-mode body minimums must strictly increase (a deeper
+// mode writing the same length as a shallower one is a standards bug).
 export const DEPTH = {
   quick: { minFindings: 3, minBodyChars: 300, minBooks: 0, minPrimary: 0, minTimeline: 0 },
   standard: { minFindings: 9, minBodyChars: 900, minBooks: 4, minPrimary: 2, minTimeline: 8 },
-  deep: { minFindings: 12, minBodyChars: 900, minBooks: 6, minPrimary: 3, minTimeline: 12 },
-  exhaustive: { minFindings: 16, minBodyChars: 1000, minBooks: 8, minPrimary: 4, minTimeline: 15 },
+  deep: { minFindings: 12, minBodyChars: 1100, minBooks: 6, minPrimary: 3, minTimeline: 12 },
+  exhaustive: { minFindings: 16, minBodyChars: 1200, minBooks: 8, minPrimary: 4, minTimeline: 15 },
 };
 
 // Section response: findings ONLY. One full-budget call per section group is
@@ -278,9 +281,12 @@ export function buildSynthesisPrompt({ task, plan, claims, sources, contradictio
     ? plan.arc
     : [{ title: 'Overview', focus: 'Essential context and the key facts in logical order.' }];
   const arcText = arc.map((b, i) => `${i + 1}. ${b.title} — ${b.focus}`).join('\n');
+  // Chapter modes open with story; quick stays a lean fast check.
+  const coldOpen = task.mode === 'quick' ? '' :
+    'COLD OPEN: begin with a vivid concrete scene — a place, a moment, a discovery, a person — before any formal introduction. Then unfold the full arc in order so that reading this report alone teaches the topic end to end.\n\n';
   return `Write a thorough, chapter-like research study as JSON — NOT a summary of the search process.
 
-Question: ${task.question}
+${coldOpen}Question: ${task.question}
 Mode: ${task.mode} | Stance: ${task.stance}${task.hypothesis ? ` | User hypothesis: ${task.hypothesis}` : ''}
 ${task.stance !== 'neutral' ? `DISCLOSURE: the user requested a "${task.stance}" investigation of their hypothesis. Disclose this stance in the methodology and report contradicting evidence anyway. ${STANCE_GUARDRAIL}` : ''}
 Domain: ${plan.domain}
@@ -353,6 +359,8 @@ export function buildAssemblyPrompt({ task, plan, claims, sources, contradiction
     verified: s.verified, accessibility: s.accessibility,
   }));
   return `Frame the finished research findings below with a complete report. Do NOT write new findings — reuse the provided ones' substance when summarizing.
+
+COLD OPEN: the executiveSummary must begin with a vivid concrete scene — a place, a moment, a discovery, a person — before any formal introduction, then tell the whole arc so the report alone teaches the topic end to end.
 
 Question: ${task.question}
 Mode: ${task.mode} | Stance: ${task.stance}${task.hypothesis ? ` | User hypothesis: ${task.hypothesis}` : ''}
