@@ -45,13 +45,20 @@ const baseDeps = (over = {}) => ({
 
 describe('quota-dead search phase (Pages static-mode scenario)', () => {
   let savedBudget;
+  let savedGate;
   beforeEach(() => {
     savedBudget = process.env.QUOTA_WAIT_BUDGET_MS;
     process.env.QUOTA_WAIT_BUDGET_MS = '30000'; // floor: aborts fast, deterministically
+    // Gate pause defaults to 45s real time — shrink for every test here
+    // (individual tests may override further).
+    savedGate = process.env.SYNTH_GATE_MS;
+    process.env.SYNTH_GATE_MS = '50';
   });
   afterEach(() => {
     if (savedBudget === undefined) delete process.env.QUOTA_WAIT_BUDGET_MS;
     else process.env.QUOTA_WAIT_BUDGET_MS = savedBudget;
+    if (savedGate === undefined) delete process.env.SYNTH_GATE_MS;
+    else process.env.SYNTH_GATE_MS = savedGate;
   });
 
   it('settles free sources after a grounding pool abort and delivers an inventory, not an error', async () => {
@@ -154,6 +161,83 @@ describe('quota-dead search phase (Pages static-mode scenario)', () => {
     assert.ok(synthCalls >= 3, `retried through quota pressure, calls: ${synthCalls}`);
     assert.equal(result.report?.synthesisFallback, undefined, 'model-written report — never an inventory');
     assert.ok((result.report?.findings || []).length >= 2, 'both beats written');
+  });
+
+  it('hot quota triggers one refill pause and collapses to fewer, bigger sections', async () => {
+    const savedGate = process.env.SYNTH_GATE_MS;
+    process.env.SYNTH_GATE_MS = '50';
+    try {
+      const events = [];
+      const emit = (ev) => events.push(`${ev.type}:${String(ev.message || '').slice(0, 80)}`);
+      const texts = [
+        'Granaries at Harappa stored barley on raised brick platforms dated to 2600 BCE.',
+        'Unicorn seals identified merchants across Mohenjo-daro trading houses.',
+        'Lothal dockyard linked the city to ocean routes via a tidal basin.',
+      ];
+      const titles = ['Granary platforms', 'Unicorn seals', 'Lothal dockyard'];
+      let n = 0;
+      const fat = (h) => ({ heading: h, body: 'substantive prose '.repeat(40), cite: [] });
+      const deps = baseDeps({
+        plan: async () => ({
+          domain: 'history', complexity: 'medium', steps: ['a'], linesOfInquiry: ['g'],
+          queries: CATS.map((c, i) => ({ q: `angle ${i}`, category: c })),
+          bookVariants: ['hb'],
+          arc: ['A', 'B', 'C', 'D', 'E', 'F'].map((t) => ({ title: t, focus: t })),
+        }),
+        search: async (q, cat, o) => {
+          const i = n++;
+          o?.onKeyEvent?.({ type: 'rate-wait', waitMs: 60000 });
+          return [{ url: `https://example.org/g${i}`, title: titles[i % 3], snippet: texts[i % 3], via: 'grounding' }];
+        },
+        academic: async () => [],
+        claims: async () => [{ id: 'c1', text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' }],
+        synthesize: async (a) => a.assembleOnly
+          ? { executiveSummary: 'full story', uncertainty: ['u'], methodology: 'm' }
+          : { findings: [fat('H1'), fat('H2'), fat('H3')] },
+        verify: async () => [],
+      });
+      const result = await runResearch(
+        { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+        { key: 'k1', emit, deps },
+      );
+      const log = events.join('\n');
+      assert.ok(log.includes('pausing once to let it refill'), 'gate fired on hot quota');
+      assert.ok(log.includes('Writing report in 3 sections'), 'collapsed 6 beats into 3 bigger calls');
+      assert.equal(result.report?.synthesisFallback, undefined, 'model-written, not inventory');
+      assert.ok((result.report?.findings || []).length >= 6, 'fewer sections still carry the findings');
+    } finally {
+      if (savedGate === undefined) delete process.env.SYNTH_GATE_MS;
+      else process.env.SYNTH_GATE_MS = savedGate;
+    }
+  });
+
+  it('healthy quota skips the gate and keeps full sections', async () => {
+    const events = [];
+    const emit = (ev) => events.push(`${ev.type}:${String(ev.message || '').slice(0, 80)}`);
+    const fat = (h) => ({ heading: h, body: 'substantive prose '.repeat(40), cite: [] });
+    const deps = baseDeps({
+      plan: async () => ({
+        domain: 'history', complexity: 'medium', steps: ['a'], linesOfInquiry: ['g'],
+        queries: CATS.map((c, i) => ({ q: `angle ${i}`, category: c })),
+        bookVariants: ['hb'],
+        arc: ['A', 'B', 'C', 'D', 'E', 'F'].map((t) => ({ title: t, focus: t })),
+      }),
+      search: async (q, cat) => [{ url: `https://example.org/${encodeURIComponent(q.q || q)}`, title: `T ${q.q || q}`, snippet: `Distinct evidence text about ${q.q || q} with unique vocabulary.`, via: 'grounding' }],
+      academic: async () => [],
+      claims: async () => [{ id: 'c1', text: 'X.', state: 'supported', supporting: [], contradicting: [], confidenceWhy: 'w' }],
+      synthesize: async (a) => a.assembleOnly
+        ? { executiveSummary: 'full story', uncertainty: ['u'], methodology: 'm' }
+        : { findings: [fat('H1'), fat('H2')] },
+      verify: async () => [],
+    });
+    const result = await runResearch(
+      { question: 'Tell about Harappan civilization?', mode: 'standard', stance: 'neutral' },
+      { key: 'k1', emit, deps },
+    );
+    const log = events.join('\n');
+    assert.ok(!log.includes('pausing once'), 'no gate pause on healthy quota (zero cost)');
+    assert.ok(log.includes('Writing report in 6 sections'), 'full sectional depth preserved');
+    assert.equal(result.report?.synthesisFallback, undefined);
   });
 
   it('wait helpers are pure and server-timed', () => {

@@ -140,6 +140,23 @@ describe('API key rotation', () => {
     }
   });
 
+  it('billing text WITH RetryInfo still waits (per-minute throttle, not a hard cap)', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK; // single key forces the wait path
+    let calls = 0;
+    const throttle = () => jsonResponse(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details.', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '1s' }] } });
+    mockFetch(async () => { calls++; return calls === 1 ? throttle() : jsonResponse(200, okPayload); });
+    const r = await generate({ key: '', model: 'm', prompt: 'hi' });
+    assert.equal(r.text, 'hi', 'must wait out the bucket, never fail fast on the text alone');
+    assert.equal(calls, 2);
+  });
+
+  it('billing text WITHOUT RetryInfo fails fast as a hard cap (no futile hours)', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    mockFetch(async () => jsonResponse(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details.' } }));
+    const err = await generate({ key: '', model: 'm', prompt: 'hi' }).catch((e) => e);
+    assert.equal(err.code, 'RPD_EXHAUSTED');
+  });
+
   it('quota errors carry the server exact wait (retryAfter ms) for timed retries', async () => {
     delete process.env.GEMINI_API_KEY_FALLBACK;
     const saved = process.env.QUOTA_WAIT_BUDGET_MS;

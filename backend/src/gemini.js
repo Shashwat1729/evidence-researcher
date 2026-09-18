@@ -278,17 +278,20 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     }
     // All keys tried this round. Only 429s are worth waiting for (per-minute
     // buckets refill); anything else fails fast with the first error.
-    // Distinguish RPM (seconds, wait helps) vs RPD/billing (hours or hard
-    // cap, wait is futile — fall back to evidence inventory instead of
-    // hanging for hours). The billing message has no RetryInfo.
+    // Distinguish RPM (seconds, wait helps) vs RPD/hard cap (hours or never —
+    // wait is futile, fall back to evidence inventory instead of hanging).
+    // NOTE: ordinary per-minute 429s carry the SAME "check your plan and
+    // billing details" text AND a short RetryInfo. The text alone must NEVER
+    // trigger fail-fast — only the absence of any refill time (or an hours
+    // long one) proves waiting is futile.
     if (!round429 || round429.status !== 429) throw firstErr;
+    const hinted = retryDelayMs(round429, 0);
     const msgBilling = /billing|check your plan/i.test(round429.message || '');
-    if (msgBilling) {
+    if (msgBilling && hinted === 0) {
       throw Object.assign(new Error('Billing quota exceeded — no amount of waiting will refill the per-project daily/plan limit. Add a billed project or wait until reset.'), {
         status: 429, code: 'RPD_EXHAUSTED', retryAfter: 0,
       });
     }
-    const hinted = retryDelayMs(round429, 0);
     if (hinted > 120000) {
       // RPD/day quota — Retry-After is hours, not seconds. Waiting won't help.
       throw Object.assign(new Error('Daily quota (RPD) exhausted — try again after midnight PT, or use a billed project. Partial results will be assembled from gathered evidence.'), {

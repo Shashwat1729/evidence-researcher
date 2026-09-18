@@ -552,6 +552,27 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     }
   }
 
+  // Late-phase gate: when the run has already spent most of its wait budget,
+  // the minute bucket is provably hot — hammering claims/review/synthesis
+  // into it burns attempts (429s count as requests!) instead of writing. ONE
+  // coordinated pause lets the bucket refill so attempt #1 succeeds; doomed
+  // attempts never would. Lives HERE (not at synthesis) because the analysis
+  // loop's own budget guard would otherwise divert to inventory first.
+  // Skipped with a healthy quota (zero cost) and near deadline.
+  // After the pause the wait counter resets: the pause delineates two quota
+  // epochs, and past waits measured a different bucket window. This is NOT
+  // weakening the breaker — per-call budgets + deadline still bound the run,
+  // and the counter re-accumulates (a still-dead quota trips it again fast).
+  const isQuotaHot = () => (stats.quotaWaitMs || 0) > quotaWaitBudget() * 0.5;
+  let hotAtGate = false;
+  if (isQuotaHot() && Date.now() < deadline - 120_000 && !isCancelled()) {
+    hotAtGate = true;
+    ev('progress', 'Quota is hot — pausing once to let it refill before writing the chapter…');
+    // SYNTH_GATE_MS overrides the pause in tests (default 45s).
+    const penv = (typeof process !== 'undefined' && process.env) || {};
+    await new Promise((r) => setTimeout(r, Math.max(0, Number(penv.SYNTH_GATE_MS ?? 45_000))));
+    stats.quotaWaitMs = 0;
+  }
   // ---- ITERATIVE LOOP: claims → review → gaps/contradictions → more search ----
   // (claims/contradictions/gaps/provenance/iterations/report declared above for quota fallback)
   iterations.length = 0;
@@ -726,6 +747,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // ---- SYNTHESIS ----
   currentPhase = 'synthesize';
   ev('progress', 'Synthesizing final report…');
+  // (Late-phase gate lives before the analysis loop: it must pause BEFORE
+  // claims/review/provenance burn the reserve, not just before synthesis.)
   // Empty-handed is still an answer, not a crash — but with zero sources AND
   // zero claims there is nothing honest to report, so fail explicitly.
   // Honest cause matters: after a quota abort the question isn't the problem,
@@ -738,8 +761,15 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       { status: 502, code: 'NO_EVIDENCE' },
     );
   }
+  // Adaptive sections: a run that entered the late phase hot gets FEWER,
+  // BIGGER section calls (max 3) instead of 6-8 small ones — fewer dice rolls
+  // against the bucket, same finding minimums per section scaled up. Still
+  // model-written prose either way; the count adapts, the standard does not.
+  // Decided at the gate (not recomputed) because the reset above would
+  // otherwise always report cool.
+  const maxGroups = hotAtGate ? Math.min(3, budget.sections || 1) : (budget.sections || 1);
   // report already declared outside try
-  const sectionGroups = task.mode === 'quick' ? [] : partitionBeats(plan.arc, budget.sections || 1);
+  const sectionGroups = task.mode === 'quick' ? [] : partitionBeats(plan.arc, maxGroups);
   if (sectionGroups.length > 1) {
     // Sectional synthesis: one full-budget findings call per beat group, then
     // one assembly call for framing. N calls multiply output length where a
