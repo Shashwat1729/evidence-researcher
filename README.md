@@ -30,7 +30,17 @@ limited by site CORS policies (recorded honestly, never bypassed).
 </tr>
 </table>
 
-> Screenshots are captured headlessly at 1440×960 and 390×844 from the live Pages build (`scripts/build-pages.js` verifies every import resolves, so screenshots never go stale).
+<table>
+<tr>
+<td><img src="docs/screenshots/overview.png" alt="Harappan Standard — overview with 12 sources, 8 claims" width="100%"><br><em>Standard — Harappan overview (chapter-like, 12 sources → 8 cited claims)</em></td>
+<td><img src="docs/screenshots/report.png" alt="Final report — 8 expanded findings with passages" width="100%"><br><em>Final report — 8 findings, each with passage + tier (book-chapter feel)</em></td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/screenshots/sources.png" alt="Sources table — tiered, with passages" width="100%"><br><em>Sources — tiered by evidence, not domain alone; every claim traceable</em></td>
+</tr>
+</table>
+
+> Screenshots are captured headlessly at 1440×960 and 390×844 from the live Pages build (`scripts/build-pages.js` verifies every import resolves, so screenshots never go stale). Report screenshots are from a live **Standard Harappan** run (12 sources → 8 claims → 8 expanded findings, ~7k chars) — the chapter-like fallback when quota is hot; with quota, the same run is fully model-written.
 
 ## Quickstart (local, 2 minutes)
 

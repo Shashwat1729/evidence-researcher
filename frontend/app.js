@@ -3,6 +3,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
 let current = null;
+if (typeof window !== 'undefined') window.__setCurrentForScreenshot = (r) => { current = r; try { renderTab('overview'); document.getElementById('resultView')?.classList.remove('hidden'); document.getElementById('progressView')?.classList.add('hidden'); document.getElementById('askView')?.classList.add('hidden'); } catch {} };
 let serverKey = false;
 let staticMode = false;
 // Static cache-busting version. MUST match ENGINE_V in direct.js (enforced by
