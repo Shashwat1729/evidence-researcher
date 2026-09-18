@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSemanticScholar, parsePubMedSummary, parseArchiveOrg, queryTerms, bookRelevance, rankByRelevance, heuristicBookVariants, expandBookQueries, searchBooks } from '../backend/src/providers/academic.js';
+import { parseSemanticScholar, parsePubMedSummary, parseArchiveOrg, queryTerms, bookRelevance, rankByRelevance, heuristicBookVariants, expandBookQueries, searchBooks, searchAcademic } from '../backend/src/providers/academic.js';
 
 describe('academic/book parsers (offline fixtures)', () => {
   it('parses Semantic Scholar, preferring open-access PDF over DOI', () => {
@@ -49,6 +49,37 @@ describe('book relevance ranking (dynamic, no topic lists)', () => {
   it('keeps provider order when nothing matches (no empty results)', () => {
     const ranked = rankByRelevance('the the a', recs);
     assert.equal(ranked.length, 3);
+  });
+});
+
+describe('academic bundle ranking (keyword noise sinks)', () => {
+  it('sorts by question overlap and attaches relevance; nothing dropped', async () => {
+    const realFetch = globalThis.fetch;
+    const junkTitle = 'Impact of Yoga beyond Physical Training on the Cardiovascular System';
+    const goodTitle = 'Fluvial landscapes of the Harappan civilization';
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      const ok = (payload) => ({ ok: true, status: 200, json: async () => payload, text: async () => '' });
+      if (u.includes('openalex')) return ok({ results: [
+        { title: junkTitle, doi: '10.9/junk', authorships: [], publication_year: 2024, cited_by_count: 1 },
+        { title: goodTitle, doi: '10.1/good', authorships: [], publication_year: 2012, cited_by_count: 334 },
+      ] });
+      if (u.includes('crossref')) return ok({ message: { items: [] } });
+      if (u.includes('arxiv')) return { ok: true, status: 200, text: async () => '<feed></feed>' };
+      if (u.includes('semanticscholar')) return ok({ data: [] });
+      if (u.includes('esearch')) return ok({ esearchresult: { idlist: [] } });
+      return ok({});
+    };
+    try {
+      const out = await searchAcademic('Tell about Harappan civilization?', { perSource: 2 });
+      assert.equal(out.length, 2);
+      assert.ok(out[0].title.includes('Harappan'), 'topical record ranks first');
+      assert.ok(out[1].title.includes('Yoga'), 'noise sinks to the bottom (kept, not dropped)');
+      assert.ok(out[0].relevance > out[1].relevance, 'relevance scores attached and ordered');
+      assert.equal(out[1].relevance, 0, 'zero-overlap noise flagged for classifier demotion');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

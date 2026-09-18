@@ -27,6 +27,25 @@ describe('source classification', () => {
     const r = classifySource({ url: 'https://www.archives.gov/records/x', title: 'record', snippet: 'archival document' });
     assert.ok([1, 3].includes(r.tier));
   });
+  it('a book on archive.org is a book (tier 2), never primary evidence', () => {
+    const r = classifySource({ url: 'https://archive.org/details/flushed00whod', title: 'Flushed: how the plumber saved civilization', snippet: 'Internet Archive', sourceType: 'book' });
+    assert.equal(r.tier, 2, 'declared type beats the archival-domain guess');
+  });
+  it('a declared paper on a generic domain keeps tier 2', () => {
+    const r = classifySource({ url: 'https://example.com/paper', title: 'Study', snippet: 'abstract', sourceType: 'paper' });
+    assert.equal(r.tier, 2);
+  });
+  it('topically unrelated keyword matches are demoted (academic channel only)', () => {
+    const noise = classifySource({ url: 'https://pubmed.ncbi.nlm.nih.gov/1/', title: 'Impact of Yoga on the Cardiovascular System', snippet: 'PubMed', sourceType: 'paper', relevance: 0, strictTopical: true });
+    assert.equal(noise.tier, 5, 'PubMed keyword noise must not parade as tier 2');
+    assert.ok(/topical/i.test(noise.tierReason));
+    // Grounding passed Google's own ranking — never demoted here.
+    const grounded = classifySource({ url: 'https://example.com/x', title: 'Unrelated', snippet: '...', sourceType: 'webpage', relevance: 0, strictTopical: false });
+    assert.equal(grounded.tier, 6);
+    // Topical papers are untouched.
+    const good = classifySource({ url: 'https://doi.org/10.1/x', title: 'Fluvial landscapes of the Harappan civilization', snippet: 'OpenAlex', sourceType: 'paper', relevance: 1, strictTopical: true });
+    assert.equal(good.tier, 2);
+  });
   it('domainHint applies rules to grounding redirects (honest: unknown stays 6)', () => {
     const paper = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'arxiv.org/abs/123', domainHint: 'arxiv.org' });
     assert.equal(paper.tier, 2);

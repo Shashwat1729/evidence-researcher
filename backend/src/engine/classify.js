@@ -22,7 +22,7 @@ const PATH_HINTS = [
   [/\/blog\//i, 6, 'blog/opinion path — discovery value, not evidence'],
 ];
 
-export function classifySource({ url = '', title = '', snippet = '', text = '', sourceType = 'webpage', domainHint = '' }) {
+export function classifySource({ url = '', title = '', snippet = '', text = '', sourceType = 'webpage', domainHint = '', relevance = null, strictTopical = false }) {
   const u = String(url || '');
   const hay = `${title} ${snippet} ${text.slice(0, 2000)}`.toLowerCase();
   // Redirect/proxy URLs (e.g. grounding redirects) carry no real domain —
@@ -34,10 +34,6 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
   let reason = 'general website — discovery/background; evidentiary value to be established';
   let authority = 'unknown';
   let proximity = 'unknown';
-
-  if (sourceType === 'paper') { tier = 2; reason = 'declared scholarly paper (verify peer review)'; authority = 'medium'; proximity = 'secondary'; }
-  if (sourceType === 'book') { tier = 2; reason = 'book/monograph (verify publisher + whether text inspected)'; authority = 'medium'; proximity = 'secondary'; }
-  if (sourceType === 'primary') { tier = 1; reason = 'declared primary evidence'; authority = 'medium'; proximity = 'primary'; }
 
   for (const [re, t, r] of DOMAIN_TIER_HINTS) {
     if (re.test(uPlus)) {
@@ -54,6 +50,21 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
       break;
     }
   }
+
+  // Declared record type (from OUR provider pipeline) beats domain guesses:
+  // a book on archive.org is a book (tier 2), never primary evidence (the
+  // old order let the archive.org rule promote any hosted book to tier 1).
+  // Domains can only leave the tier alone or make it worse from here.
+  if (sourceType === 'paper' || sourceType === 'book') {
+    if (tier !== 2) {
+      tier = 2;
+      reason = sourceType === 'paper'
+        ? 'declared scholarly paper (verify peer review)'
+        : 'book/monograph (verify publisher + whether text inspected)';
+      authority = 'medium'; proximity = 'secondary';
+    }
+  }
+  if (sourceType === 'primary') { tier = 1; reason = 'declared primary evidence'; authority = 'medium'; proximity = 'primary'; }
 
   // Scholarly markers in text/snippet can promote general domains.
   if (tier >= 5 && /peer-reviewed|doi:|peer review|university press|monograph|dissertation/i.test(hay)) {
@@ -74,6 +85,16 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     if (re.test(u) && (sourceType === 'webpage' || sourceType === 'news' || sourceType === 'social')) {
       if (tier < minTier) { tier = minTier; reason = r; authority = 'low'; }
     }
+  }
+  // Topicality: free keyword APIs (OpenAlex/Crossref/PubMed/…) match on raw
+  // terms, so an unrelated record with ZERO question-term overlap is noise,
+  // not evidence — demote it explicitly instead of parading it as tier 2.
+  // Applies ONLY to that channel (strictTopical): grounding results already
+  // passed Google's own relevance ranking and must never be demoted here.
+  if (strictTopical && relevance === 0 && tier <= 2) {
+    tier = 5;
+    reason = 'keyword match without topical overlap — noise until corroborated';
+    authority = 'low';
   }
 
   return {

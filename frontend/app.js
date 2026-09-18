@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-17b';
+const STATIC_V = '2026-09-18a';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -50,27 +50,33 @@ async function init() {
     serverKey = !!cfg.serverKey;
     hasFallback = !!cfg.hasFallback;
     apiOk = Array.isArray(cfg.modes);
-    // Populate model selectors
-    if (cfg.models && Array.isArray(cfg.models)) {
-      const opts = cfg.models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
+    // Populate model selectors (shared: server list wins, static falls back
+    // to the backend catalog so the picker works on Pages too).
+    const populateModels = (models) => {
+      const opts = models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
       $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
       $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
       // Drop retired saved ids (e.g. gemini-2.0-flash-lite): a stale picker
       // value would otherwise send a dead model id and fail every run.
       const savedModel = getStoredModel();
-      if (savedModel && cfg.models.some((m) => m.id === savedModel)) {
+      if (savedModel && models.some((m) => m.id === savedModel)) {
         $('#modelSelect').value = savedModel;
         $('#modelInput').value = savedModel;
       } else if (savedModel) {
         localStorage.removeItem('gemini_model');
       }
+    };
+    if (cfg.models && Array.isArray(cfg.models)) {
+      populateModels(cfg.models);
     } else if (staticMode || !apiOk) {
-      // Static Pages mode has no /api/config: prune retired saved ids anyway
-      // so a stale value can never select a dead model.
-      const savedModel = getStoredModel();
-      if (savedModel && /^(gemini-(1\.5|2\.0)-|gemini-1\.5)/.test(savedModel)) {
-        localStorage.removeItem('gemini_model');
-      }
+      // Static Pages mode has no /api/config: load the SAME backend catalog
+      // the engine uses (single source of truth — never a hardcoded copy
+      // that can rot like the old Flash-Lite defaults did). Dynamic import
+      // so a staging hiccup degrades to Auto instead of breaking the app.
+      try {
+        const { AVAILABLE_MODELS } = await import(`../backend/src/config.js${staticSuffix()}`);
+        if (Array.isArray(AVAILABLE_MODELS) && AVAILABLE_MODELS.length) populateModels(AVAILABLE_MODELS);
+      } catch { /* Auto only — the engine default still works */ }
     }
   } catch { /* offline → static mode */ }
   staticMode = !apiOk;
@@ -503,6 +509,12 @@ function srcLink(id) {
   return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.domain || s.url)}</a>` : '<i>unknown source</i>';
 }
 
+/** Section list that hides itself when empty (bare headers look broken). */
+function secList(title, items) {
+  if (!items || !items.length) return '';
+  return `<h3>${title}</h3><ul>${items.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+}
+
 function renderTab(tab) {
   const r = current;
   const el = $('#tabBody');
@@ -520,8 +532,8 @@ function renderTab(tab) {
       ${fallbackBanner}
       <p>${escapeHtml(r.stanceDisclosure || '')}</p>
       <h3>Executive summary</h3><p>${escapeHtml(r.report?.executiveSummary || '')}</p>
-      <h3>What we can establish</h3><ul>${(r.report?.established || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
-      <h3>Uncertainty</h3><ul>${(r.report?.uncertainty || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+      ${secList('What we can establish', r.report?.established)}
+      ${secList('Uncertainty', r.report?.uncertainty)}`;
   } else if (tab === 'claims') {
     el.innerHTML = (r.claims || []).map((c) => `<div class="claim"><b>[${escapeHtml(c.state)}]</b> ${escapeHtml(c.text)}
       ${c.confidenceWhy ? `<br><span class="hint">${escapeHtml(c.confidenceWhy)}</span>` : ''}
@@ -541,15 +553,15 @@ function renderTab(tab) {
       <td class="hint">${escapeHtml((s.passages[0]?.text || '').slice(0, 280))}</td></tr>`).join('')}</table>`;
   } else if (tab === 'contra') {
     el.innerHTML = `<h3>Contradictions</h3>${(r.contradictions || []).map((c) => `<div class="claim"><b>[${c.severity}]</b> ${escapeHtml(c.against)}<br><span class="hint">${(c.sources || []).map(srcLink).join(' · ')}</span></div>`).join('') || '<p>None found.</p>'}
-      <h3>Competing explanations</h3><ul>${(r.report?.competing || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
-      <h3>Contradictory evidence (report)</h3><ul>${(r.report?.contradictions || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+      ${secList('Competing explanations', r.report?.competing)}
+      ${secList('Contradictory evidence (report)', r.report?.contradictions)}`;
   } else if (tab === 'graph') {
-    el.innerHTML = `<p class="hint">Claims → sources. Red edges = contradicts, green = supports, dashed = derived from one underlying source.</p><svg class="graph" id="g"></svg>`;
-    drawGraph();
+    el.innerHTML = `<p class="hint">Claims → sources. Red edges = contradicts, green = supports, dashed = derived from one underlying source.</p>${(current.claims || []).length ? '<svg class="graph" id="g"></svg>' : '<p>No claims extracted — nothing to graph yet.</p>'}`;
+    if ((current.claims || []).length) drawGraph();
   } else if (tab === 'process') {
     el.innerHTML = `<h3>Methodology</h3><p>${escapeHtml(r.report?.methodology || '')}</p>
       <h3>Iterations</h3><ul>${(r.iterations || []).map((i) => `<li>Pass ${i.n}: gaps: ${(i.gaps || []).join('; ') || 'none'} ${i.sufficient ? '(sufficient)' : ''}</li>`).join('')}</ul>
-      <h3>Budget</h3><p class="hint">model calls ${r.stats.modelCalls} · searches ${r.stats.searchCalls} · fetched ${r.stats.fetches} · runtime ${(r.stats.runtimeMs / 1000).toFixed(1)}s · tokens in/out ${((r.stats.tokensIn || 0)).toLocaleString()}/${((r.stats.tokensOut || 0)).toLocaleString()} (API-reported; cost follows current Google pricing, estimate only)${r.stats.escalated ? ' · escalated (disagreement found)' : ''}${r.stats.keyRotations ? ` · ${r.stats.keyRotations} key rotation(s)` : ''}<br>${escapeHtml(r.stats.note || '')}</p>
+      <h3>Budget</h3><p class="hint">model calls ${r.stats.modelCalls ?? '?'} · searches ${r.stats.searchCalls ?? '?'} · fetched ${r.stats.fetches ?? '?'} · runtime ${(((r.stats.runtimeMs || 0)) / 1000).toFixed(1)}s · tokens in/out ${((r.stats.tokensIn || 0)).toLocaleString()}/${((r.stats.tokensOut || 0)).toLocaleString()} (API-reported; cost follows current Google pricing, estimate only)${r.stats.escalated ? ' · escalated (disagreement found)' : ''}${r.stats.keyRotations ? ` · ${r.stats.keyRotations} key rotation(s)` : ''}<br>${escapeHtml(r.stats.note || '')}</p>
       ${r.stats.phases && Object.keys(r.stats.phases).length ? `<h3>Phase timings</h3><p class="hint">${Object.entries(r.stats.phases).map(([k, v]) => `${escapeHtml(k)}: ${(v / 1000).toFixed(1)}s`).join(' · ')}</p>` : ''}
       ${r.stats.fetchIssues && Object.keys(r.stats.fetchIssues).length ? `<h3>Fetch issues</h3><p class="hint">${Object.entries(r.stats.fetchIssues).map(([k, v]) => `${v}× ${escapeHtml(k)}`).join(' · ')}</p>` : ''}
       <h3>Research gaps</h3><ul>${(r.report?.gaps || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
@@ -563,9 +575,9 @@ function renderTab(tab) {
       ${(rep.timeline || []).length ? `<h3>Chronology</h3><table><tr><th>Date</th><th>Event</th></tr>${(rep.timeline || []).map((t) => `<tr><td><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</table>` : ''}
       <h3>Source quality</h3><p>${escapeHtml(rep.sourceQuality || '')}</p>
       <h3>Source independence</h3><p>${escapeHtml(rep.independence || '')}</p>
-      <h3>Books</h3><ul>${(rep.books || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
-      <h3>Primary sources</h3><ul>${(rep.primarySources || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
-      <h3>Uncertainty</h3><ul>${(rep.uncertainty || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
+      ${secList('Books', rep.books)}
+      ${secList('Primary sources', rep.primarySources)}
+      ${secList('Uncertainty', rep.uncertainty)}
       <h3>Methodology</h3><p>${escapeHtml(rep.methodology || '')}</p>
       ${(rep.appendix || []).length ? `<details><summary><b>Evidence appendix</b> — every extracted claim with its sources (${rep.appendix.length})</summary>${rep.appendix.map((a) => `<div class="claim"><b>${a.n}. [${escapeHtml(a.state)}]</b> ${escapeHtml(a.text)}${a.why ? `<br><span class="hint">${escapeHtml(a.why)}</span>` : ''}<br><span class="hint">Supports:</span> ${(a.supporting || []).map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ') || '<i>none listed</i>'}${(a.contradicting || []).length ? `<br><span class="hint">Contradicted by:</span> ${a.contradicting.map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ')}` : ''}</div>`).join('')}</details>` : ''}
       <h3>Sources</h3><ul>${(r.sources || []).map((s) => `<li><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span class="hint">tier ${s.tier ?? '?'} · ${escapeHtml(s.accessibility || '')}${s.verified ? ' · inspected' : ''}</span></li>`).join('')}</ul>`;

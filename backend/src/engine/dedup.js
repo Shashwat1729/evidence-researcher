@@ -83,10 +83,14 @@ export function deduplicate(records) {
       // generic titles ("Home", "Second") merge only with same-host or
       // text-similar backups — never on the bare string across domains.
       const simTextLong = r.text && u.text && r.text.length > 500 && u.text.length > 500 && jaccardSets(fpOf(r), fpOf(u)) > 0.85;
-      const simTextShort = !simTextLong && r.text && u.text && r.text.length > 100 && u.text.length > 100 && jaccardSets(fpOf(r), fpOf(u)) > 0.7;
+      const simTextShort = !simTextLong && r.text && u.text && r.text.length > 100 && u.text.length > 100 && jaccardSets(fpOf(r), fpOf(u)) > 0.8;
       const simTitle = sameTitle && (!isGenericTitle(r.title) || hostOf(r.url) === hostOf(u.url) || simTextShort);
       if (simTitle || simTextLong) {
         u.relatedCopies = [...(u.relatedCopies || []), r.url];
+        // Best-tier-wins: a merge must never downgrade evidence — e.g. a
+        // tier-2 paper merging into a tier-6 page keeps tier 2 (identity
+        // stays first-seen; only the classification is promoted).
+        if ((r._a?.cls?.tier ?? 9) < (u._a?.cls?.tier ?? 9)) u._a = r._a;
         duplicates.push({ url: r.url, canonicalOf: u.url, reason: simTextLong ? 'near-identical content' : 'identical title' });
         merged = true;
         break;

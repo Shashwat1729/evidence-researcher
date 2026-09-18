@@ -164,7 +164,7 @@ export async function searchBooks(query, limit = 8, opts = {}) {
               title: b.title || '',
               snippet: `Open Library: ${(b.author_name || []).slice(0, 3).join(', ')} (${b.first_publish_year || 'n.d.'}), ${b.publisher?.slice(0, 3).join(', ') || ''}.`,
               via: 'books:openlibrary',
-              meta: { authors: b.author_name || [], year: b.first_publish_year },
+              meta: { authors: b.author_name || [], year: b.first_publish_year, publisher: (b.publisher || []).slice(0, 2).join(', ') },
             });
           }
         } catch { /* best-effort */ }
@@ -177,7 +177,7 @@ export async function searchBooks(query, limit = 8, opts = {}) {
               title: v.title || '',
               snippet: `Google Books: ${(v.authors || []).slice(0, 3).join(', ')} (${v.publisher || ''} ${v.publishedDate || ''}). ${v.description ? v.description.slice(0, 300) : 'Metadata only — text not inspected.'}`,
               via: 'books:googlebooks',
-              meta: { authors: v.authors || [], year: v.publishedDate || '' },
+              meta: { authors: v.authors || [], year: v.publishedDate || '', publisher: v.publisher || '' },
             });
           }
         } catch { /* best-effort */ }
@@ -271,7 +271,12 @@ export async function searchArchiveOrg(query, limit = 8) {
   });
 }
 
-/** Run all academic providers best-effort in parallel; failures never throw. */
+/** Run all academic providers best-effort in parallel; failures never throw.
+ *  Results are ranked by question-term overlap (best first) with a `relevance`
+ *  score attached — keyword APIs return topical noise otherwise, and the
+ *  classifier demotes zero-overlap records instead of parading them as tier 2.
+ *  Nothing is dropped here (synonyms share no terms); ranking + demotion do
+ *  the precision work downstream. */
 export async function searchAcademic(query, { perSource = 5 } = {}) {
   const settled = await Promise.allSettled([
     searchOpenAlex(query, perSource),
@@ -280,5 +285,8 @@ export async function searchAcademic(query, { perSource = 5 } = {}) {
     searchSemanticScholar(query, perSource),
     searchPubMed(query, Math.min(perSource, 6)),
   ]);
-  return settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+  const all = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+  const scored = all.map((r) => ({ r, s: bookRelevance(query, r) }));
+  scored.sort((a, b) => b.s - a.s);
+  return scored.map((x) => ({ ...x.r, relevance: x.s }));
 }

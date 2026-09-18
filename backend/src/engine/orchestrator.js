@@ -15,7 +15,7 @@ import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount,
 import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
 import { pool } from './pool.js';
-import { searchAcademic, searchBooks, expandBookQueries } from '../providers/academic.js';
+import { searchAcademic, searchBooks, expandBookQueries, bookRelevance } from '../providers/academic.js';
 import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
@@ -407,32 +407,54 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   ev('progress', `${allResults.length} raw results collected`);
 
-  // ---- COLLECT: dedup → sources → classify → fetch ----
-  // Single record builder shared by the initial batch AND follow-up searches,
-  // so gap/contradiction sources get identical classification, hints, and
-  // accessibility — never second-class records.
-  const toSourceRecord = (r) => {
+  // ---- COLLECT: classify+score → dedup → rank → sources → fetch ----
+  // Single analysis shared by the initial batch AND follow-up searches, so
+  // gap/contradiction sources get identical classification, hints, relevance
+  // and accessibility — never second-class records. Classification happens
+  // BEFORE dedup so merges keep the best tier; the maxSources cut keeps the
+  // best evidence (tier, then relevance) instead of arrival order.
+  const analyzeRecord = (r) => {
     const isBook = /books|openlibrary|google.*books/i.test(r.via || '') || r.category === 'books';
     const isPaper = /academic|arxiv|crossref|openalex|doi/i.test(r.via || '');
     // Redirect URLs carry no real domain; hint it from the chunk title (e.g. "unibo.it")
     // BEFORE classification so domain hints (institutional/social/scholarly) apply.
     const rawHost = domainOf(r.url);
     const hinted = (rawHost === 'vertexaisearch.cloud.google.com' && r.title) ? (r.title.split('/')[0].toLowerCase().replace(/^www\./, '') || rawHost) : rawHost;
-    const cls = classifySource({ url: r.url, title: r.title, snippet: r.snippet || '', sourceType: isBook ? 'book' : isPaper ? 'paper' : 'webpage', domainHint: hinted });
+    const sourceType = isBook ? 'book' : isPaper ? 'paper' : /reddit|quora|twitter|x\.com|facebook/i.test(`${r.url} ${hinted}`) ? 'social' : 'webpage';
+    // Prefer provider-computed relevance; else score locally (same function).
+    const rel = Number.isFinite(r.relevance) ? r.relevance : bookRelevance(task.question, r);
+    const cls = classifySource({
+      url: r.url, title: r.title, snippet: r.snippet || '', sourceType, domainHint: hinted,
+      relevance: rel, strictTopical: /academic:/i.test(r.via || ''),
+    });
+    return { sourceType, hinted, cls, rel };
+  };
+  const toSourceRecord = (r, a) => {
+    const an = a || analyzeRecord(r);
+    // Provider metadata used to be dropped here (every book showed "unknown
+    // author (n.d.)") — carry authors/publisher/year into schema fields.
+    const meta = r.meta || {};
+    const authors = Array.isArray(meta.authors) ? meta.authors.filter(Boolean) : (meta.authors ? [meta.authors] : []);
+    const publisher = meta.publisher || (Array.isArray(meta.publisher) ? meta.publisher.slice(0, 2).join(', ') : '');
     const src = createSource({
       url: r.url, canonicalUrl: canonicalize(r.url), relatedCopies: r.relatedCopies || [], title: r.title || r.url,
-      domain: hinted || rawHost, discoveredVia: r.via,
-      sourceType: isBook ? 'book' : isPaper ? 'paper' : /reddit|quora|twitter|x\.com|facebook/i.test(r.url + ' ' + hinted) ? 'social' : 'webpage',
-      tier: cls.tier, tierReason: cls.tierReason, authority: cls.authority, proximity: cls.proximity,
-      accessibility: isBook || isPaper ? 'metadata-only' : 'unknown',
+      author: authors.slice(0, 3).join(', '),
+      publisher: String(publisher || ''),
+      publishedDate: String(meta.year || meta.publishedDate || ''),
+      domain: an.hinted || domainOf(r.url), discoveredVia: r.via,
+      sourceType: an.sourceType,
+      tier: an.cls.tier, tierReason: an.cls.tierReason, authority: an.cls.authority, proximity: an.cls.proximity,
+      accessibility: an.sourceType === 'book' || an.sourceType === 'paper' ? 'metadata-only' : 'unknown',
     });
     if (r.snippet) src.passages = [{ text: r.snippet.slice(0, 900), claimHint: 'grounding excerpt' }];
     return src;
   };
   const toSources = (results) => {
-    const { unique, duplicates } = deduplicate(results.map((r) => ({ url: r.url, title: r.title, text: r.snippet || '', snippet: r.snippet || '', via: r.via, category: r.category })));
+    const enriched = results.map((r) => ({ ...r, text: r.snippet || '', _a: analyzeRecord(r) }));
+    const { unique, duplicates } = deduplicate(enriched);
     if (duplicates.length) ev('progress', `Deduplicated ${duplicates.length} copy/track-variant URL(s)`);
-    return unique.slice(0, budget.maxSources).map(toSourceRecord);
+    unique.sort((x, y) => (x._a.cls.tier - y._a.cls.tier) || (y._a.rel - x._a.rel));
+    return unique.slice(0, budget.maxSources).map((r) => toSourceRecord(r, r._a));
   };
 
   let sources = toSources(allResults);
