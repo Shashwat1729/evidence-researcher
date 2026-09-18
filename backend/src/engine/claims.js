@@ -59,12 +59,29 @@ answers the question.
 Return JSON: {"claims": [{"text": "...", "state": "...", "supporting": ["id"], "contradicting": ["id"], "confidenceWhy": "..."}], "contradictions": [{"claimId": "...", "against": "...", "sources": ["id"], "severity": "high|medium|low"}], "gaps": ["..."], "sufficient": false, "reason": "..."}`;
 }
 
+/** Fit whole source records into a char budget (best-first; sources arrive
+ *  tier-sorted). Never slices mid-record — the old `.slice(0, 12000)` cut
+ *  JSON mid-object and silently dropped the tail. Smaller prompts also burn
+ *  less TPM quota, which is what throttles big late-phase calls. Exported
+ *  for tests. */
+export function fitSourcesBudget(sources, budgetChars = 12000) {
+  const picked = [];
+  let used = 0;
+  for (const s of sources) {
+    const rec = {
+      id: s.id, title: s.title, url: s.url, tier: s.tier,
+      excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
+    };
+    const j = JSON.stringify(rec);
+    if (used + j.length > budgetChars && picked.length) break;
+    picked.push(rec);
+    used += j.length;
+  }
+  return picked;
+}
+
 export async function extractClaims({ key, model, question, sources, onKeyEvent, minClaims = 6, maxTokens = 4096 }) {
-  const srcList = sources.map((s) => ({
-    id: s.id, title: s.title, url: s.url, tier: s.tier,
-    excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
-  }));
-  const prompt = buildClaimsPrompt(question, JSON.stringify(srcList).slice(0, 12000), minClaims, false);
+  const prompt = buildClaimsPrompt(question, JSON.stringify(fitSourcesBudget(sources)), minClaims, false);
   const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_SCHEMA, maxTokens, thinking: 'low', onKeyEvent });
   return normalizeClaims(data, sources);
 }
@@ -111,11 +128,7 @@ const CLAIMS_REVIEW_SCHEMA = {
 };
 
 export async function extractClaimsWithReview({ key, model, question, sources, onKeyEvent, minClaims = 6, maxTokens = 5120 }) {
-  const srcList = sources.map((s) => ({
-    id: s.id, title: s.title, url: s.url, tier: s.tier,
-    excerpt: (s.passages?.[0]?.text || s.snippet || '').slice(0, 600),
-  }));
-  const prompt = buildClaimsPrompt(question, JSON.stringify(srcList).slice(0, 12000), minClaims, true);
+  const prompt = buildClaimsPrompt(question, JSON.stringify(fitSourcesBudget(sources)), minClaims, true);
   const { data } = await generateJson({ key, model, prompt, schema: CLAIMS_REVIEW_SCHEMA, maxTokens, thinking: 'low', onKeyEvent });
   return {
     claims: normalizeClaims(data, sources),

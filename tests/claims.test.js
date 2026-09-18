@@ -2,7 +2,8 @@
 // generateJson is reached via mocked global fetch — no network, no key.
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeClaims, extractClaimsWithReview } from '../backend/src/engine/claims.js';
+import { normalizeClaims, extractClaimsWithReview, fitSourcesBudget } from '../backend/src/engine/claims.js';
+import { findContradictionsAndGaps } from '../backend/src/engine/contradictions.js';
 import { normalizeReview } from '../backend/src/engine/contradictions.js';
 
 const realFetch = globalThis.fetch;
@@ -32,6 +33,34 @@ describe('normalizeClaims', () => {
     assert.deepEqual(out[0].supporting, ['s1']);
     assert.equal(out[1].state, 'unknown');
     assert.deepEqual(normalizeClaims({ claims: [{ text: '', state: 'supported', supporting: [], contradicting: [], confidenceWhy: '' }] }, SOURCES), []);
+  });
+});
+
+describe('fitSourcesBudget (whole records, best-first)', () => {
+  const mk = (id, pad) => ({ id, title: `Title ${id}`, url: `https://x.example/${id}`, tier: 2, passages: [{ text: `Excerpt ${pad}` }] });
+  it('fits whole records under budget, never mid-object truncation', () => {
+    const sources = [mk('s1', 'a'.repeat(200)), mk('s2', 'b'.repeat(200)), mk('s3', 'c'.repeat(200))];
+    const one = JSON.stringify({ id: 's1', title: 'Title s1', url: 'https://x.example/s1', tier: 2, excerpt: `Excerpt ${'a'.repeat(200)}` }).length;
+    const picked = fitSourcesBudget(sources, one * 2 + 10);
+    assert.equal(picked.length, 2, 'two whole records fit, third excluded whole');
+    assert.ok(JSON.parse(JSON.stringify(picked)), 'output is valid complete JSON');
+    assert.equal(picked[0].id, 's1', 'best-first order preserved');
+  });
+  it('always includes at least the first record even over budget', () => {
+    const picked = fitSourcesBudget([mk('s1', 'z'.repeat(5000))], 100);
+    assert.equal(picked.length, 1);
+  });
+  it('empty sources yield empty list', () => {
+    assert.deepEqual(fitSourcesBudget([], 12000), []);
+  });
+});
+
+describe('findContradictionsAndGaps fallback honesty', () => {
+  it('never declares sufficiency on model silence (would skip contradiction hunting)', async () => {
+    globalThis.fetch = async () => { throw new Error('quota dead'); };
+    const out = await findContradictionsAndGaps({ key: 'k', model: 'm', question: 'Q?', claims: [{ id: 'c1', text: 'X.', state: 'supported' }], sources: SOURCES, iteration: 3 });
+    assert.equal(out.sufficient, false, 'failed review stays provisional even at iteration 3');
+    assert.ok(out.gaps.length >= 1);
   });
 });
 

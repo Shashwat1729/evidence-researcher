@@ -43,11 +43,13 @@ export function normalizeReview(data, sources, iteration) {
 }
 
 export async function findContradictionsAndGaps({ key, model, question, claims, sources, iteration, onKeyEvent }) {
+  // Whole claim objects only (never slice JSON mid-object) — cap by COUNT.
+  const claimObjs = claims.slice(0, 15).map((c) => ({ id: c.id, text: c.text, state: c.state }));
   const prompt = `You are a skeptical reviewer. Given the research so far, find contradictions and knowledge gaps.
 
 Question: ${question}
 Iteration: ${iteration}
-Claims: ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state }))).slice(0, 6000)}
+Claims: ${JSON.stringify(claimObjs)}
 Source ids available: ${sources.map((s) => s.id).join(', ')}
 
 Tasks:
@@ -59,6 +61,9 @@ Return JSON: {"contradictions": [{"claimId": "...", "against": "counter-claim te
     const { data } = await generateJson({ key, model, prompt, schema: SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });
     return normalizeReview(data, sources, iteration);
   } catch {
-    return { contradictions: [], gaps: ['Model review unavailable — treating evidence as provisional.'], sufficient: iteration >= 2, reason: 'fallback' };
+    // A failed review must NEVER declare the evidence sufficient — that
+    // would skip contradiction hunting on the model's silence. Stay
+    // provisional; maxIterations still bounds the loop.
+    return { contradictions: [], gaps: ['Model review unavailable — treating evidence as provisional.'], sufficient: false, reason: 'fallback' };
   }
 }
