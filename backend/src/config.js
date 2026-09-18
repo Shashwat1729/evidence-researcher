@@ -45,7 +45,10 @@ export const MODES = {
     maxSources: 30,
     maxFetches: 12,
     maxModelCalls: 24,
-    maxRuntimeMs: 600_000,
+    // 25 minutes: time is cheap, the chapter is mandatory — quota waits ride
+    // out per-minute refills instead of surrendering to inventory. Quick keeps
+    // its 90s fast-check contract; deeper modes scale up from here.
+    maxRuntimeMs: 1_500_000,
     maxTokensOut: 150_000,
     reportTokens: 8192,
     sections: 7,
@@ -62,7 +65,7 @@ export const MODES = {
     maxSources: 60,
     maxFetches: 25,
     maxModelCalls: 50,
-    maxRuntimeMs: 1_200_000,
+    maxRuntimeMs: 2_700_000,
     maxTokensOut: 500_000,
     // Deep sections get a bigger per-call budget than standard (was equal at
     // 8192 — same synthesis depth for 2.4x the evidence made no sense).
@@ -81,7 +84,7 @@ export const MODES = {
     maxSources: 120,
     maxFetches: 50,
     maxModelCalls: 100,
-    maxRuntimeMs: 2_400_000,
+    maxRuntimeMs: 5_400_000,
     maxTokensOut: 1_200_000,
     reportTokens: 12000,
     sections: 8,

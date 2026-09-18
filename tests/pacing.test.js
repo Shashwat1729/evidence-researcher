@@ -2,7 +2,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   paceFloorMs, currentPaceGap, notePaceBackoff, notePaceSuccess, resetKeyState,
-  noteSharedBackoff, paceForModel, PACE_MAX_WAIT_MS,
+  noteSharedBackoff, paceForModel, PACE_MAX_WAIT_MS, roundWaitMs,
 } from '../backend/src/gemini.js';
 
 describe('adaptive pacing (dynamic rate limits)', () => {
@@ -109,6 +109,19 @@ describe('adaptive pacing (dynamic rate limits)', () => {
     } finally {
       t.mock.timers.reset();
     }
+  });
+
+  it('round waits honor Retry-After first, then escalate (anti-hammer)', () => {
+    // Measured live: constant short rounds EXTEND a server throttle (key
+    // healthy the moment hammering stops), so sustained failure must collapse
+    // request rate instead of holding it.
+    assert.equal(roundWaitMs(5000, 9000, 1), 5000, 'round 1 honors server');
+    assert.equal(roundWaitMs(5000, 9000, 2), 5000, 'round 2 honors server');
+    assert.equal(roundWaitMs(5000, 9000, 3), 30000, 'round 3+ escalates past hint');
+    assert.equal(roundWaitMs(0, 9000, 1), 9000, 'no hint → jitter first');
+    assert.equal(roundWaitMs(0, 9000, 4), 60000);
+    assert.equal(roundWaitMs(0, 9000, 99), 120000, 'capped at 120s');
+    assert.equal(roundWaitMs(200000, 9000, 1), 60000, 'hint capped at 60s');
   });
 
   it('resetKeyState clears the shared pause too', async (t) => {

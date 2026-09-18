@@ -139,6 +139,44 @@ describe('sectional synthesis (standard mode)', () => {
     assert.ok(!result.report.synthesisFallback);
   });
 
+  it('retries refillable quota past 5 attempts until the deadline (never strands a chapter)', async () => {
+    let fails = 0;
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async (a) => {
+          if (a.findingsOnly) {
+            fails++;
+            // 8 straight 429s with server-timed 50ms waits: the old 5-attempt
+            // cap would have surrendered; deadline-bound retries persist.
+            if (fails <= 8) throw Object.assign(new Error('hot bucket'), { status: 429, code: 'QUOTA_EXHAUSTED', retryAfter: 50 });
+            return { findings: (a.beats || []).map((b) => ({ heading: b.title, body: fat('Recovered.'), cite: [] })) };
+          }
+          return {
+            executiveSummary: 'Asm.', established: [], competing: [], contradictions: [],
+            timeline: [], sourceQuality: '', independence: '', books: [], primarySources: [],
+            uncertainty: ['u'], gaps: [], methodology: 'm',
+          };
+        },
+      }),
+    });
+    assert.ok(fails > 5, `persisted past the old cap, fails: ${fails}`);
+    assert.ok(!result.report.synthesisFallback, 'chapter written, no inventory');
+    assert.ok(result.report.findings.length >= 6);
+  });
+
+  it('RPD hard cap breaks immediately instead of retrying futilely', async () => {
+    const t0 = Date.now();
+    const result = await runResearch({ ...task }, {
+      key: 'k', emit: () => {},
+      deps: baseDeps({
+        synthesize: async () => { throw Object.assign(new Error('daily dead'), { status: 429, code: 'RPD_EXHAUSTED' }); },
+      }),
+    });
+    assert.equal(result.report.synthesisFallback, true);
+    assert.ok(Date.now() - t0 < 15000, 'no retry storm on an unwinnable quota');
+  });
+
   it('expands thin sections once with an explicit nudge (no silent thinness)', async () => {
     const hints = [];
     const result = await runResearch({ ...task }, {

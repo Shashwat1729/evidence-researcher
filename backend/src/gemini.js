@@ -150,6 +150,17 @@ const isKeyError = (err) =>
 
 const isTransient = (status) => status === 429 || status === 502 || status === 503;
 
+/** Round wait with anti-hammer escalation: honor the server's exact
+ *  Retry-After for the first couple of rounds, then escalate (30s, 60s, 120s
+ *  cap). Rationale, measured live: constant ~10s retry rounds EXTEND a short
+ *  server throttle into a minutes-long ban (the key works fine the moment we
+ *  stop hammering), so sustained failure must REDUCE request rate, not hold
+ *  it. Pure — exported for tests. */
+export function roundWaitMs(hintedMs, jitterMs, failedRounds) {
+  if (failedRounds <= 2) return hintedMs > 0 ? Math.min(hintedMs, 60_000) : jitterMs;
+  return Math.min(Math.max(hintedMs > 0 ? hintedMs : 0, 30_000 * 2 ** Math.min(failedRounds - 3, 2)), 120_000);
+}
+
 /** Honor Google's RetryInfo retryDelay or Retry-After header; else 0 (caller decides).
  *  Caps at 5 minutes for RPM; values >2 min are treated as RPD (hours) by caller.
  *  Never invents a 30s default — that was the source of the hardcoded "waiting 30s" users saw. */
@@ -298,9 +309,10 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
         status: 429, code: 'RPD_EXHAUSTED', retryAfter: hinted,
       });
     }
-    // Use actual Retry-After when available; fallback is small jitter (6-10s for 10 RPM free tier)
-    // Previous hardcoded 15s*round (e.g., 30s on round 2) was arbitrary — now dynamic.
-    const wait = hinted > 0 ? Math.min(hinted, 60000) : (8000 + Math.floor(Math.random() * 4000));
+    // Anti-hammer escalation: constant short rounds extend server throttles
+    // (measured: key healthy the moment hammering stops). Honor Retry-After
+    // first, then back off hard so request rate collapses instead of holding.
+    const wait = roundWaitMs(hinted, 8000 + Math.floor(Math.random() * 4000), round);
     if (waitedMs + wait > budget) break; // budget spent → honest failure below
     // Every key exhausted: engage the global per-model pause so the next
     // round (and any concurrent caller) backs off instead of re-hammering.

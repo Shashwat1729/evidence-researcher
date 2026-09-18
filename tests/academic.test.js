@@ -50,6 +50,13 @@ describe('book relevance ranking (dynamic, no topic lists)', () => {
     const ranked = rankByRelevance('the the a', recs);
     assert.equal(ranked.length, 3);
   });
+  it('plan vocabulary rescues synonym recall (Mohenjo-daro for Harappan)', () => {
+    const rec = { title: 'Mohenjo-daro: planning and water management', snippet: 'excavation report', meta: {} };
+    assert.equal(bookRelevance('tell about harappan civilization', rec), 0);
+    assert.ok(bookRelevance('tell about harappan civilization', rec, ['mohenjo-daro', 'indus', 'excavation']) >= 0.3);
+    const ranked = rankByRelevance('tell about harappan civilization', [rec], ['mohenjo-daro']);
+    assert.equal(ranked.length, 1, 'synonym record survives instead of dropping');
+  });
 });
 
 describe('academic bundle ranking (keyword noise sinks)', () => {

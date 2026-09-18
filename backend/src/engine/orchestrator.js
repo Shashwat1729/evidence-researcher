@@ -15,7 +15,7 @@ import { generateQueries, contradictionQueriesFor, diversityTopups, domainCount,
 import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
 import { pool } from './pool.js';
-import { searchAcademic, searchBooks, expandBookQueries, bookRelevance } from '../providers/academic.js';
+import { searchAcademic, searchBooks, expandBookQueries, bookRelevance, queryTerms } from '../providers/academic.js';
 import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
@@ -31,7 +31,7 @@ export const defaultDeps = {
   queries: (args) => generateQueries(args),
   search: async (q, _category, { key, model, onUsage, onKeyEvent, rateWaitBudgetMs }) =>
     geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent, rateWaitBudgetMs }),
-  academic: (question) => searchAcademic(question),
+  academic: (question, extraTerms) => searchAcademic(question, { extraTerms }),
   books: (question, limit, opts) => searchBooks(question, limit, opts),
   expandBooks: (args) => expandBookQueries(args.topic, args),
   fetch: (url) => fetchPage(url),
@@ -133,7 +133,12 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // should be best"). Env QUOTA_WAIT_BUDGET_MS overrides.
   const quotaWaitBudget = () => {
     const penv = (typeof process !== 'undefined' && process.env) || {};
-    return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS || 300_000));
+    // Explicit override wins (tests use it). Otherwise patience = all
+    // remaining mode time minus a 60s reserve: the mode deadline is the ONLY
+    // time bound, so quota waits ride out refills instead of surrendering to
+    // inventory early. Quick's 90s deadline still keeps it fast.
+    if (penv.QUOTA_WAIT_BUDGET_MS) return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS));
+    return Math.max(30_000, deadline - Date.now() - 60_000);
   };
   const quotaErr = () => Object.assign(
     new Error('Gemini quota exhausted — waited for refills but none arrived. Per-minute limits reset in ~1 min; daily limits reset at midnight PT. Extra keys only help when each comes from a different Google Cloud project (same-project keys share one quota). Or use a shallower mode.'),
@@ -273,11 +278,21 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // civilization"); books additionally run per-angle queries so alias-heavy
   // subjects ("Indus Valley" books for a Harappan question) are found.
   const topic = topicOf(task.question);
+  // Plan-derived vocabulary for relevance scoring: the question alone misses
+  // aliases ("Mohenjo-daro" shares no terms with "Harappan civilization"),
+  // but the plan's queries/variants/lines of inquiry name them — zero extra
+  // calls, strictly better recall AND precision downstream.
+  const topicTerms = [...new Set([
+    ...queryTerms(task.question),
+    ...(plan.queries || []).flatMap((q) => queryTerms(q.q)),
+    ...(plan.bookVariants || []).flatMap((v) => queryTerms(v)),
+    ...(plan.linesOfInquiry || []).flatMap((l) => queryTerms(l)),
+  ])];
   const extraJobs = [];
   if (budget.academic && alive()) {
     ev('progress', 'Searching academic literature (OpenAlex, Crossref, arXiv)…');
     extraJobs.push(
-      D.academic(topic)
+      D.academic(topic, topicTerms)
         .then((a) => { allResults.push(...a.map((r) => ({ ...r, category: 'scholarly' }))); return a.length; })
         .then((n) => ev('progress', `${n} scholarly records discovered`))
         .catch((e) => ev('warning', 'Academic search unavailable', { error: String(e.message).slice(0, 120) })),
@@ -307,9 +322,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     // Variants must be shared: without them each book query would trigger its
     // own LLM expansion call. Heuristic-only (no key) costs zero calls;
     // relevance ranking inside searchBooks restores precision afterwards.
-    const bookOpts = sharedVariants
-      ? { key, model: models.research, variants: sharedVariants }
-      : {};
+    const bookOpts = {
+      ...(sharedVariants ? { key, model: models.research, variants: sharedVariants } : {}),
+      extraTerms: topicTerms,
+    };
     for (const bq of bookQueries) {
       extraJobs.push(
         D.books(bq, budget.bookLimit || 0, bookOpts)
@@ -375,7 +391,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const rescue = [];
     if (!budget.academic) {
       rescue.push(
-        D.academic(topic)
+        D.academic(topic, topicTerms)
           .then((a) => { allResults.push(...a.map((r) => ({ ...r, category: 'scholarly' }))); return a.length; })
           .then((n) => ev('progress', `${n} scholarly records rescued from free sources`))
           .catch(() => ev('warning', 'Free academic fallback unavailable')),
@@ -383,7 +399,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     }
     if (!budget.books) {
       rescue.push(
-        D.books(topic, 6)
+        D.books(topic, 6, { extraTerms: topicTerms })
           .then((b) => { allResults.push(...b.map((r) => ({ ...r, category: 'books' }))); return b.length; })
           .then((n) => ev('progress', `${n} book records rescued from free sources`))
           .catch(() => ev('warning', 'Free book fallback unavailable')),
@@ -421,8 +437,9 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const rawHost = domainOf(r.url);
     const hinted = (rawHost === 'vertexaisearch.cloud.google.com' && r.title) ? (r.title.split('/')[0].toLowerCase().replace(/^www\./, '') || rawHost) : rawHost;
     const sourceType = isBook ? 'book' : isPaper ? 'paper' : /reddit|quora|twitter|x\.com|facebook/i.test(`${r.url} ${hinted}`) ? 'social' : 'webpage';
-    // Prefer provider-computed relevance; else score locally (same function).
-    const rel = Number.isFinite(r.relevance) ? r.relevance : bookRelevance(task.question, r);
+    // Prefer provider-computed relevance; else score locally with the full
+    // plan vocabulary (same function).
+    const rel = Number.isFinite(r.relevance) ? r.relevance : bookRelevance(task.question, r, topicTerms);
     const cls = classifySource({
       url: r.url, title: r.title, snippet: r.snippet || '', sourceType, domainHint: hinted,
       relevance: rel, strictTopical: /academic:/i.test(r.via || ''),
@@ -840,22 +857,29 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
           sectionOut[gi] = found;
           return found;
         } catch (e) {
-          // Patient retry for quota — user said "time can be more but results should be best"
-          // Never skip on transient 429; wait and retry until budget or deadline.
-          // Only skip on non-retryable errors (400, etc.) or after many attempts.
-          const isQuota = e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED' || e?.code === 'RPD_EXHAUSTED';
-          const isRetryable = isQuota || e?.status === 502 || e?.status === 503;
-          if (isRetryable && attempt < 5 && Date.now() < deadline - 5000 && !isCancelled()) {
+          // Retry policy (time is cheap, the chapter is mandatory): refillable
+          // quota (429/QUOTA_EXHAUSTED) retries until the MODE DEADLINE, not a
+          // fixed attempt count — a per-minute bucket always refills, so giving
+          // up after 5 tries strands a writable chapter. Hard caps
+          // (RPD_EXHAUSTED: daily/billing, no refill) break IMMEDIATELY since
+          // waiting is futile; 502/503 keep a small 5-attempt bound (server
+          // trouble, not quota). Anything else fails fast to keep behavior.
+          const isHardCap = e?.code === 'RPD_EXHAUSTED';
+          const isQuota = !isHardCap && (e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED');
+          const isFlaky = e?.status === 502 || e?.status === 503;
+          const timeLeft = deadline - Date.now();
+          const mayRetry = !isCancelled() && timeLeft > 30_000 && (isQuota || (isFlaky && attempt < 5));
+          if (mayRetry) {
             // Server-timed wait: the API's exact Retry-After when known, else
             // escalating 15s → 60s so retries span a full refill window.
             const waitMs = isQuota ? sectionRetryWaitMs(e, attempt) : 2000 * attempt;
             const waitHint = ` (retry in ${Math.ceil(waitMs / 1000)}s)`;
-            ev('progress', `${label} temporarily unavailable${waitHint} — retrying (${attempt + 1}/5)…`);
+            ev('progress', `${label} temporarily unavailable${waitHint} — retrying (attempt ${attempt + 1}, ${(timeLeft / 1000).toFixed(0)}s left in mode budget)…`);
             await new Promise(r => setTimeout(r, waitMs));
             continue;
           }
-          if (isQuota) {
-            ev('progress', `${label} quota still exhausted after retries — will be covered in fallback inventory`);
+          if (isQuota || isHardCap) {
+            ev('progress', `${label} quota unavailable (${isHardCap ? 'hard cap — no refill' : 'deadline reached'}) — will be covered in fallback inventory`);
           } else {
             ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
           }
@@ -870,21 +894,37 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     }
     const merged = sectionOut.flat().filter((f) => f && ((f.heading || f.body || '').trim()));
     if (merged.length) {
-      try {
-        // Assembly budget scales with findings: framing 16 findings needs
-        // more room than framing 6. Bounded to protect token budgets.
-        const assemblyTokens = Math.min(8000, 2000 + 400 * merged.length);
-        report = await phase('synthesis', () => call(() => D.synthesize({
-          key, model: models.synthesis, task, plan, claims, sources,
-          contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
-          documentary: task.documentary, onKeyEvent: keyEvent,
-          maxTokens: assemblyTokens, assemblyFindings: merged, assembleOnly: true,
-        })));
-        report.findings = merged;
-      } catch (e) {
-        // Sections model-written, frontmatter templated — flag stays honest.
-        ev('warning', `Report assembly unavailable (${(e.message || '').slice(0, 80)}) — framing sections deterministically`);
-        report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps, findings: merged });
+      // Assembly retries refillable quota until the deadline like sections —
+      // the framing is part of the chapter, not optional polish. Hard caps
+      // break immediately to the deterministic frontmatter.
+      const assemblyTokens = Math.min(8000, 2000 + 400 * merged.length);
+      let assembled = false;
+      for (let attempt = 1; !assembled; attempt++) {
+        try {
+          // Assembly budget scales with findings: framing 16 findings needs
+          // more room than framing 6. Bounded to protect token budgets.
+          report = await phase('synthesis', () => call(() => D.synthesize({
+            key, model: models.synthesis, task, plan, claims, sources,
+            contradictions, provenance, stats: { ...stats, runtimeMs: Date.now() - started },
+            documentary: task.documentary, onKeyEvent: keyEvent,
+            maxTokens: assemblyTokens, assemblyFindings: merged, assembleOnly: true,
+          })));
+          report.findings = merged;
+          assembled = true;
+        } catch (e) {
+          const hardCap = e?.code === 'RPD_EXHAUSTED';
+          const refillable = !hardCap && (e?.status === 429 || e?.code === 'QUOTA_EXHAUSTED');
+          if (refillable && Date.now() < deadline - 30_000 && !isCancelled()) {
+            const waitMs = sectionRetryWaitMs(e, attempt);
+            ev('progress', `Assembly temporarily unavailable (retry in ${Math.ceil(waitMs / 1000)}s) — retrying…`);
+            await new Promise(r => setTimeout(r, waitMs));
+            continue;
+          }
+          // Sections model-written, frontmatter templated — flag stays honest.
+          ev('warning', `Report assembly unavailable (${(e.message || '').slice(0, 80)}) — framing sections deterministically`);
+          report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps, findings: merged });
+          break;
+        }
       }
     }
   }

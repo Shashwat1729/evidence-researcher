@@ -46,7 +46,7 @@ describe('free-provider fallback on empty grounding', () => {
     assert.equal(result.sources.length, 2);
     assert.ok(result.sources.some((s) => s.sourceType === 'paper'));
     assert.ok(result.sources.some((s) => s.sourceType === 'book'));
-    assert.equal(booksOpts, undefined, 'fallback book search must not receive key/model (heuristic only, zero quota)');
+    assert.ok(!booksOpts?.key && !booksOpts?.model, 'fallback book search must not receive key/model (heuristic only, zero quota; extraTerms metadata is allowed)');
     assert.ok(events.some((e) => /rescued from free sources/i.test(e.message || '')));
     assert.ok(result.claims.length >= 1);
     assert.ok(result.report.executiveSummary.length > 0);

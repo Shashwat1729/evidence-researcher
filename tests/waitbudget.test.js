@@ -49,10 +49,13 @@ describe('search wait budget and waiting notices', () => {
         deps: {
           ...baseDeps,
           search: async (_q, _cat, ctx) => {
-            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 5000 });
-            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 5000 });
+            // Small waits (3s/search, 6s aggregate) stay under the 40%
+            // search-phase cap so BOTH searches execute: the test measures
+            // notice-per-episode, not cap aborts (covered elsewhere).
+            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 1000 });
+            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 1000 });
             ctx.onKeyEvent({ type: 'resumed' });
-            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 5000 });
+            ctx.onKeyEvent({ type: 'rate-wait', waitMs: 1000 });
             return [];
           },
         },

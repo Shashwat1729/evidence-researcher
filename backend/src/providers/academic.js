@@ -124,8 +124,10 @@ export function queryTerms(query) {
       .filter((w) => w.length > 2 && !REL_STOPWORDS.has(w)),
   )];
 }
-export function bookRelevance(query, r) {
-  const terms = queryTerms(query);
+export function bookRelevance(query, r, extraTerms = []) {
+  // extraTerms: plan-derived vocabulary (aliases like "Indus Valley" /
+  // "Mohenjo-daro" for a Harappan question) so synonym recall isn't scored 0.
+  const terms = [...new Set([...queryTerms(query), ...(Array.isArray(extraTerms) ? extraTerms : [])])];
   if (!terms.length) return 0.5; // nothing to match against — keep provider order
   const title = `${r.title || ''}`.toLowerCase();
   const rest = `${r.snippet || ''} ${(r.meta?.authors || []).join(' ')}`.toLowerCase();
@@ -137,8 +139,8 @@ export function bookRelevance(query, r) {
   return hit / (terms.length * 2);
 }
 /** Sort by relevance; drop zero-overlap records unless that would empty the list. */
-export function rankByRelevance(query, records) {
-  const scored = records.map((r, i) => ({ r, i, s: bookRelevance(query, r) }));
+export function rankByRelevance(query, records, extraTerms = []) {
+  const scored = records.map((r, i) => ({ r, i, s: bookRelevance(query, r, extraTerms) }));
   scored.sort((a, b) => b.s - a.s || a.i - b.i);
   const filtered = scored.filter((x) => x.s > 0);
   return (filtered.length ? filtered : scored).map((x) => x.r);
@@ -191,6 +193,7 @@ export async function searchBooks(query, limit = 8, opts = {}) {
     } catch { /* best-effort */ }
     // Deduplicate by URL and title, then rank by relevance to the ORIGINAL
     // question (variant queries widen recall; ranking restores precision).
+    // opts.extraTerms (plan vocabulary) rescues synonym recall.
     const seen = new Set();
     const deduped = [];
     for (const r of out) {
@@ -200,7 +203,7 @@ export async function searchBooks(query, limit = 8, opts = {}) {
       seen.add(r.url);
       deduped.push(r);
     }
-    return rankByRelevance(query, deduped).slice(0, limit * 2);
+    return rankByRelevance(query, deduped, opts.extraTerms).slice(0, limit * 2);
   });
 }
 
@@ -277,7 +280,7 @@ export async function searchArchiveOrg(query, limit = 8) {
  *  classifier demotes zero-overlap records instead of parading them as tier 2.
  *  Nothing is dropped here (synonyms share no terms); ranking + demotion do
  *  the precision work downstream. */
-export async function searchAcademic(query, { perSource = 5 } = {}) {
+export async function searchAcademic(query, { perSource = 5, extraTerms = [] } = {}) {
   const settled = await Promise.allSettled([
     searchOpenAlex(query, perSource),
     searchCrossref(query, perSource),
@@ -286,7 +289,7 @@ export async function searchAcademic(query, { perSource = 5 } = {}) {
     searchPubMed(query, Math.min(perSource, 6)),
   ]);
   const all = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
-  const scored = all.map((r) => ({ r, s: bookRelevance(query, r) }));
+  const scored = all.map((r) => ({ r, s: bookRelevance(query, r, extraTerms) }));
   scored.sort((a, b) => b.s - a.s);
   return scored.map((x) => ({ ...x.r, relevance: x.s }));
 }
