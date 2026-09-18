@@ -9,7 +9,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-18a';
+const STATIC_V = '2026-09-18b';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -46,39 +46,44 @@ async function init() {
   let apiOk = false;
   let cfg = null;
   try {
-    cfg = await (await fetch('/api/config')).json();
-    serverKey = !!cfg.serverKey;
-    hasFallback = !!cfg.hasFallback;
-    apiOk = Array.isArray(cfg.modes);
-    // Populate model selectors (shared: server list wins, static falls back
-    // to the backend catalog so the picker works on Pages too).
-    const populateModels = (models) => {
-      const opts = models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
-      $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
-      $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
-      // Drop retired saved ids (e.g. gemini-2.0-flash-lite): a stale picker
-      // value would otherwise send a dead model id and fail every run.
-      const savedModel = getStoredModel();
-      if (savedModel && models.some((m) => m.id === savedModel)) {
-        $('#modelSelect').value = savedModel;
-        $('#modelInput').value = savedModel;
-      } else if (savedModel) {
-        localStorage.removeItem('gemini_model');
-      }
-    };
-    if (cfg.models && Array.isArray(cfg.models)) {
-      populateModels(cfg.models);
-    } else if (staticMode || !apiOk) {
-      // Static Pages mode has no /api/config: load the SAME backend catalog
-      // the engine uses (single source of truth — never a hardcoded copy
-      // that can rot like the old Flash-Lite defaults did). Dynamic import
-      // so a staging hiccup degrades to Auto instead of breaking the app.
-      try {
-        const { AVAILABLE_MODELS } = await import(`../backend/src/config.js${staticSuffix()}`);
-        if (Array.isArray(AVAILABLE_MODELS) && AVAILABLE_MODELS.length) populateModels(AVAILABLE_MODELS);
-      } catch { /* Auto only — the engine default still works */ }
+    const res = await fetch('/api/config');
+    if (res.ok) {
+      cfg = await res.json();
+      serverKey = !!cfg.serverKey;
+      hasFallback = !!cfg.hasFallback;
+      apiOk = Array.isArray(cfg.modes);
     }
   } catch { /* offline → static mode */ }
+  // Populate model selectors (shared: server list wins, static falls back
+  // to the backend catalog so the picker works on Pages too). Runs OUTSIDE
+  // the fetch try/catch: a 404 HTML page makes .json() throw, which used to
+  // skip this entire block on Pages (picker stayed Auto-only forever).
+  const populateModels = (models) => {
+    const opts = models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
+    $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
+    $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
+    // Drop retired saved ids (e.g. gemini-2.0-flash-lite): a stale picker
+    // value would otherwise send a dead model id and fail every run.
+    const savedModel = getStoredModel();
+    if (savedModel && models.some((m) => m.id === savedModel)) {
+      $('#modelSelect').value = savedModel;
+      $('#modelInput').value = savedModel;
+    } else if (savedModel) {
+      localStorage.removeItem('gemini_model');
+    }
+  };
+  if (cfg && Array.isArray(cfg.models) && cfg.models.length) {
+    populateModels(cfg.models);
+  } else {
+    // Static Pages mode has no /api/config: load the SAME backend catalog
+    // the engine uses (single source of truth — never a hardcoded copy
+    // that can rot like the old Flash-Lite defaults did). Dynamic import
+    // so a staging hiccup degrades to Auto instead of breaking the app.
+    try {
+      const { AVAILABLE_MODELS } = await import(`../backend/src/config.js${staticSuffix()}`);
+      if (Array.isArray(AVAILABLE_MODELS) && AVAILABLE_MODELS.length) populateModels(AVAILABLE_MODELS);
+    } catch { /* Auto only — the engine default still works */ }
+  }
   staticMode = !apiOk;
   $('#staticBanner').classList.toggle('hidden', !staticMode);
   const buildTag = $('#buildTag');
