@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Export honesty: HTML citations are real anchors (were dead literal text), chronology renders as a table (was literal pipes), appendix link text sanitized; claim prompts fit whole source records (was mid-JSON truncation); failed reviews stay provisional (never declare sufficiency on silence); docs corrected (mode time budgets, quota philosophy, same-project keys, Vercel cap)
 - Full-run priority (time is cheap, the chapter is mandatory): sections/assembly retry refillable quota until the mode deadline (no 5-attempt surrender; RPD hard caps still break fast), deadlines raised (standard 25min, deep 45min, exhaustive 90min; quick keeps 90s), quota-wait budget defaults to remaining mode time
 - Anti-hammer escalation: constant short retry rounds EXTEND server throttles (measured: key healthy the moment hammering stops) — round waits now honor Retry-After first, then back off 30s→60s→120s
 - Billing fail-fast corrected: ordinary per-minute 429s carry the billing text AND RetryInfo — only absent/huge refill times prove a hard cap

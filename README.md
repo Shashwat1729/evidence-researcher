@@ -95,11 +95,25 @@ a user stance changes the objective, never the truth conditions.
 
 ## Research modes & stance
 
-Modes: **Quick** (~2 searches, template queries, ~1 min) · **Standard** (~10 + academic/books,
-cross-checking) · **Deep** (~24, books/academic/primary/provenance) · **Exhaustive**
-(~50, documentary-grade). Every run is budget-enforced and stops early when evidence
-suffices; disagreement auto-escalates depth. Deeper modes cost more API quota and time —
-the UI says so up front.
+Modes: **Quick** (~2 searches, template queries, ~90s cap — a fast check) ·
+**Standard** (~10 + academic/books, cross-checking, up to ~25 min) ·
+**Deep** (~24, books/academic/primary/provenance, up to ~45 min) · **Exhaustive**
+(~50, documentary-grade, up to ~90 min). Every run is budget-enforced and stops early
+when evidence suffices; disagreement auto-escalates depth. Deeper modes cost more API
+quota and time — the UI says so up front.
+
+**Quota philosophy: time is cheap, the chapter is mandatory.** Refillable
+per-minute limits are waited out (server-timed waits, then escalating backoff —
+never hammering), so synthesis retries until the mode deadline instead of
+surrendering after 5 tries. Only unwinnable hard caps (daily/billing, no refill
+time) fail fast to an honest evidence inventory. Consequence: on thin free-tier
+keys a Standard run can legitimately take 10+ minutes of patient waiting and
+still deliver a full model-written chapter — the progress log says exactly what
+it is waiting for.
+
+**Keys must be from different Google Cloud projects to multiply quota**
+(same-project keys share ONE 10-RPM bucket — rotation across them changes
+nothing). Per-minute limits refill in ~1 min; daily limits reset at midnight PT.
 
 Stances: Neutral · Lean · Adversarial · Steelman · Comparative. Always disclosed in
 the report; counter-evidence is always hunted; evidence is never manufactured.
@@ -111,7 +125,7 @@ All in `.env` (never committed — see `.gitignore` + `.dockerignore`):
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Primary key (required unless BYOK per request) |
-| `GEMINI_API_KEY_FALLBACK` | — | Second key: auto-rotation on 429 + doubled RPM |
+| `GEMINI_API_KEY_FALLBACK` | — | Second key: auto-rotation on 429 (only multiplies quota when from a different project) |
 | `DEFAULT_MODEL` | `gemini-2.5-flash` | Base model; override per role (`PLANNER/RESEARCH/ANALYSIS/SYNTHESIS_MODEL`) |
 | `PORT` / `DATA_DIR` | `8787` / `./data` | Server port / persistence volume |
 | `MAX_CONCURRENT_RUNS` | `8` | Concurrent-run guard (503 beyond) |
@@ -126,8 +140,8 @@ All in `.env` (never committed — see `.gitignore` + `.dockerignore`):
 - **GitHub Pages (static demo):** push to `master` — `.github/workflows/pages.yml` stages
   `frontend/` + engine JS, verifies every static import resolves, and deploys. No secrets
   involved (keys stay in visitors' browsers).
-- **Vercel:** `vercel.json` + `api/index.js` Express-as-function adapter (Quick/Standard fit
-  the hobby 60s cap; use Docker/VPS for Deep/Exhaustive).
+- **Vercel:** `vercel.json` + `api/index.js` Express-as-function adapter (only Quick
+  fits the hobby 60s cap — Standard+ needs Docker/VPS or a longer function timeout).
 - **Docker/VPS/Fly/Render:** `npm install && npm start` with secret env vars; mount `DATA_DIR`.
 - Set keys as **secrets**, never in code. BYOK keys travel in `x-gemini-key`, live in
   memory per run, and are never logged or persisted.
@@ -141,7 +155,7 @@ are recorded as inaccessible. See `docs/production-checklist.md` before going pu
 ## Testing & evaluation
 
 ```bash
-npm test        # 214 tests: units + offline full-pipeline E2E (16/16 audit) + HTTP/SSE
+npm test        # 219 tests: units + offline full-pipeline E2E (16/16 audit) + HTTP/SSE
                 # + infra, cancellation, result-cache, static-mode, perf budgets — no key needed
 npm run lint    # syntax gate over every JS file (runs in CI)
 node eval/run.js result.json        # audit-score a saved run
@@ -161,7 +175,7 @@ frontend/{index.html,styles.css,app.js,direct.js}   UI + static-mode runner
 api/index.js           Vercel adapter (same middleware stack)
 eval/                  benchmark questions + audit scorer
 scripts/               CLI (research/live), key validator, lint, Pages builder
-tests/                 214 offline tests (no key/network required)
+tests/                 219 offline tests (no key/network required)
 docs/                  architecture, methodology, api, deployment, attribution
 mcp/server.js          MCP `research` tool stub for future search providers
 ```

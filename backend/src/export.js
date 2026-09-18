@@ -1,6 +1,11 @@
 // Report exporters (Markdown / HTML) — pure, dependency-free, browser-safe.
 // Used by the server routes AND the static Pages build (frontend/direct.js).
 
+/** Strip markdown link metachars so model titles can't break links. Exported for tests. */
+export function mdLinkText(s) {
+  return String(s ?? '').replace(/[\[\]()]/g, '');
+}
+
 export function exportMarkdown(r) {
   // One-liner: model text with stray newlines must not break list structure.
   const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -8,9 +13,7 @@ export function exportMarkdown(r) {
   const cite = (ids = []) => ids.map((id) => {
     const s = byId.get(id);
     if (!s) return null;
-    // Strip markdown metachars from link text so model titles can't break links.
-    const text = oneLine(s.title || s.domain).replace(/[\[\]()]/g, '');
-    return `[${text}](${s.url})`;
+    return `[${mdLinkText(oneLine(s.title || s.domain))}](${s.url})`;
   }).filter(Boolean).join('; ');
   const L = [];
   L.push(`# Research: ${oneLine(r.task?.question) || ''}`, '');
@@ -52,8 +55,8 @@ export function exportMarkdown(r) {
     for (const a of r.report.appendix) {
       L.push(`### ${a.n}. ${oneLine(a.text)}`, '');
       L.push(`State: ${a.state}${a.why ? ` — ${oneLine(a.why)}` : ''}`, '');
-      for (const s of a.supporting || []) L.push(`- Supports: [${oneLine(s.title)}](${s.url}) (tier ${s.tier ?? '?'})`);
-      for (const s of a.contradicting || []) L.push(`- Contradicts: [${oneLine(s.title)}](${s.url}) (tier ${s.tier ?? '?'})`);
+      for (const s of a.supporting || []) L.push(`- Supports: [${mdLinkText(oneLine(s.title))}](${s.url}) (tier ${s.tier ?? '?'})`);
+      for (const s of a.contradicting || []) L.push(`- Contradicts: [${mdLinkText(oneLine(s.title))}](${s.url}) (tier ${s.tier ?? '?'})`);
       L.push('');
     }
   }
@@ -67,6 +70,19 @@ export function exportMarkdown(r) {
 export function exportHtml(r) {
   const md = exportMarkdown(r)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    // Citations must stay clickable: markdown links become real anchors
+    // (previously exported as literal "[Title](https://…)" dead text).
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
+    // Pipe tables (chronology) become real tables instead of literal pipes.
+    .replace(/((?:^\|.*\|$\n?)+)/gm, (block) => {
+      const rows = block.trim().split('\n')
+        .map((l) => l.trim().split('|').slice(1, -1).map((c) => c.trim()))
+        .filter((cells) => cells.length && !cells.every((c) => /^[\s:|-]*$/.test(c)));
+      if (!rows.length) return block;
+      const [head, ...body] = rows;
+      const cell = (c, tag) => `<${tag}>${c}</${tag}>`;
+      return `<table><tr>${head.map((c) => cell(c, 'th')).join('')}</tr>${body.map((row) => `<tr>${row.map((c) => cell(c, 'td')).join('')}</tr>`).join('')}</table>`;
+    })
     .replace(/^### (.*)$/gm, '<h3>$1</h3>')
     .replace(/^## (.*)$/gm, '<h2>$1</h2>')
     .replace(/^# (.*)$/gm, '<h1>$1</h1>')
@@ -74,5 +90,5 @@ export function exportHtml(r) {
     .replace(/^- (.*)$/gm, '<li>$1</li>')
     .replace(/((?:<li>.*?<\/li>)(?:\n<li>.*?<\/li>)*)/g, '<ul>$1</ul>')
     .replace(/\n\n/g, '</p><p>');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Research report</title><style>body{font-family:system-ui;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6}li{margin:.3rem 0}</style></head><body><p>${md}</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Research report</title><style>body{font-family:system-ui;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6}li{margin:.3rem 0}table{border-collapse:collapse;margin:.6rem 0}th,td{border:1px solid #445;text-align:left;padding:.3rem .6rem;font-size:.9rem}</style></head><body><p>${md}</p></body></html>`;
 }

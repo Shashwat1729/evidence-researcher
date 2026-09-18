@@ -73,4 +73,20 @@ describe('export sanitization', () => {
     const html = exportHtml(fixture);
     assert.ok(html.includes('<ul><li>Line one Line two</li></ul>'));
   });
+  it('keeps citations clickable and tables real in HTML export', () => {
+    const linked = {
+      ...fixture,
+      report: {
+        ...fixture.report,
+        findings: [{ heading: 'Date', body: 'See archive.', cite: ['s1'] }],
+        timeline: [{ date: '1088', event: 'Traditional founding' }],
+      },
+      sources: [{ id: 's1', title: 'Archive [charter] (copy)', url: 'https://archives.example/x', domain: 'archives.example', tier: 1, sourceType: 'primary', accessibility: 'full', verified: true, passages: [] }],
+    };
+    const html = exportHtml(linked);
+    assert.ok(html.includes('<a href="https://archives.example/x">Archive charter copy</a>'), 'links are anchors, not dead text; metachars stripped');
+    assert.ok(!html.includes('[Archive charter]('), 'no literal markdown links remain');
+    assert.ok(html.includes('<table>') && html.includes('<th>Date</th>') && html.includes('<td>1088</td>'), 'chronology is a real table');
+    assert.ok(!html.includes('| --- |'), 'separator row consumed');
+  });
 });
