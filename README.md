@@ -155,7 +155,7 @@ are recorded as inaccessible. See `docs/production-checklist.md` before going pu
 ## Testing & evaluation
 
 ```bash
-npm test        # 224 tests: units + offline full-pipeline E2E (16/16 audit) + HTTP/SSE
+npm test        # 227 tests: units + offline full-pipeline E2E (16/16 audit) + HTTP/SSE
                 # + infra, cancellation, result-cache, static-mode, perf budgets — no key needed
 npm run lint    # syntax gate over every JS file (runs in CI)
 node eval/run.js result.json        # audit-score a saved run
@@ -175,7 +175,7 @@ frontend/{index.html,styles.css,app.js,direct.js}   UI + static-mode runner
 api/index.js           Vercel adapter (same middleware stack)
 eval/                  benchmark questions + audit scorer
 scripts/               CLI (research/live), key validator, lint, Pages builder
-tests/                 224 offline tests (no key/network required)
+tests/                 227 offline tests (no key/network required)
 docs/                  architecture, methodology, api, deployment, attribution
 mcp/server.js          MCP `research` tool stub for future search providers
 ```

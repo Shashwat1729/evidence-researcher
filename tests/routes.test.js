@@ -50,6 +50,32 @@ describe('route hardening', () => {
     assert.equal(res.status, 503);
     assert.match((await res.json()).error, /busy/i);
   });
+
+  it('labels cached inventories honestly (never masquerades as a fresh report)', async () => {
+    const app2 = createApp({
+      runFn: async () => { throw new Error('must not run on cache hit'); },
+      store: {
+        findCached: async () => ({ id: 'c1', report: { synthesisFallback: true } }),
+        saveResult: async () => {}, getResult: async () => { throw new Error('nf'); },
+        listResults: async () => [], deleteResult: async () => {},
+      },
+    });
+    const s2 = app2.listen(0, '127.0.0.1');
+    await once(s2, 'listening');
+    const base2 = `http://127.0.0.1:${s2.address().port}`;
+    try {
+      const res = await fetch(`${base2}/api/research`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gemini-key': 'k' },
+        body: JSON.stringify({ question: 'Is this ok?' }),
+      });
+      const text = await res.text();
+      assert.ok(text.includes('cached evidence inventory'), 'fallback cache labeled honestly');
+      assert.ok(!text.includes('Served from a recent identical run'), 'full-report message not used for inventory');
+    } finally {
+      s2.closeAllConnections?.();
+      await new Promise((r) => s2.close(r));
+    }
+  });
 });
 
 describe('export sanitization', () => {

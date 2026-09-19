@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Verification acts (a "no" verdict demotes the finding into uncertainty), verify fits whole findings and covers 16, cached inventories labeled honestly (never masquerade as fresh reports)
 - Live-verified model catalog (real generate calls, not ListModels): planner/analysis default to gemini-flash-lite-latest (fastest on new keys), picker offers only working ids, legacy lite/pro stay accepted for old keys, and any model 404 automatically retries once on the default with a loud warning — a stale picker choice can no longer kill a run
 - Export honesty: HTML citations are real anchors (were dead literal text), chronology renders as a table (was literal pipes), appendix link text sanitized; claim prompts fit whole source records (was mid-JSON truncation); failed reviews stay provisional (never declare sufficiency on silence); docs corrected (mode time budgets, quota philosophy, same-project keys, Vercel cap)
 - Full-run priority (time is cheap, the chapter is mandatory): sections/assembly retry refillable quota until the mode deadline (no 5-attempt surrender; RPD hard caps still break fast), deadlines raised (standard 25min, deep 45min, exhaustive 90min; quick keeps 90s), quota-wait budget defaults to remaining mode time

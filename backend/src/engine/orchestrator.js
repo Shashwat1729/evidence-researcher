@@ -991,6 +991,16 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     } catch { verification = []; }
   }
   report.verification = verification;
+  // Verification must ACT, not decorate: a "no" verdict means the finding's
+  // own citations don't support it — demote it into uncertainty honestly
+  // instead of leaving a clean-looking finding with a buried footnote.
+  for (const v of verification) {
+    if (v?.supported === 'no') {
+      const f = (report.findings || [])[v.n];
+      const label = f?.heading ? `"${String(f.heading).slice(0, 80)}"` : `finding #${v.n}`;
+      report.uncertainty = [...(report.uncertainty || []), `Cross-check failed: ${label} is NOT supported by its cited excerpts${v.note ? ` — ${v.note}` : ''} — treat as provisional.`];
+    }
+  }
 
   // Cost snapshot LAST: estimateCost's keys overlap stats', so spreading it
   // earlier would freeze modelCalls/searchCalls/tokens at pre-synthesis values

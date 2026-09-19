@@ -24,9 +24,9 @@ const VERIFY_SCHEMA = {
   required: ['results'],
 };
 
-export async function verifyFindings({ key, model, findings, sources, onKeyEvent, maxItems = 12 }) {
+export async function verifyFindings({ key, model, findings, sources, onKeyEvent, maxItems = 16 }) {
   const byId = new Map((sources || []).map((s) => [s.id, s]));
-  const items = (findings || []).slice(0, maxItems).map((f, n) => ({
+  const built = (findings || []).slice(0, maxItems).map((f, n) => ({
     n,
     heading: f.heading || '',
     body: String(f.body || '').slice(0, 800),
@@ -36,10 +36,19 @@ export async function verifyFindings({ key, model, findings, sources, onKeyEvent
       return { id, excerpt: txt };
     }),
   }));
+  // Whole findings only (never slice JSON mid-object); best-first order kept.
+  const items = [];
+  let used = 0;
+  for (const it of built) {
+    const j = JSON.stringify(it);
+    if (used + j.length > 12000 && items.length) break;
+    items.push(it);
+    used += j.length;
+  }
   if (!items.length) return [];
   const prompt = `You are a strict fact-checker. For each finding below, judge whether its cited excerpts DIRECTLY support the finding text.
 supported: "yes" (excerpts establish it), "partial" (excerpts support part of it), "no" (excerpts missing, irrelevant, or contradicting). Be strict — a plausible-sounding finding with thin excerpts is "partial" at best.
-Findings: ${JSON.stringify(items).slice(0, 12000)}
+Findings: ${JSON.stringify(items)}
 Return JSON: {"results": [{"n": 0, "supported": "yes|partial|no", "note": "one sentence"}]}`;
   try {
     const { data } = await generateJson({ key, model, prompt, schema: VERIFY_SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });

@@ -186,7 +186,14 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       const hit = await store.findCached(input, cacheTtl()).catch(() => null);
       if (hit?.id) {
         beginStream();
-        send({ type: 'progress', message: 'Served from a recent identical run — no quota used. Send { fresh: true } to force a new run.' });
+        // Honesty: a cached INVENTORY must never masquerade as a fresh full
+        // report — say what it is so the user can force a new run now that
+        // quota may have refilled.
+        if (hit.report?.synthesisFallback) {
+          send({ type: 'progress', message: 'Served a cached evidence inventory (synthesis was unavailable then) — no quota used. Send { fresh: true } for a new run now that quota may have refilled.' });
+        } else {
+          send({ type: 'progress', message: 'Served from a recent identical run — no quota used. Send { fresh: true } to force a new run.' });
+        }
         send({ type: 'result', message: 'Done', result: hit });
         finish();
         return;
