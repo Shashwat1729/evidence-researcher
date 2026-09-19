@@ -62,7 +62,13 @@ function extractMeta(html, name) {
 }
 
 export function cleanText(html) {
-  let h = html
+  // Prefer the article body when present: sidebars, comment threads, and
+  // "related links" otherwise dilute excerpts with boilerplate that then
+  // grounds claims weakly. Falls back to the whole page when absent.
+  const article = html.match(/<article[\s\S]*?<\/article>/i)?.[0]
+    || html.match(/<main[\s\S]*?<\/main>/i)?.[0]
+    || html;
+  let h = article
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')

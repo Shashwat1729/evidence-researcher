@@ -157,6 +157,42 @@ describe('API key rotation', () => {
     assert.equal(err.code, 'RPD_EXHAUSTED');
   });
 
+  it('model 404 falls back to the default model once (stale picker never kills a run)', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const seen = [];
+    let calls = 0;
+    mockFetch(async (url) => {
+      calls++;
+      const model = String(url).match(/models\/([^:]+):/)?.[1] || '';
+      seen.push(decodeURIComponent(model));
+      if (calls === 1) return jsonResponse(404, { error: { message: 'models/gemini-2.5-pro is no longer available to new users.', status: 'NOT_FOUND' } });
+      return jsonResponse(200, { candidates: [{ content: { parts: [{ text: 'hi' }] } }] });
+    });
+    const events = [];
+    const r = await generate({ key: '', model: 'gemini-2.5-pro', prompt: 'hi', onKeyEvent: (e) => events.push(e) }).catch((e) => e);
+    assert.equal(calls, 2, 'one failed attempt + one fallback attempt');
+    assert.ok(seen[0].includes('2.5-pro') && !seen[1].includes('2.5-pro'), `retried on default: ${seen.join(' → ')}`);
+    assert.ok(events.some((e) => e.type === 'model-fallback'), 'loud warning, never silent substitution');
+    assert.equal(r.text, 'hi');
+  });
+  it('quota 429 never triggers model fallback (stays and waits)', async () => {
+    delete process.env.GEMINI_API_KEY_FALLBACK;
+    const saved = process.env.QUOTA_WAIT_BUDGET_MS;
+    process.env.QUOTA_WAIT_BUDGET_MS = '0';
+    try {
+      const seen = [];
+      mockFetch(async (url) => {
+        seen.push(String(url).match(/models\/([^:]+):/)?.[1]);
+        return jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED', details: [{ retryDelay: '1s' }] } });
+      });
+      const err = await generate({ key: '', model: 'gemini-2.5-flash', prompt: 'hi' }).catch((e) => e);
+      assert.equal(err.code, 'QUOTA_EXHAUSTED');
+      assert.ok(seen.every((m) => String(m).includes('2.5-flash')), 'never switched models on quota');
+    } finally {
+      if (saved === undefined) delete process.env.QUOTA_WAIT_BUDGET_MS;
+      else process.env.QUOTA_WAIT_BUDGET_MS = saved;
+    }
+  });
   it('quota errors carry the server exact wait (retryAfter ms) for timed retries', async () => {
     delete process.env.GEMINI_API_KEY_FALLBACK;
     const saved = process.env.QUOTA_WAIT_BUDGET_MS;

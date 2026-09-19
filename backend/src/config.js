@@ -6,17 +6,16 @@
 const env = (typeof process !== 'undefined' && process.env) || {};
 
 export const MODEL_CONFIG = {
-  // One proven default for all roles. Verified live 2026-09-16 two ways:
-  // GET /v1beta/models shows 2.5-flash + 2.5-flash-lite exist, BUT a real
-  // free-tier run showed 2.5-flash-lite is "no longer available to new
-  // users" — defaulting planning/analysis to it yields zero claims for most
-  // new keys. gemini-2.5-flash (10 RPM) works on new keys, so it is the
-  // default everywhere; keys with lite access can still pick it in the UI
-  // or via PLANNER_MODEL/ANALYSIS_MODEL env to spread quota across models
-  // (limits are per model per project).
-  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  // Verified live 2026-09-18 with real generate calls on a NEW free-tier key
+  // (not just ListModels, which lies by omission): gemini-2.5-flash,
+  // gemini-flash-latest, and gemini-flash-lite-latest all return 200 (lite
+  // answered fastest at ~0.9s); gemini-2.5-flash-lite AND gemini-2.5-pro both
+  // 404 ("no longer available to new users"). Limits are per model per
+  // project, so planning/analysis ride the lite alias while research and
+  // synthesis use flash — two live buckets instead of one.
+  planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-flash-lite-latest',
   research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
-  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-flash-lite-latest',
   synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
 };
 
@@ -98,22 +97,25 @@ export const MODES = {
 export const STANCES = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
 
 // Curated Gemini models offered in the UI picker (alongside the API key).
-// Verified live 2026-09-16 via GET /v1beta/models — the 1.5/2.0 families are
-// retired, so only 2.5-family ids are offered. Free-tier limits per Google
-// docs (approx, varies by date):
-// - 2.5 Flash: 10 RPM / 250K TPM / 500 RPD
-// - 2.5 Flash-Lite: high-headroom class for planning/analysis
-// - 2.5 Pro: 5 RPM / 250K TPM / 25 RPD (very low free tier)
-// Using different models for different roles multiplies effective throughput
-// because limits are per model per project.
+// Verified live 2026-09-18 with REAL generate calls on a new free-tier key:
+// every id below returned HTTP 200 (flash-lite-latest fastest at ~0.9s).
+// The 1.5/2.0 families are retired (canonicalized to Auto below); 2.5-lite
+// and 2.5-pro 404 for new keys ("no longer available to new users") so they
+// are NOT offered — but stay accepted for old keys that still have access
+// (COMPAT_MODELS), with automatic fallback to the default on 404.
 export const AVAILABLE_MODELS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', blurb: 'Default — best balance of depth and free-tier quota (10 RPM).' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', blurb: 'Fastest, most quota headroom — only if your key has access (unavailable to some new keys).' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', blurb: 'Deepest reasoning; much lower free-tier limits (5 RPM) — prefer paid keys.' },
+  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)', blurb: 'Fastest, most quota headroom — verified on new keys, best for planning.' },
+  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)', blurb: 'Tracks the newest flash — an extra quota bucket for research.' },
 ];
 
+// Legacy ids: accepted (old keys may still resolve them) but never offered
+// and never defaulted. A 404 on these triggers automatic fallback, never a
+// dead run.
+const COMPAT_MODELS = new Set(['gemini-2.5-flash-lite', 'gemini-2.5-pro']);
+
 export function isKnownModel(id) {
-  return AVAILABLE_MODELS.some((m) => m.id === id);
+  return AVAILABLE_MODELS.some((m) => m.id === id) || COMPAT_MODELS.has(id);
 }
 
 // Retired model ids (verified gone 2026-09-16). Saved preferences and old

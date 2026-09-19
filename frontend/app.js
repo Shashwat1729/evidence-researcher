@@ -10,7 +10,7 @@ let staticMode = false;
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-18d';
+const STATIC_V = '2026-09-18e';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -113,7 +113,7 @@ async function init() {
     if (!hint) return;
     if (!value) {
       hint.style.display = 'block';
-      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--acc)">Gemini 2.5 Flash</span> for every task (10 RPM free tier — the one model verified to work on new keys). Pick Flash-Lite manually only if your key has access to it, to spread load across models.';
+      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--ok)">Gemini Flash-Lite (latest)</span> for planning & analysis (fastest, verified on new keys) + <span style="color: var(--acc)">Gemini 2.5 Flash</span> for research & synthesis (10 RPM) — two live quota buckets instead of one. If a picked model 404s on your key, the run falls back to Flash automatically with a warning.';
     } else {
       hint.style.display = 'none';
     }

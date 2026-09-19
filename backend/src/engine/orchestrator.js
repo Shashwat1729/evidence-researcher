@@ -123,6 +123,11 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       }
     } else if (info?.type === 'resumed') {
       waitNoticeShown = false;
+    } else if (info?.type === 'model-fallback') {
+      // A requested model 404'd on this key (retired/gated id) — the call
+      // already retried on the default model. Loud on purpose: a stale picker
+      // choice must be visible, never silently substituted.
+      ev('warning', `Model ${info.from} unavailable on this key — using ${info.to} instead.`);
     }
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails

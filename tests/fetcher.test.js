@@ -42,6 +42,20 @@ describe('entity decoding', () => {
   });
 });
 
+describe('article-first extraction (no sidebar dilution)', () => {
+  it('prefers <article> body over page boilerplate', () => {
+    const html = '<html><body><nav>Home Menu Contact</nav><aside>Related links spam spam spam</aside><article><p>The Harappan granary stored barley.</p></article><footer>Copyright</footer></body></html>';
+    const out = cleanText(html);
+    assert.ok(out.includes('granary'), 'article content kept');
+    assert.ok(!out.includes('Related links'), 'sidebar excluded');
+    assert.ok(!out.includes('Copyright'), 'footer excluded');
+  });
+  it('falls back to whole page without article/main', () => {
+    const out = cleanText('<html><body><p>Plain page text here.</p></body></html>');
+    assert.ok(out.includes('Plain page text'));
+  });
+});
+
 describe('fetchPage resolution + politeness', () => {
   const latin1Page = () => {
     const b = Buffer.from(

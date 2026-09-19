@@ -2,6 +2,29 @@
 // Uses generateContent with google_search grounding, url_context, and
 // structured JSON outputs (responseMimeType + responseSchema).
 // Docs: ai.google.dev/gemini-api/docs/{google-search,url-context,structured-output}
+import { MODEL_CONFIG } from './config.js';
+
+/** True when the API says the MODEL itself is unavailable (not quota, not key).
+ *  Retired/region-gated ids 404 this way — retrying the same id is futile,
+ *  but a sibling model on the same key usually works (quotas are per-model). */
+export function isModelNotFound(err) {
+  return err?.status === 404 && /not[ _-]found|no longer available|not supported/i.test(err?.message || '');
+}
+/** Run fn(model); on model-404 retry once on the default model. 404s burn no
+ *  quota so the retry is free; warns loudly so a stale picker choice is
+ *  visible instead of silently substituted. Exported for tests. */
+export async function withModelFallback(model, onKeyEvent, fn) {
+  try {
+    return await fn(model);
+  } catch (e) {
+    const fb = MODEL_CONFIG.research;
+    if (isModelNotFound(e) && model && model !== fb) {
+      onKeyEvent?.({ type: 'model-fallback', from: model, to: fb });
+      return await fn(fb);
+    }
+    throw e;
+  }
+}
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -413,19 +436,22 @@ export function extractUsage(resp) {
 
 /** Plain generation (temperature default 0.4 for research determinism). */
 export async function generate({ key, model, prompt, system = '', temperature = 0.4, maxTokens = 4096, timeoutMs, onKeyEvent, thinking }) {
-  const data = await postThinking((k) => endpoint(model, k), {
-    contents: [{ parts: [{ text: prompt }] }],
-    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-    generationConfig: { temperature, maxOutputTokens: maxTokens },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model });
-  return { text: extractText(data), usage: extractUsage(data), raw: data };
+  return withModelFallback(model, onKeyEvent, async (m) => {
+    const data = await postThinking((k) => endpoint(m, k), {
+      contents: [{ parts: [{ text: prompt }] }],
+      ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+      generationConfig: { temperature, maxOutputTokens: maxTokens },
+    }, { timeoutMs, keys: getKeys(key), onKeyEvent, model: m });
+    return { text: extractText(data), usage: extractUsage(data), raw: data };
+  });
 }
 
 /** Structured JSON generation with schema; falls back to fenced-JSON extraction. */
 export async function generateJson({ key, model, prompt, system = '', schema, temperature = 0.2, maxTokens = 4096, timeoutMs, onKeyEvent, thinking }) {
   const keys = getKeys(key);
-  const opts = { timeoutMs, keys, onKeyEvent, model };
-  const run = (body) => postThinking((k) => endpoint(model, k), body, opts, model, thinking);
+  return withModelFallback(model, onKeyEvent, async (m) => {
+  const opts = { timeoutMs, keys, onKeyEvent, model: m };
+  const run = (body) => postThinking((k) => endpoint(m, k), body, opts, m, thinking);
   let data;
   try {
     data = await run({
@@ -456,10 +482,10 @@ export async function generateJson({ key, model, prompt, system = '', schema, te
     // Repair pass (1 extra call max): show the model its broken output and
     // demand strict JSON. Fixes the common "prose + JSON" drift that would
     // otherwise kill a whole run at synthesis time.
-    const fix = await post((k) => endpoint(model, k), {
+    const fix = await post((k) => endpoint(m, k), {
       contents: [{ parts: [{ text: `Your previous response was not valid JSON. Re-emit ONLY the JSON value — no prose, no fences, no commentary.\n\nPrevious response:\n${text.slice(0, 6000)}` }] }],
       generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
-    }, { timeoutMs, keys, onKeyEvent, model });
+    }, { timeoutMs, keys, onKeyEvent, model: m });
     const text2 = extractText(fix);
     const usage2 = extractUsage(fix);
     return {
@@ -468,29 +494,34 @@ export async function generateJson({ key, model, prompt, system = '', schema, te
       raw: fix,
     };
   }
+  });
 }
 
 /** Grounded search: one Gemini call with the google_search tool.
  *  Returns { text, queries, chunks, supports } — chunks become Sources. */
 export async function groundedSearch({ key, model, query, timeoutMs, onKeyEvent, thinking, rateWaitBudgetMs }) {
-  const data = await postThinking((k) => endpoint(model, k), {
-    contents: [{ parts: [{ text: query }] }],
-    tools: [{ google_search: {} }],
-    generationConfig: { temperature: 1.0, maxOutputTokens: 2048 },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model, rateWaitBudgetMs }, model, thinking);
-  const g = extractGrounding(data);
-  return { text: extractText(data), ...g, usage: extractUsage(data), raw: data };
+  return withModelFallback(model, onKeyEvent, async (m) => {
+    const data = await postThinking((k) => endpoint(m, k), {
+      contents: [{ parts: [{ text: query }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { temperature: 1.0, maxOutputTokens: 2048 },
+    }, { timeoutMs, keys: getKeys(key), onKeyEvent, model: m, rateWaitBudgetMs }, m, thinking);
+    const g = extractGrounding(data);
+    return { text: extractText(data), ...g, usage: extractUsage(data), raw: data };
+  });
 }
 
 /** URL-context grounding: ask Gemini to synthesize from explicit URLs. */
 export async function urlContext({ key, model, prompt, urls, timeoutMs, onKeyEvent, thinking }) {
   const quoted = urls.map((u) => `• ${u}`).join('\n');
-  const data = await postThinking((k) => endpoint(model, k), {
-    contents: [{ parts: [{ text: `${prompt}\n\nConsult these URLs:\n${quoted}` }] }],
-    tools: [{ url_context: {} }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
-  }, { timeoutMs, keys: getKeys(key), onKeyEvent, model }, model, thinking);
-  return { text: extractText(data), grounding: extractGrounding(data), usage: extractUsage(data), raw: data };
+  return withModelFallback(model, onKeyEvent, async (m) => {
+    const data = await postThinking((k) => endpoint(m, k), {
+      contents: [{ parts: [{ text: `${prompt}\n\nConsult these URLs:\n${quoted}` }] }],
+      tools: [{ url_context: {} }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+    }, { timeoutMs, keys: getKeys(key), onKeyEvent, model: m }, m, thinking);
+    return { text: extractText(data), grounding: extractGrounding(data), usage: extractUsage(data), raw: data };
+  });
 }
 
 export function parseJsonLenient(text) {

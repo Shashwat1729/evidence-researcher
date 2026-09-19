@@ -107,6 +107,14 @@ describe('model picker', () => {
     assert.equal(validateResearchBody({ question: 'Is this ok?', model: 'gemini-2.5-flash-lite' }).length, 0);
     assert.ok(validateResearchBody({ question: 'Is this ok?', model: 'turbo-9000' }).some((m) => /model/i.test(m)));
   });
+  it('defaults are picked (offered) models, compat ids stay accepted for old keys', async () => {
+    const { AVAILABLE_MODELS, MODEL_CONFIG, isKnownModel } = await import('../backend/src/config.js');
+    for (const role of ['planner', 'research', 'analysis', 'synthesis']) {
+      assert.ok(AVAILABLE_MODELS.some((m) => m.id === MODEL_CONFIG[role]), `${role} default ${MODEL_CONFIG[role]} is offered, not a dead id`);
+    }
+    assert.ok(isKnownModel('gemini-2.5-flash-lite'), 'legacy lite accepted for old keys (fallback rescues new ones)');
+    assert.ok(isKnownModel('gemini-2.5-pro'), 'legacy pro accepted for old keys');
+  });
   it('retired model ids degrade to Auto instead of 400 (stale saved preferences)', async () => {
     const { canonicalizeModel } = await import('../backend/src/config.js');
     assert.equal(canonicalizeModel('gemini-2.0-flash'), '');
