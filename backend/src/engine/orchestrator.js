@@ -16,6 +16,7 @@ import { geminiSearchProvider } from '../providers/geminiSearch.js';
 import { sleep } from '../util.js';
 import { pool } from './pool.js';
 import { searchAcademic, searchBooks, expandBookQueries, bookRelevance, queryTerms } from '../providers/academic.js';
+import { searchGoogleCse, isCseEnabled } from '../providers/googleCustomSearch.js';
 import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
@@ -301,6 +302,18 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         .then((a) => { allResults.push(...a.map((r) => ({ ...r, category: 'scholarly' }))); return a.length; })
         .then((n) => ev('progress', `${n} scholarly records discovered`))
         .catch((e) => ev('warning', 'Academic search unavailable', { error: String(e.message).slice(0, 120) })),
+    );
+  }
+  // Google Custom Search: quota-free web complement (entire web, not just
+  // grounding). Runs only when GOOGLE_CSE_API_KEY + CX are configured; never
+  // throws, never burns Gemini quota. Results are ranked like other sources.
+  if (isCseEnabled() && alive()) {
+    ev('progress', 'Searching web via Custom Search…');
+    extraJobs.push(
+      searchGoogleCse(topic, { perPage: 5 })
+        .then((r) => { allResults.push(...r.map((x) => ({ ...x, category: 'general' }))); return r.length; })
+        .then((n) => ev('progress', `${n} Custom Search results`))
+        .catch((e) => ev('warning', 'Custom Search unavailable', { error: String(e.message).slice(0, 120) })),
     );
   }
   if (budget.books && alive()) {
