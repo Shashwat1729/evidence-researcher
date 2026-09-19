@@ -99,6 +99,15 @@ const ARC_TEMPLATES = {
     { title: 'Debates and open questions', focus: 'Where researchers disagree and what is still unknown.' },
     { title: 'Applications and outlook', focus: 'Practical consequences and where the field is heading.' },
   ],
+  legal: [
+    { title: 'Background and parties', focus: 'Who the parties are, the legal context, and what is at stake.' },
+    { title: 'Procedural history and filings', focus: 'Key filings, motions, and procedural steps in chronological order with dates.' },
+    { title: 'Key evidence and arguments', focus: 'The central evidence, testimony, and the main arguments advanced by each side.' },
+    { title: 'Court\'s reasoning and ruling', focus: 'The court\'s analysis, the ruling itself, and its immediate effects.' },
+    { title: 'Concurring and dissenting views', focus: 'Concurring and dissenting opinions, and where judges or scholars disagree.' },
+    { title: 'Implications and current status', focus: 'What the ruling changed, its broader impact, and where the matter stands now.' },
+    { title: 'Open questions', focus: 'What remains unresolved, pending appeals, or debated.' },
+  ],
   general: [
     { title: 'Background', focus: 'Essential context: what the subject is and why it matters.' },
     { title: 'Development in order', focus: 'The story chronologically: how it unfolded step by step with dates.' },
@@ -115,10 +124,11 @@ export function suggestArc(question, domain) {
   let key = 'general';
   if (domain === 'biography' || (BIOGRAPHY_PATTERN.test(q) && (domain === 'general-factual' || domain === 'history'))) key = 'biography';
   else if (domain === 'archaeology' || domain === 'culture') key = 'civilization';
+  else if (domain === 'law') key = 'legal';
   else if (domain === 'current-events' || domain === 'politics' || /^(what caused|why did|how did|battle of|war\b|revolution|collapse of|fall of)/i.test(q)) key = 'event';
   else if (domain === 'history' && /civilization|culture|empire|kingdom|dynasty|age\b|society/i.test(q)) key = 'civilization';
   else if (domain === 'science' || domain === 'medicine' || domain === 'technology' || domain === 'economics') key = 'science';
-  else if (domain === 'history' || domain === 'law') key = 'civilization';
+  else if (domain === 'history') key = 'civilization';
   return ARC_TEMPLATES[key].map((b) => ({ ...b }));
 }
 
@@ -155,9 +165,8 @@ Then write ${queryCount} diverse web-search queries covering: general, scholarly
 primary-evidence, books, alternative-explanations, counter-evidence ("evidence
 against …", "scholars reject …"), disagreement, and institutional angles.
 
-Then write 2-3 book-search variants (synonyms, broader terms, related concepts —
-e.g. "Harappan civilization" → "Indus Valley civilization books",
-"Mohenjo-daro Harappa archaeology").
+Then write 2-3 book-search variants (synonyms, broader terms, related
+concepts — use the question's own key terms, not fixed examples).
 
 Then design the report's narrative arc: 5-8 section beats the final study must
 follow IN ORDER. Match the arc to the subject — a person gets birth → formative

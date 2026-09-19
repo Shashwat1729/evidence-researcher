@@ -5,6 +5,7 @@
 
 const DOMAIN_TIER_HINTS = [
   // [regex, tier, reason]
+  [/courtlistener\.com|recap\.email|uscourts\.gov|supremecourt\.gov|law\.cornell\.edu|court\.gov/i, 2, 'primary legal source — court filing, opinion, or docket (verify as primary)'],
   [/\.gov(\.|$)|archives\.gov|loc\.gov|bl\.uk|gallica\.bnf|d-nb\.de/i, 3, 'government / national archive or library domain'],
   [/\.edu(\.|$)|\.ac\.[a-z]+$/i, null, null], // evaluated per-page, never auto-trusted
   [/arxiv\.org|doi\.org|pubmed|jstor|springer|nature\.com|science\.org|plos\.org|ieee|acm\.org/i, 2, 'scholarly publisher / repository domain'],
@@ -71,8 +72,9 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     tier = 2; reason = 'scholarly markers found (peer review / DOI / university press) — verify before citing as evidence';
     authority = 'medium'; proximity = 'secondary';
   }
-  // Primary-evidence markers.
-  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset/i.test(hay)) {
+  // Primary-evidence markers — domain-agnostic: any field's original record.
+  // Must be broad (legal, historical, scientific, etc.), not tied to one example.
+  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing/i.test(hay)) {
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }

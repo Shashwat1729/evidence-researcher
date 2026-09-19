@@ -22,7 +22,11 @@ export function heuristicGroups(sources) {
       if (used.has(prepared[j].s.id)) continue;
       const sim = jaccardSets(prepared[i].fp, prepared[j].fp);
       const sameQuote = sharedQuote(prepared[i].text, prepared[j].text);
-      if (sim > 0.55 || sameQuote) {
+      // Bare vocabulary overlap needs to be HIGH: two independent pages on
+      // the same topic share ~half their distinctive words, and the old 0.55
+      // bar grouped them (wasting model calls on 'unclear' verdicts). A
+      // verbatim 12-word span alone is near-proof of copying, so it stays.
+      if (sim > 0.7 || sameQuote) {
         group.push(prepared[j].s);
         used.add(prepared[j].s.id);
       }
@@ -51,11 +55,20 @@ export async function analyzeProvenance({ key, model, sources, onKeyEvent }) {
   }
   const relations = [];
   // Confirm each candidate group with the model (bounded: max 6 groups).
+  // Whole source descriptions only — never slice JSON mid-object.
   for (const g of groups.slice(0, 6)) {
     const ids = new Set(g.map((s) => s.id));
-    const desc = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: (s.passages || []).map((p) => p.text).join(' ').slice(0, 800) }));
+    const all = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: (s.passages || []).map((p) => p.text).join(' ').slice(0, 800) }));
+    const desc = [];
+    let used = 0;
+    for (const d of all) {
+      const j = JSON.stringify(d);
+      if (used + j.length > 6000 && desc.length) break;
+      desc.push(d);
+      used += j.length;
+    }
     const prompt = `These web sources have overlapping text. Determine whether they are INDEPENDENT confirmations or DERIVED from a common source.
-Sources: ${JSON.stringify(desc).slice(0, 6000)}
+Sources: ${JSON.stringify(desc)}
 Return JSON: {"verdict": "independent|derived|unclear", "root": "<source id of likely original or ''>", "explanation": "one sentence"}`;
     try {
       const { data } = await generateJson({

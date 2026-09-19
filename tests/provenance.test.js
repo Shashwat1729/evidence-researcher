@@ -20,4 +20,13 @@ describe('provenance heuristics', () => {
     const b = mk('b', 'archaeological surveys of villa abandonment suggest gradual rural transformation processes');
     assert.equal(heuristicGroups([a, b]).length, 0);
   });
+  it('does not group same-topic independents (shared vocab below 0.7)', () => {
+    // Jaccard 0.6 by construction (12 shared / 20 union), no 12-word span:
+    // the old 0.55 bar grouped these independents and burned model calls on
+    // "unclear" verdicts; the 0.7 bar leaves them alone.
+    const shared = 'harappan civilization seals weights trade urban streets bricks towns water planning drainage granary';
+    const a = mk('a', `${shared} mohenjo daro citadel granaries`);
+    const b = mk('b', `dholavira lothal cotton beads ${shared.split(' ').reverse().join(' ')}`);
+    assert.equal(heuristicGroups([a, b]).length, 0);
+  });
 });

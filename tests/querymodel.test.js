@@ -59,7 +59,7 @@ describe('planner outputs: queries, book variants, narrative arc', () => {
       assert.ok(idx > lastIdx, `beat "${b.title}" out of order`);
       lastIdx = idx;
     }
-    assert.ok(p.includes('IN ORDER') && p.includes('chronological transitions'));
+    assert.ok(p.includes('IN ORDER') && p.includes('transitions'));
   });
   it('normalizeQueries validates categories and drops empties', () => {
     const out = normalizeQueries([

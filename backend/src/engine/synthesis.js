@@ -292,7 +292,7 @@ ${task.stance !== 'neutral' ? `DISCLOSURE: the user requested a "${task.stance}"
 Domain: ${plan.domain}
 ${documentary ? 'DOCUMENTARY MODE: emphasize chronology, key people, primary evidence, myths-vs-evidence, claims needing caution, surprising findings. Do NOT sensationalize.' : ''}
 
-NARRATIVE ARC — the report MUST read as one continuous study following these beats IN ORDER, like a book chapter (for a person: birth → life → death → legacy; for a civilization: origins → florescence → key sites → decline → legacy). Use chronological transitions between sections ("By 2600 BCE…", "Meanwhile…", "In his later years…"). Each beat becomes one or more findings; never a disconnected list of assertions:
+NARRATIVE ARC — the report MUST read as one continuous study following these beats IN ORDER, like a book chapter. Use chronological or logical transitions between sections as appropriate to the subject. Each beat becomes one or more findings; never a disconnected list of assertions:
 ${arcText}
 
 Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 14000)}

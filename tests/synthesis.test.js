@@ -33,7 +33,7 @@ describe('synthesis depth contract', () => {
   it('claims prompt demands facet coverage minimums', () => {
     const p = buildClaimsPrompt('Q?', '[]', 14, false);
     assert.ok(p.includes('AT LEAST 14 distinct claims'));
-    assert.ok(p.includes('chronology/dates'));
+    assert.ok(p.includes('dates/chronology') || p.includes('chronology'));
     const pr = buildClaimsPrompt('Q?', '[]', 4, true);
     assert.ok(pr.includes('AT LEAST 4 distinct claims') && pr.includes('Part 2'));
   });

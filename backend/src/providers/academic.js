@@ -78,7 +78,7 @@ export async function expandBookQueries(topic, { key, model } = {}) {
       const { generateJson } = await import('../gemini.js');
       const result = await generateJson({
         key, model,
-        prompt: `Given the research question: "${q}", generate 2-3 alternative search queries for finding BOOKS and scholarly monographs. Include synonyms, broader terms, and related concepts. For example, if question is about "Harappan civilization", alternatives might include "Indus Valley civilization books", "Mohenjo-daro Harappa archaeology". Return JSON: {"variants": ["query1", "query2", "query3"]}`,
+        prompt: `Given the research question: "${q}", generate 2-3 alternative search queries for finding BOOKS and scholarly monographs. Include synonyms, broader terms, and related concepts using the question's own key terms. Return JSON: {"variants": ["query1", "query2", "query3"]}`,
         system: 'You are a research librarian helping expand book search queries. Be concise and include alternative phrasings.',
         schema: { type: 'object', properties: { variants: { type: 'array', items: { type: 'string' } } }, required: ['variants'] },
         temperature: 0.7, maxTokens: 300,

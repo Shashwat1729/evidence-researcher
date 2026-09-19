@@ -35,7 +35,7 @@ Sources (use ONLY these ids when linking evidence; never invent source ids):
 ${srcJson}
 
 Rules:
-- Extract AT LEAST ${minClaims} distinct claims when the evidence supports that many — cover chronology/dates, key places and people, mechanisms/causes, major scholarly interpretations, and points of disagreement. Fewer is acceptable ONLY if the sources genuinely contain less.
+- Extract AT LEAST ${minClaims} distinct claims when the evidence supports that many — cover the most important factual assertions for the question's domain (dates/chronology, key entities and places, mechanisms or reasoning, major interpretations, and points of disagreement as appropriate). Fewer is acceptable ONLY if the sources genuinely contain less.
 - Each claim: one verifiable assertion.`;
   if (!withReview) {
     return `${base}
