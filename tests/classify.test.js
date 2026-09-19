@@ -46,6 +46,17 @@ describe('source classification', () => {
     const good = classifySource({ url: 'https://doi.org/10.1/x', title: 'Fluvial landscapes of the Harappan civilization', snippet: 'OpenAlex', sourceType: 'paper', relevance: 1, strictTopical: true });
     assert.equal(good.tier, 2);
   });
+  it('official documents rank dynamically: court, legislative, and IGO sources', () => {
+    assert.equal(classifySource({ url: 'https://www.courtlistener.com/docket/12345/smith-v-jones/', title: 'Docket', snippet: 'court filing' }).tier, 2, 'court filing tier 2');
+    assert.equal(classifySource({ url: 'https://www.supremecourt.gov/opinions/22pdf/21-1234.pdf', title: 'Opinion', snippet: 'supreme court' }).tier, 2, 'supreme court opinion tier 2');
+    assert.equal(classifySource({ url: 'https://www.parliament.uk/business/committees/committees-a-z/commons-select/x/', title: 'Hansard', snippet: 'parliamentary record' }).tier, 3, 'parliament.uk tier 3');
+    assert.equal(classifySource({ url: 'https://www.un.org/en/resolution/123', title: 'UN Resolution', snippet: 'General Assembly' }).tier, 3, 'un.org tier 3');
+    assert.equal(classifySource({ url: 'https://europa.eu/legislation_summaries/x', title: 'EU Directive', snippet: 'official journal' }).tier, 3, 'europa.eu tier 3');
+    // Primary-evidence markers lift even a generic gov page when the snippet says so
+    const whitepaper = classifySource({ url: 'https://www.gov.uk/government/publications/white-paper-on-x', title: 'White paper', snippet: 'official government white paper on policy' });
+    assert.equal(whitepaper.proximity, 'primary', 'white paper flagged as primary');
+    assert.ok(whitepaper.tier <= 3, 'official document not left at tier 6');
+  });
   it('domainHint applies rules to grounding redirects (honest: unknown stays 6)', () => {
     const paper = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'arxiv.org/abs/123', domainHint: 'arxiv.org' });
     assert.equal(paper.tier, 2);

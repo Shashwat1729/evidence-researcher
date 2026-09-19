@@ -6,7 +6,12 @@
 const DOMAIN_TIER_HINTS = [
   // [regex, tier, reason]
   [/courtlistener\.com|recap\.email|uscourts\.gov|supremecourt\.gov|law\.cornell\.edu|court\.gov/i, 2, 'primary legal source — court filing, opinion, or docket (verify as primary)'],
-  [/\.gov(\.|$)|archives\.gov|loc\.gov|bl\.uk|gallica\.bnf|d-nb\.de/i, 3, 'government / national archive or library domain'],
+  // Official document sources: national, legislative, and intergovernmental
+  // archives — tier 3 as institutional/government, never auto tier 1 (verify).
+  // Covers national archives and major IGOs; generic .gov is handled below but
+  // explicit entries ensure gov.uk, europa.eu, un.org etc. are not missed as tier 6.
+  [/parliament\.uk|hansard|congress\.gov|legislature|senate\.gov|house\.gov|europa\.eu|un\.org|who\.int|oecd\.org|worldbank\.org|imf\.org/i, 3, 'official legislative or intergovernmental source — institutional/government'],
+  [/\.gov(\.|$)|archives\.gov|loc\.gov|bl\.uk|gallica\.bnf|d-nb\.de|\.gov\.uk|\.gouv\.fr|\.gc\.ca|\.gov\.au/i, 3, 'government / national archive or library domain'],
   [/\.edu(\.|$)|\.ac\.[a-z]+$/i, null, null], // evaluated per-page, never auto-trusted
   [/arxiv\.org|doi\.org|pubmed|jstor|springer|nature\.com|science\.org|plos\.org|ieee|acm\.org/i, 2, 'scholarly publisher / repository domain'],
   [/wikipedia\.org/i, 6, 'tertiary reference — discovery value, not primary evidence'],
@@ -73,8 +78,8 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     authority = 'medium'; proximity = 'secondary';
   }
   // Primary-evidence markers — domain-agnostic: any field's original record.
-  // Must be broad (legal, historical, scientific, etc.), not tied to one example.
-  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing/i.test(hay)) {
+  // Must be broad (legal, historical, scientific, official, etc.), not tied to one example.
+  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act\b/i.test(hay)) {
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }
