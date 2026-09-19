@@ -826,8 +826,13 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     // quota abort keeps finished sections (in beat order) instead of losing
     // them with the rejected pool. Cancel still aborts everything.
     const sectionOut = [];
+    // Sequential sections: concurrency 2 held 2 slots for 25 min of retries
+    // and starved the other 5 sections (only 2 findings ever started). With
+    // refillable quota, sequential still respects the 25-min deadline and lets
+    // each section either succeed or fail fast to inventory without blocking.
     try {
-      await pool(sectionGroups, 2, async (beats, gi) => {
+      for (let gi = 0; gi < sectionGroups.length; gi++) {
+        const beats = sectionGroups[gi];
         throwIfStopped();
         const label = `Section ${gi + 1}/${sectionGroups.length}`;
       // Planned work is NEVER skipped on transient quota: rate-limited sections
@@ -860,7 +865,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
           }
           ev('progress', `${label}: ${found.length} finding(s)`);
           sectionOut[gi] = found;
-          return found;
+          break;
         } catch (e) {
           // Retry policy (time is cheap, the chapter is mandatory): refillable
           // quota (429/QUOTA_EXHAUSTED) retries until the MODE DEADLINE, not a
@@ -889,10 +894,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
             ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
           }
           sectionOut[gi] = [];
-          return [];
+          break;
         }
       }
-      });
+      }
     } catch (e) {
       if (e?.code === 'CANCELLED' || e?.name === 'AbortError' || !isQuotaError(e)) throw e;
       ev('warning', `Section loop aborted on quota — keeping completed sections…`);
