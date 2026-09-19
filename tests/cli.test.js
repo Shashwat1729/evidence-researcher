@@ -41,6 +41,32 @@ describe('executeResearch with fakes', () => {
     assert.equal(saved, 'cli1');
     assert.ok(lines.some((l) => l.includes('audit=')));
   });
+  it('forwards ALL keys (rotation needs them) and shows progress/errors', async () => {
+    const lines = [];
+    let seenKey;
+    await executeResearch(
+      { question: 'Q?', mode: 'quick', stance: 'neutral', hypothesis: '', documentary: false },
+      {
+        runFn: async (_opts, ctx) => { seenKey = ctx.key; return fakeResult; },
+        saveFn: async () => {},
+        keys: ['k1', 'k2', 'k3'],
+        out: (l) => lines.push(l),
+        onEvent: () => {},
+      },
+    );
+    assert.deepEqual(seenKey, ['k1', 'k2', 'k3'], 'never keys[0]-only: rotation is the quota story');
+    const lines2 = [];
+    await executeResearch(
+      { question: 'Q?', mode: 'quick', stance: 'neutral', hypothesis: '', documentary: false },
+      {
+        runFn: async (_o, ctx) => { ctx.emit({ type: 'progress', message: 'Waiting for API quota — research continues automatically…' }); return fakeResult; },
+        saveFn: async () => {},
+        keys: ['k'],
+        out: (l) => lines2.push(l),
+      },
+    );
+    assert.ok(lines2.some((l) => l.includes('Waiting for API quota')), 'quota waits visible, never silent');
+  });
   it('exits 1 with no keys, and on run failure', async () => {
     const lines = [];
     const nokeys = await executeResearch({ question: 'Q?', mode: 'quick', stance: 'neutral' }, { keys: [], out: (l) => lines.push(l) });

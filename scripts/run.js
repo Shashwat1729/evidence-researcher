@@ -6,7 +6,10 @@ import { runResearch } from '../backend/src/engine/orchestrator.js';
 import { saveResult } from '../backend/src/store.js';
 import { score } from '../eval/score.js';
 
-export const SSE_TYPES = ['start', 'plan', 'sources', 'claims', 'warning', 'done'];
+// Progress + errors included: on thin quota a CLI run spends minutes in
+// quota waits, and silence looks hung. (One calm notice per episode comes
+// from the engine itself — no spam.)
+export const SSE_TYPES = ['start', 'plan', 'sources', 'claims', 'warning', 'progress', 'error', 'done'];
 
 export function usage() {
   return 'Usage: npm run research -- "question" [--mode quick|standard|deep|exhaustive] [--stance neutral|lean|adversarial|steelman|comparative] [--hypothesis "..."] [--documentary]';
@@ -53,8 +56,10 @@ export async function executeResearch(opts, {
   out(`Q: ${opts.question}`);
   const t0 = Date.now();
   try {
+    // ALL keys (not keys[0]): rotation/failover across projects is the whole
+    // quota story — using one key dashes 4/5 of the user's resilience.
     const result = await runFn(opts, {
-      key: keys[0],
+      key: keys,
       emit: (e) => {
         if (SSE_TYPES.includes(e.type)) out(`[${e.type}] ${e.message}`);
         onEvent?.(e);
