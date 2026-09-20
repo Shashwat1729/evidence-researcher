@@ -49,13 +49,19 @@ describe('source classification', () => {
   it('official documents rank dynamically: court, legislative, and IGO sources', () => {
     assert.equal(classifySource({ url: 'https://www.courtlistener.com/docket/12345/smith-v-jones/', title: 'Docket', snippet: 'court filing' }).tier, 2, 'court filing tier 2');
     assert.equal(classifySource({ url: 'https://www.supremecourt.gov/opinions/22pdf/21-1234.pdf', title: 'Opinion', snippet: 'supreme court' }).tier, 2, 'supreme court opinion tier 2');
+    assert.equal(classifySource({ url: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193', title: '10-K Filing', snippet: 'Apple Inc. annual report' }).tier, 2, 'SEC 10-K filing tier 2');
+    assert.equal(classifySource({ url: 'https://patents.google.com/patent/US10123456B2', title: 'Patent', snippet: 'Inventor: Smith' }).tier, 2, 'patent tier 2');
     assert.equal(classifySource({ url: 'https://www.parliament.uk/business/committees/committees-a-z/commons-select/x/', title: 'Hansard', snippet: 'parliamentary record' }).tier, 3, 'parliament.uk tier 3');
     assert.equal(classifySource({ url: 'https://www.un.org/en/resolution/123', title: 'UN Resolution', snippet: 'General Assembly' }).tier, 3, 'un.org tier 3');
     assert.equal(classifySource({ url: 'https://europa.eu/legislation_summaries/x', title: 'EU Directive', snippet: 'official journal' }).tier, 3, 'europa.eu tier 3');
+    assert.equal(classifySource({ url: 'https://www.fda.gov/drugs/drug-approvals-and-databases/x', title: 'FDA Approval', snippet: 'clinical trial' }).tier, 3, 'fda.gov tier 3');
+    assert.equal(classifySource({ url: 'https://www.nasa.gov/mission/apollo-11', title: 'Apollo 11', snippet: 'mission report' }).tier, 3, 'nasa.gov tier 3');
     // Primary-evidence markers lift even a generic gov page when the snippet says so
     const whitepaper = classifySource({ url: 'https://www.gov.uk/government/publications/white-paper-on-x', title: 'White paper', snippet: 'official government white paper on policy' });
     assert.equal(whitepaper.proximity, 'primary', 'white paper flagged as primary');
     assert.ok(whitepaper.tier <= 3, 'official document not left at tier 6');
+    const clinical = classifySource({ url: 'https://clinicaltrials.gov/study/NCT12345', title: 'Clinical Trial', snippet: 'trial protocol NCT12345' });
+    assert.equal(clinical.proximity, 'primary', 'clinical trial flagged as primary');
   });
   it('domainHint applies rules to grounding redirects (honest: unknown stays 6)', () => {
     const paper = classifySource({ url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc', title: 'arxiv.org/abs/123', domainHint: 'arxiv.org' });

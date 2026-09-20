@@ -4,22 +4,23 @@
 // engine may upgrade/downgrade via Gemini analysis of fetched content.
 
 const DOMAIN_TIER_HINTS = [
-  // [regex, tier, reason]
-  [/courtlistener\.com|recap\.email|uscourts\.gov|supremecourt\.gov|law\.cornell\.edu|court\.gov/i, 2, 'primary legal source — court filing, opinion, or docket (verify as primary)'],
-  // Official document sources: national, legislative, and intergovernmental
+  // [regex, tier, reason] — ordered most specific first.
+  // Primary legal/financial filings: the document IS the evidence (verify edition/authenticity, but tier 1-2).
+  [/courtlistener\.com|recap\.email|uscourts\.gov|supremecourt\.gov|law\.cornell\.edu|court\.gov|sec\.gov.*edgar|patents\.google\.com|patentscope\.wipo\.int|uspto\.gov|epo\.org/i, 2, 'primary filing — court docket, patent, or regulatory filing (verify as primary)'],
+  // Official legislative, intergovernmental, and national financial/medical/scientific
   // archives — tier 3 as institutional/government, never auto tier 1 (verify).
-  // Covers national archives and major IGOs; generic .gov is handled below but
-  // explicit entries ensure gov.uk, europa.eu, un.org etc. are not missed as tier 6.
-  [/parliament\.uk|hansard|congress\.gov|legislature|senate\.gov|house\.gov|europa\.eu|un\.org|who\.int|oecd\.org|worldbank\.org|imf\.org/i, 3, 'official legislative or intergovernmental source — institutional/government'],
-  [/\.gov(\.|$)|archives\.gov|loc\.gov|bl\.uk|gallica\.bnf|d-nb\.de|\.gov\.uk|\.gouv\.fr|\.gc\.ca|\.gov\.au/i, 3, 'government / national archive or library domain'],
+  // Covers parliaments, IGOs, central banks, and science agencies; generic .gov
+  // is handled below but explicit entries ensure gov.uk, europa.eu, un.org etc. are not missed as tier 6.
+  [/parliament\.uk|hansard|congress\.gov|legislature|senate\.gov|house\.gov|bundestag\.de|assemblee-nationale\.fr|europa\.eu|un\.org|who\.int|oecd\.org|worldbank\.org|imf\.org|wto\.org|ilo\.org|sec\.gov|federalreserve\.gov|ecb\.europa\.eu|bankofengland\.co\.uk|fda\.gov|cdc\.gov|nih\.gov|clinicaltrials\.gov|ema\.europa\.eu|nasa\.gov|noaa\.gov|usgs\.gov|nist\.gov|data\.gov|data\.europa\.eu|unesco\.org/i, 3, 'official institutional source — legislative, intergovernmental, financial, medical, or scientific agency'],
+  [/\.gov(\.|$)|archives\.gov|loc\.gov|bl\.uk|gallica\.bnf|d-nb\.de|\.gov\.uk|\.gouv\.fr|\.gc\.ca|\.gov\.au|\.gov\.in|\.gob\.es|\.go\.jp/i, 3, 'government / national archive or library domain'],
   [/\.edu(\.|$)|\.ac\.[a-z]+$/i, null, null], // evaluated per-page, never auto-trusted
-  [/arxiv\.org|doi\.org|pubmed|jstor|springer|nature\.com|science\.org|plos\.org|ieee|acm\.org/i, 2, 'scholarly publisher / repository domain'],
+  [/arxiv\.org|doi\.org|pubmed|jstor|springer|nature\.com|science\.org|plos\.org|ieee|acm\.org|iso\.org|ietf\.org|w3\.org/i, 2, 'scholarly or standards publisher / repository domain'],
   [/wikipedia\.org/i, 6, 'tertiary reference — discovery value, not primary evidence'],
   [/reddit\.com|quora\.com|stackexchange|facebook\.com|twitter\.com|x\.com|tiktok|instagram|medium\.com.*@|tumblr/i, 7, 'user-generated content — lead only'],
   [/britannica\.com|encyclopedia/i, 6, 'tertiary encyclopedia'],
   [/openlibrary\.org|archive\.org|hathitrust|gutenberg\.org/i, 1, 'digitized primary / archival collection (verify edition)'],
   [/books\.google/i, 2, 'book metadata (text not inspected)'],
-  [/nytimes|bbc\.|reuters|apnews|theguardian|washingtonpost|economist|propublica/i, 4, 'established newsroom with editorial standards'],
+  [/nytimes|bbc\.|reuters|apnews|theguardian|washingtonpost|economist|propublica|financialtimes|ft\.com|wsj\.com|bloomberg/i, 4, 'established newsroom with editorial standards'],
 ];
 
 const PATH_HINTS = [
@@ -78,8 +79,10 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     authority = 'medium'; proximity = 'secondary';
   }
   // Primary-evidence markers — domain-agnostic: any field's original record.
-  // Must be broad (legal, historical, scientific, official, etc.), not tied to one example.
-  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act\b/i.test(hay)) {
+  // Must be broad (legal, financial, medical, scientific, official, etc.), not tied to one example.
+  // Includes filings (docket/opinion/brief/10-K/patent), legislative (bill/act/resolution/directive),
+  // scientific/medical (dataset/trial/protocol), and historical (archival/manuscript/inscription).
+  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|10-?K\b|10-?Q\b|8-?K\b|S-1\b|annual report|quarterly report|proxy statement|prospectus|clinical trial|trial protocol|adverse event|patent|standard|specification|dataset|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act\b|hearing|testimony|executive order|memorandum/i.test(hay)) {
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }
