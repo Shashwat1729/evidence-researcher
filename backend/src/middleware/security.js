@@ -7,7 +7,10 @@
 import { randomUUID } from 'node:crypto';
 
 export function requestId(req, res, next) {
-  req.id = req.headers['x-request-id'] || randomUUID().slice(0, 8);
+  // Client-supplied ids are echoed back as a header: restrict them to a safe
+  // charset/length (a raw value with control chars made setHeader throw → 500).
+  const given = String(req.headers['x-request-id'] || '');
+  req.id = /^[A-Za-z0-9._-]{1,64}$/.test(given) ? given : randomUUID().slice(0, 8);
   res.setHeader('X-Request-Id', req.id); // echo for client-side correlation
   next();
 }
@@ -17,8 +20,10 @@ export function securityHeaders(_req, res, next) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  // Minimal CSP for our zero-build frontend (inline styles/scripts allowed)
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'");
+  // CSP for the zero-build frontend: scripts are all external modules (no
+  // inline script needed); inline styles stay allowed for rendered reports.
+  // connect-src includes the Gemini API for in-browser key checks.
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://generativelanguage.googleapis.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
   if (process.env.NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
@@ -29,7 +34,10 @@ export function cors(req, res, next) {
   const origin = process.env.CORS_ORIGIN || '*';
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-gemini-key, x-request-id');
+  // Every header the frontend actually sends (multi-key + model picker were
+  // missing, so cross-origin clients failed preflight with >1 key).
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-gemini-key, x-gemini-keys, x-gemini-model, x-request-id');
+  res.setHeader('Access-Control-Expose-Headers', 'Retry-After, X-Request-Id, X-RateLimit-Remaining');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 }

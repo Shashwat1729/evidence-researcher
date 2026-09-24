@@ -141,8 +141,46 @@ export async function allowedByRobots(url) {
   }
 }
 
+// SSRF guard: URLs come from search results and model output, and the server
+// fetches them. Only public http(s) hosts are allowed — never loopback,
+// private ranges, link-local (cloud metadata 169.254.169.254), or internal
+// hostnames. Checked on the entry URL AND every redirect hop (server side).
+function ipv4Private(h) {
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [+m[1], +m[2]];
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+}
+/** True when the URL is a public http(s) address safe to fetch. Exported for tests. */
+export function isPublicHttpUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  if (u.username || u.password) return false;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')
+    || h.endsWith('.lan') || h.endsWith('.home.arpa')) return false;
+  if (!h.includes('.') && !h.includes(':')) return false; // bare intranet names
+  if (ipv4Private(h)) return false;
+  if (h.includes(':')) {
+    // IPv6 literal: loopback, unspecified, unique-local, link-local, mapped v4.
+    if (h === '::1' || h === '::' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h)) return false;
+    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped && ipv4Private(mapped[1])) return false;
+    if (/^::ffff:/.test(h)) return false;
+  }
+  if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/i.test(h)) return false; // integer-encoded IPs
+  return true;
+}
+const IS_BROWSER = typeof window !== 'undefined';
+const MAX_REDIRECTS = 5;
+
 /** Fetch a URL and extract title/author/date/text. Never throws. */
 export async function fetchPage(url, { timeoutMs = FETCH_TIMEOUT } = {}) {
+  if (!isPublicHttpUrl(url)) {
+    return { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: 'blocked: not a public http(s) address' };
+  }
   if (!(await allowedByRobots(url))) {
     return { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: 'blocked by robots.txt (crawl not permitted)' };
   }
@@ -155,6 +193,29 @@ export async function fetchPage(url, { timeoutMs = FETCH_TIMEOUT } = {}) {
   return out;
 }
 
+// Server side, redirects are followed by hand so every hop passes the SSRF
+// guard (a public page could otherwise 302 to an internal address). In the
+// browser, manual mode yields opaque responses, so the browser follows —
+// its own same-origin rules already fence off the user's network.
+async function fetchFollowingSafely(url, signal) {
+  const headers = { 'User-Agent': 'evidence-researcher/1.0 (independent research bot; contact: local install)', Accept: 'text/html,application/xhtml+xml' };
+  if (IS_BROWSER) return fetch(url, { signal, redirect: 'follow', headers });
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(current, { signal, redirect: 'manual', headers });
+    const loc = res.status >= 300 && res.status < 400 ? res.headers?.get?.('location') : null;
+    if (!loc) {
+      // Keep the final URL even when a stubbed/older fetch omits res.url.
+      if (!res.url && current !== url) { try { Object.defineProperty(res, 'url', { value: current }); } catch { /* read-only */ } }
+      return res;
+    }
+    if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
+    const next = new URL(loc, current).toString();
+    if (!isPublicHttpUrl(next)) throw new Error('redirect to a non-public address blocked');
+    current = next;
+  }
+}
+
 async function attemptFetch(url, timeoutMs) {
   const result = { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: '' };
   try {
@@ -164,10 +225,7 @@ async function attemptFetch(url, timeoutMs) {
     try {
       // One polite retry on 429 (honor Retry-After ≤10s); anything else is final.
       for (let a = 0; ; a++) {
-        res = await fetch(url, {
-          signal: ctrl.signal, redirect: 'follow',
-          headers: { 'User-Agent': 'evidence-researcher/1.0 (independent research bot; contact: local install)', Accept: 'text/html,application/xhtml+xml' },
-        });
+        res = await fetchFollowingSafely(url, ctrl.signal);
         if (res.status !== 429 || a >= 1) break;
         const ra = parseInt(res.headers.get('retry-after') || '', 10);
         await sleepMs(Number.isFinite(ra) ? Math.min(10_000, Math.max(0, ra * 1000)) : 2000);

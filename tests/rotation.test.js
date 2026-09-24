@@ -41,9 +41,11 @@ describe('API key rotation', () => {
   it('fails over to fallback on 429 and reports rotation (no key values leaked)', async () => {
     const seen = [];
     const events = [];
-    mockFetch(async (url) => {
-      seen.push(url);
-      if (url.includes('KEY_PRIMARY')) return jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED' } });
+    mockFetch(async (url, opts) => {
+      assert.ok(!String(url).includes('KEY_'), 'key must travel in a header, never the URL');
+      const k = opts?.headers?.['x-goog-api-key'] || '';
+      seen.push(k);
+      if (k === 'KEY_PRIMARY') return jsonResponse(429, { error: { message: 'quota', status: 'RESOURCE_EXHAUSTED' } });
       return jsonResponse(200, okPayload);
     });
     const r = await generate({ key: '', model: 'm', prompt: 'hi', onKeyEvent: (e) => events.push(e) });

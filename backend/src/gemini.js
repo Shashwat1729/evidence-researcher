@@ -57,8 +57,11 @@ export function getKeys(explicit) {
   return [...new Set(list)].slice(0, 6);
 }
 
+// The key travels in the x-goog-api-key header, never the query string:
+// URLs end up in proxy/access logs and error messages, headers do not.
+// Returns { url, key } so attemptKey can set the header per rotation.
 function endpoint(model, key) {
-  return `${API_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  return { url: `${API_BASE}/models/${encodeURIComponent(model)}:generateContent`, key };
 }
 
 // Even distribution + per-key blocking for multi-key setups.
@@ -82,7 +85,15 @@ export function resetKeyState() {
 // cross-project case correctly, and per-project would ideally require
 // project ID extraction (not available from key alone).
 const keyBlockedUntil = new Map(); // keyHash -> timestamp (ms)
-function keyHash(k) { return String(k || '').slice(0, 12); }
+// Whole-key FNV-1a digest: a prefix slice collided for keys sharing their
+// first characters (every Gemini key starts "AIzaSy"), merging their block
+// and pacing state. Never exposes key material in map keys.
+function keyHash(k) {
+  const s = String(k || '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return `${s.length}:${(h >>> 0).toString(36)}`;
+}
 function isKeyBlocked(k) {
   const until = keyBlockedUntil.get(keyHash(k));
   return until && Date.now() < until;
@@ -171,7 +182,7 @@ const isKeyError = (err) =>
   err?.status === 401 || err?.status === 403 ||
   (err?.status === 400 && /api key|key not valid|API_KEY_INVALID/i.test(err?.message || ''));
 
-const isTransient = (status) => status === 429 || status === 502 || status === 503;
+const isTransient = (status) => status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 
 /** Round wait with anti-hammer escalation: honor the server's exact
  *  Retry-After for the first couple of rounds, then escalate (30s, 60s, 120s
@@ -355,17 +366,28 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
   });
 }
 
-async function attemptKey(url, body, timeoutMs, retries) {
+async function attemptKey(target, body, timeoutMs, retries) {
+  const { url, key } = typeof target === 'string' ? { url: target, key: '' } : target;
   for (let attempt = 0; ; attempt++) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(key ? { 'x-goog-api-key': key } : {}) },
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
+        });
+      } catch (netErr) {
+        // Connection-level failures (reset, DNS blip) carry no status and used
+        // to fail the whole call instantly. Retry them like a 503; timeouts
+        // (AbortError) stay fail-fast so a hung call never doubles its wait.
+        if (netErr?.name === 'AbortError') throw netErr;
+        if (attempt < retries) { await sleep(750 * (attempt + 1)); continue; }
+        throw Object.assign(new Error(`Gemini network error: ${String(netErr?.message || netErr).slice(0, 120)}`), { status: 503 });
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const err = new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
@@ -374,7 +396,7 @@ async function attemptKey(url, body, timeoutMs, retries) {
         err.data = data;
         // 429 is per-key quota: don't sleep within this key's retries, just
         // let the outer rotation try the next key immediately. Sleep only for
-        // 502/503 (true transients) or as a last resort before giving up.
+        // 5xx (true transients) or as a last resort before giving up.
         if (attempt < retries && isTransient(res.status)) {
           if (res.status === 429) throw err; // rotate immediately, no sleep here
           await sleep(750 * (attempt + 1));
@@ -532,7 +554,13 @@ export function parseJsonLenient(text) {
   if (fenced) { try { return JSON.parse(fenced[1].trim()); } catch { /* fall through */ } }
   const start = t.search(/[{[]/);
   if (start >= 0) {
+    // Only a closing bracket can end a JSON value, so try candidate ends at
+    // those positions (last first) instead of every character — the old
+    // per-char shrink was quadratic and froze the event loop for seconds on
+    // long chapter-sized responses.
     for (let end = t.length; end > start; end--) {
+      const ch = t[end - 1];
+      if (ch !== '}' && ch !== ']') continue;
       try { return JSON.parse(t.slice(start, end)); } catch { /* shrink */ }
     }
   }

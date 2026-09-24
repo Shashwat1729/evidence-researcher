@@ -6,6 +6,16 @@ export function mdLinkText(s) {
   return String(s ?? '').replace(/[\[\]()]/g, '');
 }
 
+/** Link target for Markdown: only http(s), with the chars that would end or
+ *  break a Markdown link target percent-encoded. Non-web schemes (javascript:,
+ *  data:) become '#' so an exported report can never carry a script link.
+ *  Exported for tests. */
+export function mdUrl(u) {
+  const s = String(u ?? '').trim();
+  if (!/^https?:\/\//i.test(s)) return '#';
+  return s.replace(/[\s()<>"'\\]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+}
+
 export function exportMarkdown(r) {
   // One-liner: model text with stray newlines must not break list structure.
   const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -13,7 +23,7 @@ export function exportMarkdown(r) {
   const cite = (ids = []) => ids.map((id) => {
     const s = byId.get(id);
     if (!s) return null;
-    return `[${mdLinkText(oneLine(s.title || s.domain))}](${s.url})`;
+    return `[${mdLinkText(oneLine(s.title || s.domain))}](${mdUrl(s.url)})`;
   }).filter(Boolean).join('; ');
   const L = [];
   L.push(`# Research: ${oneLine(r.task?.question) || ''}`, '');
@@ -38,7 +48,9 @@ export function exportMarkdown(r) {
   if (r.report?.timeline?.length) {
     L.push('## Chronology', '');
     L.push('| Date | Event |', '| --- | --- |');
-    for (const t of r.report.timeline) L.push(`| ${oneLine(t.date)} | ${oneLine(t.event)} |`);
+    // A literal pipe inside a cell would split it into extra columns.
+    const cellText = (v) => oneLine(v).replace(/\|/g, '/');
+    for (const t of r.report.timeline) L.push(`| ${cellText(t.date)} | ${cellText(t.event)} |`);
     L.push('');
   }
   L.push('## Claim confidence', '');
@@ -55,24 +67,26 @@ export function exportMarkdown(r) {
     for (const a of r.report.appendix) {
       L.push(`### ${a.n}. ${oneLine(a.text)}`, '');
       L.push(`State: ${a.state}${a.why ? ` — ${oneLine(a.why)}` : ''}`, '');
-      for (const s of a.supporting || []) L.push(`- Supports: [${mdLinkText(oneLine(s.title))}](${s.url}) (tier ${s.tier ?? '?'})`);
-      for (const s of a.contradicting || []) L.push(`- Contradicts: [${mdLinkText(oneLine(s.title))}](${s.url}) (tier ${s.tier ?? '?'})`);
+      for (const s of a.supporting || []) L.push(`- Supports: [${mdLinkText(oneLine(s.title))}](${mdUrl(s.url)}) (tier ${s.tier ?? '?'})`);
+      for (const s of a.contradicting || []) L.push(`- Contradicts: [${mdLinkText(oneLine(s.title))}](${mdUrl(s.url)}) (tier ${s.tier ?? '?'})`);
       L.push('');
     }
   }
   L.push('## Sources', '');
   for (const s of r.sources || []) {
-    L.push(`- [${oneLine(s.title || s.url)}](${s.url}) — tier ${s.tier ?? '?'} (${s.sourceType}, ${s.accessibility}${s.verified ? ', inspected' : ', not inspected'})`);
+    L.push(`- [${mdLinkText(oneLine(s.title || s.url))}](${mdUrl(s.url)}) — tier ${s.tier ?? '?'} (${s.sourceType}, ${s.accessibility}${s.verified ? ', inspected' : ', not inspected'})`);
   }
   return L.join('\n');
 }
 
 export function exportHtml(r) {
   const md = exportMarkdown(r)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     // Citations must stay clickable: markdown links become real anchors
     // (previously exported as literal "[Title](https://…)" dead text).
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
+    // Targets were made safe by mdUrl (http(s) only, quotes encoded).
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+    .replace(/\[([^\]]+)\]\(#\)/g, '$1')
     // Pipe tables (chronology) become real tables instead of literal pipes.
     .replace(/((?:^\|.*\|$\n?)+)/gm, (block) => {
       const rows = block.trim().split('\n')
@@ -90,5 +104,9 @@ export function exportHtml(r) {
     .replace(/^- (.*)$/gm, '<li>$1</li>')
     .replace(/((?:<li>.*?<\/li>)(?:\n<li>.*?<\/li>)*)/g, '<ul>$1</ul>')
     .replace(/\n\n/g, '</p><p>');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Research report</title><style>body{font-family:system-ui;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6}li{margin:.3rem 0}table{border-collapse:collapse;margin:.6rem 0}th,td{border:1px solid #445;text-align:left;padding:.3rem .6rem;font-size:.9rem}</style></head><body><p>${md}</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeText(r.task?.question || "Research report").slice(0, 120)}</title><style>body{font-family:system-ui;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6}li{margin:.3rem 0}table{border-collapse:collapse;margin:.6rem 0}th,td{border:1px solid #445;text-align:left;padding:.3rem .6rem;font-size:.9rem}</style></head><body><p>${md}</p></body></html>`;
+}
+
+function escapeText(s) {
+  return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }

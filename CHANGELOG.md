@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-24 — end-to-end hardening + frontend redesign
+
+### Backend
+- Security: server-side page fetches are SSRF-guarded (no loopback/private/link-local/metadata hosts; every redirect hop re-checked).
+- Security: Gemini keys travel in the `x-goog-api-key` header, never in URLs (logs, proxies, error text).
+- Security: exported Markdown/HTML only link http(s) URLs and escape quotes (no `javascript:` links or attribute breakout).
+- Security: CSP without inline scripts; sanitized `X-Request-Id`; `/api/keys/validate` is rate-limited.
+- Fix: the local/Docker server never used the result cache (`createApp` passed a store without cache functions).
+- Fix: a Quick run whose planner ran past the deadline threw away all gathered evidence; searches now stop gracefully.
+- Fix: CORS preflight rejected the multi-key and model headers the UI sends.
+- Fix: unknown `/api/*` routes returned the SPA page with HTTP 200; now JSON 404. Unknown export formats are 400.
+- Fix: SSE streams send a heartbeat every 15s so proxies don't drop runs that are waiting on quota.
+- Fix: network errors and Gemini 500/504 are retried; key state no longer collides between keys sharing a prefix.
+- Fix: quadratic JSON-repair loop could freeze the event loop on long responses.
+- Fix: concurrent saves could share one temp file; stale cache entries are pruned; cache keys include the model.
+- Fix: quota-fallback reports now include the evidence appendix and uncertainty/gaps.
+
+### Frontend
+- Redesigned ask, progress (live stage tracker + counters), result header, tabs with counts, report typography, history.
+- Light theme (follows the OS); graph colors now theme-aware; mobile layout without horizontal overflow.
+- Fix: key dialog closed before validation finished; now validates inline (directly against Google in static mode).
+- Fix: keys/model names were injected into HTML unescaped; history rows too.
+- Fix: reopening a run from history duplicated it; runs can be deleted; clearing history also clears saved results.
+- Fix: a closed stream with no result stranded the progress view; mid-stream network retries started a duplicate run.
+- Fix: static mode silently failed to save a second report (localStorage full) — oldest results are evicted.
+- Deep links (`#run=<id>`), Ctrl+Enter to start, source filter, client-side exports, no blocking `alert()`s.
+- CI now fails on lint errors and verifies the Pages build.
+
 ## Unreleased
 - Verification acts (a "no" verdict demotes the finding into uncertainty), verify fits whole findings and covers 16, cached inventories labeled honestly (never masquerade as fresh reports)
 - Live-verified model catalog (real generate calls, not ListModels): planner/analysis default to gemini-flash-lite-latest (fastest on new keys), picker offers only working ids, legacy lite/pro stay accepted for old keys, and any model 404 automatically retries once on the default with a loud warning — a stale picker choice can no longer kill a run
