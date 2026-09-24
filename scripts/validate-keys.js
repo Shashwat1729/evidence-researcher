@@ -17,7 +17,7 @@ if (!keys.length) {
       const t = setTimeout(() => ctrl.abort(), 15_000);
       let res, data = {};
       try {
-        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(keys[i])}`, { signal: ctrl.signal });
+        res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', { headers: { 'x-goog-api-key': keys[i] }, signal: ctrl.signal });
         data = await res.json().catch(() => ({}));
       } finally { clearTimeout(t); }
       if (res.ok) { ok++; console.log(`${label}: VALID (${(data.models || []).length} models visible)`); }

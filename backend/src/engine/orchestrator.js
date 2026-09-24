@@ -179,11 +179,20 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     finally { stats.phases[name] = (stats.phases[name] || 0) + (Date.now() - t0); }
   };
   const fetchBucket = (reason) => /robots/i.test(reason || '') ? 'robots.txt' : /timeout/i.test(reason || '') ? 'timeout' : /access|denied|paywall|401|403|rate/i.test(reason || '') ? 'blocked' : 'other';
+  // Search gate. Deadline/model-call exhaustion STOP searching (return false)
+  // instead of throwing: a throw here escaped through pool() as a non-quota
+  // error and killed the whole run — discarding every source already
+  // gathered — whenever a slow planner pushed searches past a Quick deadline.
+  // Later phases have their own deadline checks and still write a report.
+  let budgetNoticeShown = false;
   const alive = () => {
-    if (Date.now() > deadline) throw Object.assign(new Error('research time budget exhausted'), { code: 'TIMEOUT' });
-    if (stats.modelCalls >= budget.maxModelCalls) throw Object.assign(new Error('model-call budget exhausted'), { code: 'BUDGET' });
-    if (stats.searchCalls >= budget.maxSearches) return false;
-    return true;
+    const reason = Date.now() > deadline ? 'time budget reached'
+      : stats.modelCalls >= budget.maxModelCalls ? 'model-call budget reached' : '';
+    if (reason) {
+      if (!budgetNoticeShown) { budgetNoticeShown = true; ev('progress', `Search stopped: ${reason} — continuing with the evidence gathered`); }
+      return false;
+    }
+    return stats.searchCalls < budget.maxSearches;
   };
 
   ev('start', `Research started (${budget.label} mode)`, { task });
@@ -987,6 +996,12 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     if (maybeFallback(e)) {
       _fromQuotaFallback = true;
       report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
+      // Same post-processing as the normal path: the inventory used to ship
+      // without its evidence appendix or the guaranteed uncertainty/gaps.
+      try {
+        ensureReportCompleteness(report, { claims, iterations });
+        report.appendix = buildAppendix({ claims, sources });
+      } catch { /* inventory is still valid without the extras */ }
       ev('warning', 'Report generated from evidence inventory due to quota — open Sources/Books tabs for raw evidence.');
     } else {
       throw e;

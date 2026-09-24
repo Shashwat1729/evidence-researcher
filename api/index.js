@@ -5,7 +5,7 @@
 // how the platform rewrites the URL onto this function.
 import express from 'express';
 import { loadEnv } from '../backend/src/env.js';
-import { applyApiMiddleware } from '../backend/src/app.js';
+import { applyApiMiddleware, apiNotFound } from '../backend/src/app.js';
 import { apiRouter } from '../backend/src/routes.js';
 
 loadEnv(); // no-op on Vercel (dashboard env wins; no .env file shipped)
@@ -16,5 +16,6 @@ const router = apiRouter();
 app.use('/api', router);
 app.use('/api/index', router);
 app.use('/', router);
+app.use(apiNotFound);
 
 export default app;

@@ -2,7 +2,7 @@
 // Data dir configurable via DATA_DIR. History lists recent runs.
 
 import { promises as fs } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 const DIR = process.env.DATA_DIR || './data';
@@ -14,7 +14,7 @@ async function ensureDir() {
     const files = await fs.readdir(DIR);
     const cutoff = Date.now() - 3600_000;
     for (const f of files) {
-      if (!/\.tmp\.\d+$/.test(f)) continue;
+      if (!/\.tmp\.[\w-]+$/.test(f)) continue;
       const st = await fs.stat(path.join(DIR, f)).catch(() => null);
       if (st && st.mtimeMs < cutoff) await fs.unlink(path.join(DIR, f)).catch(() => {});
     }
@@ -25,14 +25,25 @@ function file(id) {
   return path.join(DIR, `${String(id).replace(/[^a-zA-Z0-9_-]/g, '')}.json`);
 }
 
+// Atomic write: crash mid-write leaves the previous file intact, never a
+// half-written JSON that breaks history/export. The temp name is unique per
+// write — a pid-only suffix let two concurrent saves in one process
+// interleave into the same temp file.
+async function writeAtomic(dest, value) {
+  const tmp = `${dest}.tmp.${process.pid}-${randomBytes(4).toString('hex')}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
+    await fs.rename(tmp, dest);
+  } catch (e) {
+    await fs.unlink(tmp).catch(() => {});
+    throw e;
+  }
+}
+
 export async function saveResult(result) {
+  if (!result?.id) throw new Error('result.id is required');
   await ensureDir();
-  const dest = file(result.id);
-  // Atomic write: crash mid-write leaves the previous file intact, never a
-  // half-written JSON that breaks history/export.
-  const tmp = `${dest}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
-  await fs.rename(tmp, dest);
+  await writeAtomic(file(result.id), result);
   return result.id;
 }
 
@@ -81,6 +92,9 @@ export function cacheKeyFor(input) {
     input.stance || '',
     String(input.hypothesis || '').trim().toLowerCase(),
     input.documentary ? 'doc' : '',
+    // Different models produce different work: a run on one model must not
+    // be served as a cache hit for another (singleflight keys on it too).
+    String(input.model || ''),
   ].join('|');
   return `cache_${createHash('sha256').update(norm).digest('hex').slice(0, 32)}`;
 }
@@ -98,8 +112,25 @@ export async function findCached(input, maxAgeMs) {
 
 export async function saveCacheEntry(input, result) {
   await ensureDir();
-  const dest = file(cacheKeyFor(input));
-  const tmp = `${dest}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
-  await fs.rename(tmp, dest);
+  await writeAtomic(file(cacheKeyFor(input)), result);
+  await pruneCache().catch(() => {});
+}
+
+// Cache entries were never deleted, so DATA_DIR grew without bound. Drop
+// entries older than the max TTL (by mtime — no JSON parse needed).
+const CACHE_PRUNE_AGE_MS = Math.max(24 * 3600_000, Number(process.env.RESULT_CACHE_TTL_MS) || 0);
+let lastPrune = 0;
+export async function pruneCache({ maxAgeMs = CACHE_PRUNE_AGE_MS, force = false } = {}) {
+  if (!force && Date.now() - lastPrune < 10 * 60_000) return 0;
+  lastPrune = Date.now();
+  let removed = 0;
+  for (const f of await fs.readdir(DIR)) {
+    if (!f.startsWith('cache_') || !f.endsWith('.json')) continue;
+    const st = await fs.stat(path.join(DIR, f)).catch(() => null);
+    if (st && Date.now() - st.mtimeMs > maxAgeMs) {
+      await fs.unlink(path.join(DIR, f)).catch(() => {});
+      removed++;
+    }
+  }
+  return removed;
 }

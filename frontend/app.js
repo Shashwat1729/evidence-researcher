@@ -1,85 +1,169 @@
-// Frontend app: ask → SSE progress → tabbed dashboard → export. No build step.
+// Frontend app: ask → SSE progress → report workspace → export. No build step.
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
 let current = null;
-if (typeof window !== 'undefined') window.__setCurrentForScreenshot = (r) => { current = r; try { renderTab('overview'); document.getElementById('resultView')?.classList.remove('hidden'); document.getElementById('progressView')?.classList.add('hidden'); document.getElementById('askView')?.classList.add('hidden'); } catch {} };
+if (typeof window !== 'undefined') window.__setCurrentForScreenshot = (r) => { current = normalizeResult(r); try { showView('result'); renderResultHeader(); activateTab($('#tab-report'), false); } catch {} };
 let serverKey = false;
 let staticMode = false;
+let serverModels = [];
+let selectedSource = null;
+let serverRuns = [];
 // Static cache-busting version. MUST match ENGINE_V in direct.js (enforced by
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-19b';
+const STATIC_V = '2026-09-24b';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
-  quick: 'Quick: ~2 searches, ~1 min. Basic verification (escalates on disagreement).',
-  standard: 'Standard: ~10 searches + academic/books, a few minutes. Cross-checking + contradiction search.',
-  deep: 'Deep: ~24 searches, up to ~15 min. Books, academic + primary sources, provenance.',
-  exhaustive: 'Exhaustive: ~50 searches, up to ~30 min. Documentary-grade. Heavy API use.',
+  quick: ['Quick', '~2 searches, about 1–2 minutes. Escalates automatically if sources disagree.'],
+  standard: ['Standard', '~10 searches + academic and books. Usually minutes; waits out rate limits for up to ~25 min.'],
+  deep: ['Deep', '~24 searches, books, primary sources and provenance. Up to ~45 min on free-tier quota.'],
+  exhaustive: ['Exhaustive', '~50 searches, documentary-grade. Up to ~90 min and the heaviest API use.'],
 };
+const MODE_LABEL = { quick: 'Quick', standard: 'Standard', deep: 'Deep', exhaustive: 'Exhaustive' };
 
 function recommendMode(q) {
   const t = String(q || '').trim();
   if (t.length < 4) return '';
-  if (/^(when|who|where|what year|how many)\b/i.test(t) && t.length < 90)
-    return 'Looks focused and factual — Quick should do (it still verifies, and escalates automatically if sources disagree).';
-  if (/why|causes?|collapse|compar|vs\.?|history of|explain|debate|controvers|myth/i.test(t) || t.length > 140)
-    return 'This looks like a deep investigation — consider Deep or Exhaustive.';
-  return 'Standard is a good default; escalate if contradictions appear.';
+  if (/^(when|who|where|what year|how many)\b/i.test(t) && t.length < 90) return 'Looks focused and factual — Quick should do.';
+  if (/why|causes?|collapse|compar|vs\.?|history of|explain|debate|controvers|myth/i.test(t) || t.length > 140) return 'Looks like a deep investigation — consider Deep.';
+  return '';
 }
+
+// ---------- storage (every access guarded: private mode / blocked storage) ----------
+function lsGet(k, fallback = null) { try { const v = localStorage.getItem(k); return v === null ? fallback : v; } catch { return fallback; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
 
 function getStoredKeys() {
   try {
-    const arr = JSON.parse(localStorage.getItem('gemini_keys') || '[]');
-    if (Array.isArray(arr) && arr.length) return arr;
-  } catch {}
-  const single = localStorage.getItem('gemini_key');
+    const arr = JSON.parse(lsGet('gemini_keys', '[]'));
+    if (Array.isArray(arr)) {
+      const clean = arr.map((k) => String(k || '').trim()).filter(Boolean);
+      if (clean.length) return clean;
+    }
+  } catch { /* fall through */ }
+  const single = (lsGet('gemini_key', '') || '').trim();
   return single ? [single] : [];
 }
-function getStoredModel() {
-  return localStorage.getItem('gemini_model') || '';
+function setStoredKeys(keys) {
+  if (keys.length) {
+    lsSet('gemini_keys', JSON.stringify(keys));
+    lsSet('gemini_key', keys[0]);
+  } else {
+    lsDel('gemini_keys');
+    lsDel('gemini_key');
+  }
+  updateKeyStatus();
 }
+function getStoredModel() { return lsGet('gemini_model', '') || ''; }
+function needsKey() { return !getStoredKeys().length && (staticMode || !serverKey); }
+function modelLabel(id) {
+  if (!id) return 'Auto model';
+  return (serverModels.find((m) => m.id === id)?.label || id).replace(/^Gemini\s+/i, '');
+}
+function updateKeyStatus() {
+  const n = getStoredKeys().length;
+  $('#keyCount').textContent = String(n);
+  const ready = n > 0 || (!staticMode && serverKey);
+  $('#keyLabel').textContent = n ? `${n} key${n > 1 ? 's' : ''} · ${modelLabel(getStoredModel())}` : ready ? `Server key · ${modelLabel(getStoredModel())}` : 'Connect Gemini';
+  $('#keyDot').className = 'key-dot ' + (ready ? 'ok' : 'off');
+  $('#setupCard').classList.toggle('hidden', !needsKey());
+}
+
+function getHistory() {
+  try { const h = JSON.parse(lsGet('er_history', '[]')); return Array.isArray(h) ? h : []; } catch { return []; }
+}
+function recordHistory(r) {
+  if (!r?.id || !r.task) return;
+  // De-duplicated by id: reopening a run must not add it again.
+  const hist = getHistory().filter((h) => h.id !== r.id);
+  hist.unshift({ id: r.id, question: r.task.question, mode: r.task.mode, at: r.completedAt, sources: (r.sources || []).length, ...(staticMode ? { direct: true } : {}) });
+  lsSet('er_history', JSON.stringify(hist.slice(0, 100)));
+}
+
+// ---------- theme ----------
+function resolvedTheme() {
+  const set = document.documentElement.getAttribute('data-theme');
+  if (set) return set;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function syncThemeButton() {
+  const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
+  $('#themeBtn').setAttribute('aria-label', `Switch to ${next} theme`);
+}
+$('#themeBtn').addEventListener('click', () => {
+  const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  lsSet('er_theme', next);
+  syncThemeButton();
+});
+
+// ---------- views + navigation ----------
+const VIEWS = ['askView', 'progressView', 'resultView'];
+function showView(name) {
+  const id = `${name}View`;
+  for (const v of VIEWS) $('#' + v).classList.toggle('hidden', v !== id);
+  closeNav();
+  window.scrollTo?.({ top: 0 });
+}
+function announce(msg) { $('#srStatus').textContent = msg; }
+function openNav() {
+  document.body.classList.add('nav-open');
+  $('#scrim').hidden = false;
+  $('#menuBtn').setAttribute('aria-expanded', 'true');
+  $('#newBtn').focus();
+}
+function closeNav() {
+  if (!document.body.classList.contains('nav-open')) return;
+  document.body.classList.remove('nav-open');
+  $('#scrim').hidden = true;
+  $('#menuBtn').setAttribute('aria-expanded', 'false');
+}
+$('#menuBtn').addEventListener('click', openNav);
+$('#closeNav').addEventListener('click', closeNav);
+$('#scrim').addEventListener('click', closeNav);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || $('#keyDialog').open) return;
+  if (document.body.classList.contains('nav-open')) closeNav();
+  $$('details.menu[open]').forEach((d) => { d.open = false; });
+  if (selectedSource) selectSource(null);
+});
+// Close popover menus on outside click.
+document.addEventListener('click', (e) => {
+  $$('details.menu[open]').forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+});
 
 async function init() {
   let hasFallback = false;
   let apiOk = false;
   let cfg = null;
   try {
-    const res = await fetch('/api/config');
+    const res = await fetch('/api/config', { cache: 'no-store' });
     if (res.ok) {
       cfg = await res.json();
       serverKey = !!cfg.serverKey;
       hasFallback = !!cfg.hasFallback;
       apiOk = Array.isArray(cfg.modes);
     }
-  } catch { /* offline → static mode */ }
-  // Populate model selectors (shared: server list wins, static falls back
-  // to the backend catalog so the picker works on Pages too). Runs OUTSIDE
-  // the fetch try/catch: a 404 HTML page makes .json() throw, which used to
-  // skip this entire block on Pages (picker stayed Auto-only forever).
+  } catch { /* offline or static host → static mode */ }
+  // Populate the model picker (server list wins, static falls back to the
+  // backend catalog so Pages gets the same list). Runs OUTSIDE the fetch
+  // try/catch: a 404 HTML page makes .json() throw on Pages.
   const populateModels = (models) => {
-    const opts = models.map(m => `<option value="${m.id}">${m.label} — ${m.blurb}</option>`).join('');
-    $('#modelSelect').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
-    $('#modelInput').innerHTML = '<option value="">Auto (smart — per-task optimal)</option>' + opts;
-    // Drop retired saved ids (e.g. gemini-2.0-flash-lite): a stale picker
-    // value would otherwise send a dead model id and fail every run.
+    serverModels = models;
+    $('#modelInput').innerHTML = '<option value="">Auto — best model per task</option>'
+      + models.map((m) => `<option value="${escapeAttr(m.id)}">${escapeHtml(m.label)} — ${escapeHtml(m.blurb || '')}</option>`).join('');
+    // Drop retired saved ids: a stale value would send a dead model id.
     const savedModel = getStoredModel();
-    if (savedModel && models.some((m) => m.id === savedModel)) {
-      $('#modelSelect').value = savedModel;
-      $('#modelInput').value = savedModel;
-    } else if (savedModel) {
-      localStorage.removeItem('gemini_model');
-    }
+    if (savedModel && models.some((m) => m.id === savedModel)) $('#modelInput').value = savedModel;
+    else if (savedModel) lsDel('gemini_model');
   };
   if (cfg && Array.isArray(cfg.models) && cfg.models.length) {
     populateModels(cfg.models);
   } else {
-    // Static Pages mode has no /api/config: load the SAME backend catalog
-    // the engine uses (single source of truth — never a hardcoded copy
-    // that can rot like the old Flash-Lite defaults did). Dynamic import
-    // so a staging hiccup degrades to Auto instead of breaking the app.
     try {
       const { AVAILABLE_MODELS } = await import(`../backend/src/config.js${staticSuffix()}`);
       if (Array.isArray(AVAILABLE_MODELS) && AVAILABLE_MODELS.length) populateModels(AVAILABLE_MODELS);
@@ -87,139 +171,138 @@ async function init() {
   }
   staticMode = !apiOk;
   $('#staticBanner').classList.toggle('hidden', !staticMode);
-  const buildTag = $('#buildTag');
-  if (buildTag) buildTag.textContent = `build ${STATIC_V}`;
-  $('#costNote').textContent = MODE_BLURB.standard;
-  $$('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
-    $('#costNote').textContent = MODE_BLURB[document.querySelector('input[name=mode]:checked').value];
-  }));
-  const updateHint = () => { $('#modeHint').textContent = recommendMode($('#q').value); };
-  $('#q').addEventListener('input', () => { updateHint(); $('#qCount').textContent = `${$('#q').value.length} / 5000`; });
-  updateHint();
-  $('#qCount').textContent = `${$('#q').value.length} / 5000`;
+  $('#buildTag').textContent = `build ${STATIC_V}`;
   $('#serverKeyNote').textContent = staticMode
-    ? 'Static demo mode: this page runs 100% in your browser with your own key — no server needed. Some page fetches may be limited by site CORS policies; grounding excerpts are still cited.'
+    ? 'Research runs in your browser on your own Gemini key. It stays in this browser and is sent only to Google.'
     : serverKey
-      ? `Server has a Gemini key configured${hasFallback ? ' (+ fallback key for rate limits)' : ''}. You can still override with your own below (used for this browser only).`
-      : 'No server-side key configured. Enter your Gemini key to run research in private mode.';
-  // Migrate old single key to new array format display
-  const keys = getStoredKeys();
-  $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
-  $('#keyCount').classList.toggle('hidden', keys.length === 0);
-  renderKeyList();
-  // Model selector change handlers with Auto preview
-  function updateModelHint(value) {
-    const hint = $('#modelHint');
-    if (!hint) return;
-    if (!value) {
-      hint.style.display = 'block';
-      hint.innerHTML = '<b>Auto will use:</b> <span style="color: var(--ok)">Gemini Flash-Lite (latest)</span> for planning & analysis (fastest, verified on new keys) + <span style="color: var(--acc)">Gemini 2.5 Flash</span> for research & synthesis (10 RPM) — two live quota buckets instead of one. If a picked model 404s on your key, the run falls back to Flash automatically with a warning.';
-    } else {
-      hint.style.display = 'none';
-    }
-  }
-  $('#modelSelect').addEventListener('change', () => {
-    const v = $('#modelSelect').value;
-    localStorage.setItem('gemini_model', v);
-    $('#modelInput').value = v;
-    updateModelHint(v);
-  });
-  $('#modelInput').addEventListener('change', () => {
-    const v = $('#modelInput').value;
-    localStorage.setItem('gemini_model', v);
-    $('#modelSelect').value = v;
-    updateModelHint(v);
-  });
+      ? `This server has its own key${hasFallback ? ' (plus a fallback)' : ''}. Keys you add here are used instead, for this browser only.`
+      : 'Research runs on your own Gemini key. It stays in this browser and is sent only with your runs — never stored on the server.';
+  $('#setupText').textContent = staticMode
+    ? 'It\'s free from Google AI Studio. The key stays in this browser — research runs right here.'
+    : 'It\'s free from Google AI Studio and stays in this browser.';
+  const updateComposer = () => {
+    const [name, blurb] = MODE_BLURB[val('mode')] || ['', ''];
+    $('#costNote').innerHTML = name ? `<b>${escapeHtml(name)}</b> — ${escapeHtml(blurb)}` : '';
+    $('#modeHint').textContent = recommendMode($('#q').value);
+    $('#qCount').textContent = `${$('#q').value.length} / 5000`;
+    const n = [$('#hyp').value.trim(), $('#docu').checked, $('#fresh').checked].filter(Boolean).length;
+    $('#optCount').textContent = String(n);
+    $('#optCount').classList.toggle('hidden', !n);
+  };
+  $$('input[name=mode]').forEach((r) => r.addEventListener('change', updateComposer));
+  ['#hyp', '#docu', '#fresh'].forEach((s) => $(s).addEventListener('input', updateComposer));
+  ['#docu', '#fresh'].forEach((s) => $(s).addEventListener('change', updateComposer));
+  $('#q').addEventListener('input', () => { updateComposer(); autoGrow(); });
+  updateComposer();
+  updateKeyStatus();
+  syncThemeButton();
+  $('#modelInput').addEventListener('change', () => updateModelHint($('#modelInput').value));
   updateModelHint(getStoredModel());
+  renderRuns();
+  refreshServerRuns();
+  // Deep links (#run=<id>) survive reloads.
+  const m = location.hash.match(/^#run=([\w-]+)$/);
+  if (m) openRun(m[1], !!getHistory().find((h) => h.id === m[1] && h.direct));
+  else $('#q').focus({ preventScroll: true });
 }
 
-function renderKeyList() {
-  const keys = getStoredKeys();
-  const container = $('#keyList');
-  if (!container) return;
-  container.innerHTML = keys.map((k, i) => `
-    <div class="key-item">
-      <input type="password" value="${k}" data-idx="${i}" placeholder="AIza…" autocomplete="off">
-      <button type="button" class="btn ghost small" data-remove="${i}" aria-label="Remove key">×</button>
-    </div>
-  `).join('') || '<p class="hint">No keys added yet. Add at least one Gemini API key.</p>';
-  container.querySelectorAll('[data-remove]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt(btn.dataset.remove);
-      const arr = getStoredKeys();
-      arr.splice(idx, 1);
-      localStorage.setItem('gemini_keys', JSON.stringify(arr));
-      if (arr.length === 0) localStorage.removeItem('gemini_key');
-      else localStorage.setItem('gemini_key', arr[0]);
-      renderKeyList();
-      $('#keyCount').textContent = arr.length ? String(arr.length) : '0';
-      $('#keyCount').classList.toggle('hidden', arr.length === 0);
-    });
-  });
-  container.querySelectorAll('input[data-idx]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      const idx = parseInt(inp.dataset.idx);
-      const arr = getStoredKeys();
-      arr[idx] = inp.value.trim();
-      localStorage.setItem('gemini_keys', JSON.stringify(arr.filter(Boolean)));
-      localStorage.setItem('gemini_key', arr[0] || '');
-    });
-  });
+function autoGrow() {
+  const q = $('#q');
+  q.style.height = 'auto';
+  q.style.height = Math.min(q.scrollHeight, 320) + 'px';
 }
 
-function val(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
+function updateModelHint(value) {
+  const hint = $('#modelHint');
+  hint.classList.toggle('hidden', !!value);
+  if (!value) hint.textContent = 'Auto uses Flash-Lite for planning and analysis and Gemini 2.5 Flash for search and writing — two separate quota buckets. If a picked model is unavailable on your key, the run falls back to Flash and says so.';
+}
+
+function val(name) {
+  if (name === 'stance') return $('#stance').value || 'neutral';
+  return document.querySelector(`input[name=${name}]:checked`)?.value || '';
+}
 
 let running = false;
+let runningQuestion = '';
 let currentAbort = null;
-$('#start').addEventListener('click', () => {
-  if (running) return; // one run at a time — parallel runs would burn quota
+$('#askForm').addEventListener('submit', (e) => { e.preventDefault(); startFromForm(); });
+$('#q').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startFromForm(); }
+});
+function startFromForm() {
+  if (running) { showNotice('A research run is already in progress.', ''); return; }
   const question = $('#q').value.trim();
-  if (question.length < 3) return alert('Enter a research question.');
+  if (question.length < 3) {
+    showNotice('Type a research question first (at least 3 characters).', 'error');
+    $('#q').focus();
+    return;
+  }
+  if (needsKey()) {
+    showNotice('Connect a Gemini API key to start — it stays in this browser.', 'error');
+    openKeyDialog();
+    return;
+  }
+  $('#optionsMenu').open = false;
   running = true;
+  runningQuestion = question;
   $('#start').disabled = true;
   run({ question, mode: val('mode'), stance: val('stance'), hypothesis: $('#hyp').value.trim(), documentary: $('#docu').checked, fresh: $('#fresh').checked, model: getStoredModel() || undefined });
+}
+$('#newBtn').addEventListener('click', () => {
+  if (running) { showView('progress'); showNotice('A run is in progress — cancel it to start a new one.', ''); return; }
+  goHome();
+  $('#q').focus();
 });
+$('#setupBtn').addEventListener('click', () => openKeyDialog());
 
 function showNotice(msg, kind = '') {
   const n = $('#notice');
-  n.textContent = msg;
+  $('#noticeText').textContent = msg;
   n.className = 'notice' + (kind ? ' ' + kind : '');
-  n.classList.remove('hidden');
+  n.setAttribute('role', kind === 'error' ? 'alert' : 'status');
 }
+function hideNotice() { $('#notice').classList.add('hidden'); }
+$('#noticeClose').addEventListener('click', hideNotice);
 
-// Home navigation: progress/result/history → ask view, controls reset,
-// question text preserved. The single safe landing for cancel + errors.
+// Home: the single safe landing for new research, cancel and errors.
+// Question text is preserved so a retry is one click.
 function goHome(notice, kind = '') {
   running = false;
+  runningQuestion = '';
   currentAbort = null;
   $('#start').disabled = false;
-  $('#skeleton').classList.add('hidden');
-  $('#progressFill').style.width = '0%';
+  setBar(0);
   $('#progressView').setAttribute('aria-busy', 'false');
-  $('#progressView').classList.add('hidden');
-  $('#resultView').classList.add('hidden');
-  $('#historyView').classList.add('hidden');
-  $('#askView').classList.remove('hidden');
+  showView('ask');
   if (notice) showNotice(notice, kind);
-  else $('#notice').classList.add('hidden');
+  else hideNotice();
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  renderRuns();
+}
+
+function setBar(pct) {
+  $('#progressFill').style.width = pct + '%';
+  $('.progress-bar').setAttribute('aria-valuenow', String(Math.round(pct)));
 }
 
 // Pipeline phases in order, with the display title and bar anchor each maps to.
 // The bar only ever reflects reached milestones — never guesses ahead.
 const PHASES = {
-  plan: ['Planning research…', 8],
-  search: ['Searching the web…', 28],
-  read: ['Reading sources…', 48],
-  analyze: ['Analyzing evidence…', 66],
-  provenance: ['Checking independence…', 78],
-  synthesize: ['Writing report…', 90],
-  verify: ['Verifying citations…', 96],
+  plan: ['Planning', 8],
+  search: ['Searching', 28],
+  read: ['Reading sources', 48],
+  analyze: ['Analyzing evidence', 66],
+  provenance: ['Checking independence', 78],
+  synthesize: ['Writing the report', 90],
+  verify: ['Verifying citations', 96],
   done: ['Complete', 100],
 };
+const PHASE_ORDER = Object.keys(PHASES);
 
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 function fmtNum(n) {
   n = n || 0;
@@ -227,48 +310,79 @@ function fmtNum(n) {
 }
 
 function run(body) {
-  $('#askView').classList.add('hidden');
-  $('#resultView').classList.add('hidden');
-  $('#progressView').classList.remove('hidden');
-  $('#progressTitle').textContent = 'Researching…';
-  $('#progressFill').style.width = '8%';
-  $('#steps').innerHTML = '';
-  $('#liveStats').textContent = '';
-  $('#skeleton').classList.remove('hidden');
+  hideNotice();
+  selectedSource = null;
+  showView('progress');
+  $('#progressQuestion').textContent = body.question;
+  setBar(3);
+  $('#progressView').setAttribute('aria-busy', 'true');
+  $('#waitNote').classList.add('hidden');
+  $('#tipNote').classList.remove('hidden');
+  $$('#stages > li').forEach((li) => {
+    li.className = '';
+    li.dataset.state = '';
+    li.querySelector('.st-meta').textContent = '';
+    li.querySelector('.st-events').innerHTML = '';
+    li.querySelector('.st-head').setAttribute('aria-expanded', 'false');
+  });
+  renderRuns();
   const t0 = Date.now();
-  const live = { stats: null, sources: 0, claims: 0, phase: 'plan', bar: 8, stepped: false };
+  const live = { stats: null, sources: 0, claims: 0, phase: 'plan', bar: 3, gotResult: false, gotError: false };
+  const modeLabel = MODE_LABEL[body.mode] || '';
   const renderLive = () => {
     const s = live.stats || {};
-    const parts = [`${fmtElapsed(Date.now() - t0)} elapsed`];
-    if (s.searchCalls) parts.push(`${s.searchCalls} searches`);
-    if (live.sources) parts.push(`${live.sources} sources`);
-    if (live.claims) parts.push(`${live.claims} claims`);
-    if (s.modelCalls) parts.push(`${s.modelCalls} model calls`);
-    if ((s.tokensIn || 0) + (s.tokensOut || 0)) parts.push(`${fmtNum((s.tokensIn || 0) + (s.tokensOut || 0))} tokens`);
-    $('#liveStats').textContent = parts.join(' · ');
+    $('#progressEyebrow').innerHTML = `Researching · ${escapeHtml(modeLabel)} · <span class="mono">${fmtElapsed(Date.now() - t0)}</span>`;
+    const cells = [['sources', live.sources], ['claims', live.claims], ['searches', s.searchCalls || 0], ['model calls', s.modelCalls || 0]];
+    const tok = (s.tokensIn || 0) + (s.tokensOut || 0);
+    if (tok) cells.push(['tokens', fmtNum(tok)]);
+    $('#liveStats').innerHTML = cells.map(([k, v]) => `<div><b>${escapeHtml(v)}</b><span>${escapeHtml(k)}</span></div>`).join('');
+  };
+  const stageMeta = (phase) => {
+    const s = live.stats || {};
+    if (phase === 'search') return `${s.searchCalls || 0} searches · ${live.sources} sources`;
+    if (phase === 'read') return s.fetches ? `${s.fetches} pages fetched` : '';
+    if (phase === 'analyze') return live.claims ? `${live.claims} claims` : '';
+    return '';
   };
   const setPhase = (phase) => {
     if (!phase || !PHASES[phase]) return;
+    const prev = live.phase;
     live.phase = phase;
-    $('#progressTitle').textContent = PHASES[phase][0];
     live.bar = Math.max(live.bar, PHASES[phase][1]);
-    $('#progressFill').style.width = live.bar + '%';
+    setBar(live.bar);
+    const idx = PHASE_ORDER.indexOf(phase);
+    $$('#stages > li').forEach((li) => {
+      const i = PHASE_ORDER.indexOf(li.dataset.phase);
+      const state = i < idx || phase === 'done' ? 'done' : i === idx ? 'active' : '';
+      if (li.dataset.state !== state) {
+        li.dataset.state = state;
+        li.className = state;
+        li.querySelector('.st-head').setAttribute('aria-expanded', String(state === 'active'));
+      }
+      if (state === 'done') { const m = stageMeta(li.dataset.phase); if (m) li.querySelector('.st-meta').textContent = m; }
+    });
+    if (prev !== phase) announce(PHASES[phase][0]);
   };
+  setPhase('plan');
+  renderLive();
   const timer = setInterval(renderLive, 1000);
   const step = (cls, text) => {
-    if (!live.stepped) { live.stepped = true; $('#skeleton').classList.add('hidden'); }
-    const d = document.createElement('div');
-    d.className = 'step';
-    d.innerHTML = `<span class="${cls}">${cls === 'ok' ? '✓' : cls === 'warn' ? '!' : '→'}</span> ${escapeHtml(text)}`;
-    const steps = $('#steps');
-    steps.appendChild(d);
-    steps.scrollTop = steps.scrollHeight;
+    const li = $(`#stages > li[data-phase="${live.phase === 'done' ? 'verify' : live.phase}"]`) || $('#stages > li');
+    const list = li.querySelector('.st-events');
+    const d = document.createElement('li');
+    d.className = 'ev ' + (cls || 'info');
+    d.textContent = text;
+    list.appendChild(d);
+    // Keep each stage's log bounded so long runs stay responsive.
+    while (list.childElementCount > 60) list.firstElementChild.remove();
     return d;
   };
   // Hooks shared with handleEvent so both SSE and static runs update one UI.
   const hooks = {
-    onTerminal: () => finish(),
     onPhase: setPhase,
+    onResult: () => { live.gotResult = true; },
+    onError: () => { live.gotError = true; },
+    onWait: () => { $('#waitNote').classList.remove('hidden'); $('#tipNote').classList.add('hidden'); },
     onStats: (stats, extra = {}) => {
       if (stats) live.stats = stats;
       if (extra.sources != null) live.sources = extra.sources;
@@ -281,15 +395,13 @@ function run(body) {
   const finish = () => {
     clearInterval(timer);
     running = false;
-    if (currentAbort) { currentAbort = null; }
+    runningQuestion = '';
+    currentAbort = null;
     $('#start').disabled = false;
-    $('#skeleton').classList.add('hidden');
-    $('#progressFill').style.width = '100%';
-    setTimeout(() => $('#progressFill').style.width = '0%', 400);
     $('#progressView').setAttribute('aria-busy', 'false');
   };
-  // Cancel handler — aborting the fetch triggers server-side cancellation
-  // via the isCancelled refcount (no extra endpoint needed), then home.
+  // Cancel — aborting the fetch triggers server-side cancellation via the
+  // isCancelled refcount (no extra endpoint needed), then home.
   const abort = new AbortController();
   currentAbort = abort;
   const asleep = (ms) => new Promise((res, rej) => {
@@ -300,150 +412,142 @@ function run(body) {
   $('#cancelBtn').onclick = () => {
     if (abort.signal.aborted) return;
     abort.abort();
-    step('warn', 'Cancelled by user — stopping…');
-    goHome('Research cancelled — your question is kept above, ready to retry.');
+    finish();
+    goHome('Research cancelled — your question is kept, ready to retry.');
   };
   if (staticMode) {
-    const key = keys[0] || '';
-    runDirectFlow(body, key, step, finish, abort.signal, keys, model, hooks);
+    runDirectFlow(body, step, finish, abort.signal, keys, model, hooks);
     return;
   }
-  // Build headers with multi-key and model support
   const headers = { 'Content-Type': 'application/json' };
   if (keys.length === 1) headers['x-gemini-key'] = keys[0];
   else if (keys.length > 1) headers['x-gemini-keys'] = JSON.stringify(keys);
   if (model) headers['x-gemini-model'] = model;
 
-  // Dynamic retry with exponential backoff for rate limits
   let attempts = 0;
   const maxAttempts = 3;
   const doFetch = async () => {
     attempts++;
+    let streamed = false;
     try {
-      const res = await fetch('/api/research', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: abort.signal,
-      });
-      // Handle 429 — wait silently and retry. User explicitly said "brief pausing"
-      // steps are noisy and should not be shown (plus the 30s wait was hardcoded).
-      // We honor Retry-After when present, otherwise use small jitter (6-10s)
-      // based on 10 RPM free tier, not 15s*attempt (which gave 30s on attempt 2).
+      const res = await fetch('/api/research', { method: 'POST', headers, body: JSON.stringify(body), signal: abort.signal });
+      // 429 from our own server (per-IP limiter or busy upstream): honor
+      // Retry-After (header or JSON body), else a short jittered wait.
       if (res.status === 429 && attempts < maxAttempts) {
-        const retryAfter = parseInt(res.headers.get('Retry-After') || res.headers.get('retry-after') || '0');
-        const waitMs = retryAfter ? retryAfter * 1000 : (8000 + Math.floor(Math.random() * 4000));
+        const e = await res.json().catch(() => ({}));
+        const retryAfter = parseInt(res.headers.get('Retry-After') || '', 10) || Number(e.retryAfter) || 0;
+        const waitMs = retryAfter ? Math.min(retryAfter, 120) * 1000 : (8000 + Math.floor(Math.random() * 4000));
+        step('warn', `Server is rate-limiting — retrying in ${Math.ceil(waitMs / 1000)}s`);
         await asleep(waitMs);
         return doFetch();
       }
-      if (!res.ok && res.headers.get('content-type')?.includes('json')) {
-        const e = await res.json();
-        if (res.status === 429 && e.retryAfter && attempts < maxAttempts) {
-          const waitMs = e.retryAfter * 1000;
-          await asleep(waitMs);
-          return doFetch();
-        }
-        step('warn', 'Error: ' + (e.error || res.status));
-        goHome('Error: ' + (e.error || res.status), 'error');
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        const msg = e.error || `server returned status ${res.status}`;
+        step('warn', 'Error: ' + msg);
         finish();
+        goHome('Error: ' + msg, 'error');
+        if (res.status === 401) openKeyDialog();
         return;
       }
-      if (!res.ok || !res.body) {
-        step('warn', 'Error: server returned status ' + res.status);
-        goHome('Error: server returned status ' + res.status + '. Check the server logs and try again.', 'error');
-        finish();
-        return;
-      }
+      if (!res.body) throw new Error('empty response stream');
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        streamed = true;
         buf += dec.decode(value, { stream: true });
         const parts = buf.split('\n\n');
         buf = parts.pop();
         for (const p of parts) {
-          const line = p.split('\n').find((l) => l.startsWith('data:'));
-          if (!line) continue;
-          try { handleEvent(JSON.parse(line.slice(5)), step, hooks); }
-          catch { /* keep-alive */ }
+          const data = p.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+          if (!data) continue; // heartbeat comment
+          let ev;
+          try { ev = JSON.parse(data); } catch { continue; }
+          handleEvent(ev, step, hooks);
         }
       }
       finish();
-    } catch (e) {
-      if (e.name === 'AbortError') {
-        // Cancel button already navigated home; nothing left to do.
-        finish();
-      } else {
-        step('warn', 'Network error: ' + e.message);
-        // Retry on network error with backoff
-        if (attempts < maxAttempts && !abort.signal.aborted) {
-          const waitMs = Math.min(10000, 1000 * Math.pow(2, attempts));
-          step('warn', `Retrying in ${Math.ceil(waitMs/1000)}s…`);
-          try { await asleep(waitMs); }
-          catch (ae) { if (ae.name === 'AbortError') { finish(); return; } }
-          if (abort.signal.aborted) { finish(); return; }
-          return doFetch();
-        }
-        goHome('Network error: ' + e.message + '. Check your connection and the server, then retry — your question is kept.', 'error');
-        finish();
+      // Stream closed with neither a result nor an error (server restart,
+      // proxy timeout): never strand the user on a frozen progress view.
+      if (!live.gotResult && !live.gotError) {
+        goHome('The connection closed before the research finished. Your question is kept — try again (a finished run is served from cache).', 'error');
       }
+    } catch (e) {
+      if (e.name === 'AbortError' || abort.signal.aborted) { finish(); return; }
+      step('warn', 'Network error: ' + e.message);
+      // Retry only if nothing streamed yet: a mid-stream retry would silently
+      // start a whole new research run and double the quota spend.
+      if (!streamed && attempts < maxAttempts) {
+        const waitMs = Math.min(10000, 1000 * Math.pow(2, attempts));
+        step('info', `Retrying in ${Math.ceil(waitMs / 1000)}s…`);
+        try { await asleep(waitMs); } catch { finish(); return; }
+        return doFetch();
+      }
+      finish();
+      goHome('Network error: ' + e.message + '. Check your connection, then retry — your question is kept.', 'error');
     }
   };
   doFetch();
 }
 
+// Stage headers toggle their log (the active stage starts open).
+$('#stages').addEventListener('click', (e) => {
+  const head = e.target.closest('.st-head');
+  if (!head) return;
+  const li = head.closest('li');
+  if (li.classList.contains('active')) li.classList.toggle('collapsed');
+  else li.classList.toggle('open');
+  const expanded = li.classList.contains('active') ? !li.classList.contains('collapsed') : li.classList.contains('open');
+  head.setAttribute('aria-expanded', String(expanded));
+});
+
 // Static-mode run: same engine, executed in-page via frontend/direct.js.
-async function runDirectFlow(body, key, step, finish, signal, allKeys = [], model = '', hooks = {}) {
-  const keys = allKeys.length ? allKeys : (key ? [key] : []);
+async function runDirectFlow(body, step, finish, signal, keys = [], model = '', hooks = {}) {
   if (!keys.length) {
-    const msg = 'Static mode needs a Gemini API key — click "API key" above to enter one (stored in this browser only).';
+    const msg = 'Connect a Gemini API key to run research (it stays in this browser).';
     step('warn', msg);
-    goHome(msg, 'error');
     finish();
-    if (!$('#keyDialog').open) $('#keyDialog').showModal();
+    goHome(msg, 'error');
+    openKeyDialog();
     return;
   }
-  if (signal?.aborted) { goHome(); finish(); return; }
+  if (signal?.aborted) { finish(); goHome(); return; }
   try {
     const { runDirect, saveLocalResult } = await import(`./direct.js${staticSuffix()}`);
-    step('run', `Static mode: running with ${keys.length} key(s)${model ? ` · model ${model}` : ''}…`);
-    // Pass all keys and model for rotation — handles any topic dynamically
+    step('info', `Running in your browser with ${keys.length} key${keys.length > 1 ? 's' : ''}${model ? ` · ${model}` : ''}`);
     const result = await runDirect({ ...body, model: model || body.model }, { key: keys, emit: (ev) => handleEvent(ev, step, hooks), signal });
-    if (signal?.aborted) { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
-    saveLocalResult(result);
+    if (signal?.aborted) return; // cancel already navigated home
+    finish();
+    const saved = saveLocalResult(result);
     showResult(result);
+    if (!saved) showNotice('This report is too large to keep in browser storage — export it to keep a copy.', '');
   } catch (e) {
-    if (signal?.aborted || e.name === 'AbortError') { goHome('Research cancelled — your question is kept above, ready to retry.'); finish(); return; }
+    finish();
+    if (signal?.aborted || e.name === 'AbortError' || e.code === 'CANCELLED') return;
     const raw = e.message || 'research failed';
-    // Distinguish daily quota vs per-minute vs no evidence. Be blunt about
-    // same-project keys: rotation across keys that share one project quota
-    // changes nothing, and "wait a minute" is wrong advice for daily limits.
+    // Distinguish daily quota vs per-minute vs bad key vs no evidence. Same-
+    // project keys share one quota, and "wait a minute" is wrong for daily caps.
     let msg = raw;
-    if (/RPD|daily quota/i.test(raw)) msg = 'Daily Gemini quota exhausted (resets at midnight Pacific). Add a key from a different project or a billed project for higher limits, or try Quick mode which uses fewer calls.';
-    else if (/quota|rate|429/i.test(raw)) msg = `All ${keys.length} saved key(s) are rate-limited. Keys from the SAME Google Cloud project share ONE quota — extra keys only help when each comes from a different project (AI Studio → separate projects). Per-minute limits reset in ~1 min; daily limits reset at midnight PT. Quick mode uses ~5 Gemini calls vs Standard ~21.`;
-    else if (/Insufficient evidence/i.test(raw)) msg = raw + ' (Try Quick mode, rephrase, or check that free academic sources are reachable — some networks block them.)';
+    if (/RPD|daily quota|billing/i.test(raw)) msg = 'Daily Gemini quota exhausted (resets at midnight Pacific). Add a key from a different project or a billed project, or try Quick mode.';
+    else if (/quota|rate|429/i.test(raw)) msg = `All ${keys.length} saved key(s) are rate-limited. Keys from one Google Cloud project share a single quota — extra keys only help from different projects. Per-minute limits reset in ~1 min.`;
+    else if (/API key|key not valid|401|403/i.test(raw)) msg = 'Gemini rejected the API key. Check it and try again.';
+    else if (/Insufficient evidence/i.test(raw)) msg = raw + ' Try Quick mode or rephrase — some networks block the free academic sources.';
     step('warn', 'Error: ' + msg);
     goHome('Error: ' + msg, 'error');
-  } finally {
-    finish();
   }
 }
 
 function handleEvent(ev, step, hooks = {}) {
+  if (!ev || typeof ev !== 'object') return;
   if (ev.type === 'error') {
-    // Quota errors are handled gracefully — show as waiting progress, not error.
-    // The backend will still produce partial results via fallback.
-    if (/quota|rate limit|429/i.test(ev.message)) {
-      step('run', ev.message + ' — waiting and will continue automatically…');
-      return;
-    }
-    step('warn', 'Error: ' + ev.message);
+    hooks.onError?.();
+    step('warn', 'Error: ' + (ev.message || 'research failed'));
     // Terminal: the server ends the stream right after. Land home with the
-    // message instead of stranding the user on the progress view.
-    // (If a result already rendered, leave it alone.)
-    if ($('#resultView').classList.contains('hidden')) goHome('Error: ' + ev.message, 'error');
+    // message instead of stranding the user (unless a result already shows).
+    if ($('#resultView').classList.contains('hidden')) goHome('Error: ' + (ev.message || 'research failed'), 'error');
     return;
   }
   if (ev.phase) hooks.onPhase?.(ev.phase);
@@ -453,25 +557,109 @@ function handleEvent(ev, step, hooks = {}) {
       ...(ev.type === 'claims' && ev.count != null ? { claims: ev.count } : {}),
     });
   }
-  if (ev.type === 'result') return showResult(ev.result);
+  if (ev.type === 'result') {
+    hooks.onResult?.();
+    return showResult(ev.result);
+  }
   if (ev.type === 'plan') {
-    step('ok', 'Research plan created');
-    step('', `Domain: ${ev.plan.domain} · Complexity: ${ev.plan.complexity}`);
+    step('ok', ev.plan ? `Plan ready — ${ev.plan.domain}, ${ev.plan.complexity} complexity` : 'Plan ready');
     return;
   }
+  if (/waiting for api quota|quota is hot/i.test(ev.message || '')) hooks.onWait?.();
   if (ev.type === 'sources' || ev.type === 'claims') return step('ok', ev.message);
-  step(ev.type === 'warning' ? 'warn' : ev.type === 'done' ? 'ok' : 'run', ev.message || ev.type);
+  step(ev.type === 'warning' ? 'warn' : ev.type === 'done' ? 'ok' : 'info', ev.message || ev.type);
 }
 
-// ---------- dashboard ----------
-function activateTab(btn) {
+// ---------- runs sidebar ----------
+async function refreshServerRuns() {
+  if (staticMode) return;
+  try {
+    const res = await fetch('/api/history');
+    if (res.ok) serverRuns = (await res.json()).items || [];
+  } catch { /* server unreachable */ }
+  renderRuns();
+}
+function relTime(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  if (m < 60 * 24) return `${Math.round(m / 60)} h ago`;
+  if (m < 60 * 48) return 'yesterday';
+  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+function renderRuns() {
+  const byId = new Map();
+  for (const h of serverRuns) byId.set(h.id, { id: h.id, question: h.question, mode: h.mode, at: h.createdAt, where: 'server' });
+  for (const h of getHistory()) if (!byId.has(h.id)) byId.set(h.id, { id: h.id, question: h.question, mode: h.mode, at: h.at, where: h.direct ? 'local' : 'gone' });
+  const items = [...byId.values()].sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 60);
+  const activeId = !$('#resultView').classList.contains('hidden') ? current?.id : null;
+  let html = '';
+  if (running && runningQuestion) {
+    html += `<li class="run-row"><button type="button" class="run active running" data-running="1"><span class="run-q">${escapeHtml(runningQuestion)}</span><span class="run-meta">Researching…</span></button></li>`;
+  }
+  html += items.map((h) => `<li class="run-row">
+      <button type="button" class="run${h.id === activeId ? ' active' : ''}" data-open="${escapeAttr(h.id)}" data-where="${h.where}"${h.where === 'gone' ? ' disabled title="This run was not stored"' : ''}${h.id === activeId ? ' aria-current="page"' : ''}>
+        <span class="run-q">${escapeHtml(h.question || 'Untitled')}</span>
+        <span class="run-meta">${escapeHtml(MODE_LABEL[h.mode] || h.mode || '')}${h.at ? ` · ${escapeHtml(relTime(h.at))}` : ''}</span>
+      </button>
+      <button type="button" class="run-del icon-btn small" data-del="${escapeAttr(h.id)}" data-where="${h.where}" aria-label="Delete “${escapeAttr((h.question || 'run').slice(0, 60))}”">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/></svg>
+      </button></li>`).join('');
+  $('#runList').innerHTML = html || '<li class="runs-empty">Your reports will appear here.</li>';
+}
+$('#runList').addEventListener('click', async (e) => {
+  if (e.target.closest('[data-running]')) { showView('progress'); return; }
+  const open = e.target.closest('[data-open]');
+  if (open && !open.disabled) { openRun(open.dataset.open, open.dataset.where === 'local'); return; }
+  const del = e.target.closest('[data-del]');
+  if (!del) return;
+  const id = del.dataset.del;
+  if (!confirm('Delete this report? This cannot be undone.')) return;
+  if (del.dataset.where === 'server') {
+    try { await fetch('/api/history/' + encodeURIComponent(id), { method: 'DELETE' }); } catch { /* ignore */ }
+    serverRuns = serverRuns.filter((h) => h.id !== id);
+  }
+  lsSet('er_history', JSON.stringify(getHistory().filter((h) => h.id !== id)));
+  try { const { removeLocalResult } = await import(`./direct.js${staticSuffix()}`); removeLocalResult(id); } catch { /* ignore */ }
+  if (current?.id === id && !$('#resultView').classList.contains('hidden')) { current = null; goHome(); }
+  renderRuns();
+});
+
+async function openRun(id, local) {
+  if (running) { showView('progress'); showNotice('A run is in progress — cancel it to open another report.', ''); return; }
+  try {
+    let r = null;
+    if (local || staticMode) {
+      const { loadLocalResult } = await import(`./direct.js${staticSuffix()}`);
+      r = loadLocalResult(id);
+    }
+    if (!r && !staticMode) {
+      const res = await fetch('/api/history/' + encodeURIComponent(id));
+      r = res.ok ? await res.json() : null;
+    }
+    if (!r || !r.id || !r.task) {
+      showNotice(local ? 'That report is no longer in this browser (storage may have been cleared).' : 'Could not open that report — it may have been deleted.', 'error');
+      return;
+    }
+    showResult(r, { record: false });
+  } catch (e) {
+    showNotice('Could not open that report: ' + (e.message || 'network error'), 'error');
+  }
+}
+
+// ---------- result workspace ----------
+function activateTab(btn, focus = true) {
   $$('.tabs button').forEach((x) => { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); x.tabIndex = -1; });
-  btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); btn.tabIndex = 0; btn.focus();
+  btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); btn.tabIndex = 0;
+  if (focus) btn.focus();
+  $('#tabBody').setAttribute('aria-labelledby', btn.id);
   renderTab(btn.dataset.tab);
 }
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => activateTab(b)));
 // Keyboard: ArrowLeft/Right, Home/End cycle through tabs
-document.querySelector('.tabs').addEventListener('keydown', (e) => {
+$('.tabs').addEventListener('keydown', (e) => {
   const tabs = $$('.tabs button');
   const cur = tabs.indexOf(document.activeElement);
   if (cur === -1) return;
@@ -485,306 +673,533 @@ document.querySelector('.tabs').addEventListener('keydown', (e) => {
   activateTab(tabs[next]);
 });
 
-function showResult(r) {
-  current = r;
-  try {
-    const hist = JSON.parse(localStorage.getItem('er_history') || '[]');
-    hist.unshift({ id: r.id, question: r.task.question, mode: r.task.mode, at: r.completedAt, ...(staticMode ? { direct: true } : {}) });
-    localStorage.setItem('er_history', JSON.stringify(hist.slice(0, 100)));
-  } catch { /* private mode */ }
-  $('#progressView').classList.add('hidden');
-  $('#resultView').classList.remove('hidden');
-  // Fallback inventory banner: synthesis used evidence inventory due to quota.
-  // NOTE: do NOT call step() here — showResult is also driven by SSE
-  // handleEvent where step is not in scope; step-in-showResult crashed Pages
-  // with "step is not defined" and left the user on a blank home view.
-  if (r.report?.synthesisFallback) {
-    showNotice('Model quota was hit — this report is an evidence inventory from gathered sources. Add more API keys (different projects) or try Quick mode for faster results.', '');
-  } else {
-    $('#notice').classList.add('hidden');
-  }
-  renderTab('overview');
+function normalizeResult(r) {
+  r.task = r.task || {};
+  r.stats = r.stats || {};
+  r.report = r.report || {};
+  r.sources = Array.isArray(r.sources) ? r.sources : [];
+  r.claims = Array.isArray(r.claims) ? r.claims : [];
+  r.contradictions = Array.isArray(r.contradictions) ? r.contradictions : [];
+  for (const s of r.sources) if (!Array.isArray(s.passages)) s.passages = [];
+  return r;
 }
 
-function srcById(id) { return (current.sources || []).find((s) => s.id === id); }
+function showResult(r, opts) {
+  const record = opts?.record !== false;
+  if (!r || !r.task) { showNotice('The run finished but returned no readable result.', 'error'); return; }
+  current = normalizeResult(r);
+  selectedSource = null;
+  if (record) recordHistory(current);
+  showView('result');
+  // Fallback inventory: synthesis used the evidence inventory due to quota.
+  // NOTE: never call step() here — showResult is also driven by SSE
+  // handleEvent where step is not in scope (that crashed Pages once).
+  if (current.report.synthesisFallback) {
+    showNotice('Model quota ran out before the write-up — this report is an evidence inventory built from the gathered sources. Add keys from other projects or try Quick mode for a full write-up.', '');
+  } else {
+    hideNotice();
+  }
+  renderResultHeader();
+  activateTab($('#tab-report'), false);
+  announce('Report ready');
+  if (current.id) history.replaceState(null, '', `#run=${encodeURIComponent(current.id)}`);
+  renderRuns();
+  if (!staticMode) refreshServerRuns();
+}
+
+const isPrimary = (s) => s.proximity === 'primary' || s.tier === 1;
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
+function renderResultHeader() {
+  const r = current;
+  if (!r) return;
+  $('#resultEyebrow').textContent = ['Report', MODE_LABEL[r.task.mode] || r.task.mode, r.task.stance && r.task.stance !== 'neutral' ? `${r.task.stance} stance` : '', r.completedAt ? fmtDate(r.completedAt) : '']
+    .filter(Boolean).join(' · ') + (r.report.synthesisFallback ? ' · evidence inventory' : '');
+  $('#resultQuestion').textContent = r.task.question || 'Untitled research';
+  const inspected = r.sources.filter((s) => s.verified).length;
+  $('#resultMeta').textContent = [`${r.sources.length} sources`, inspected ? `${inspected} read in full` : '', `${r.claims.length} claims`, `${r.contradictions.length} contradiction${r.contradictions.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+  const counts = { evidence: r.claims.length, sources: r.sources.length };
+  for (const [tab, n] of Object.entries(counts)) {
+    const b = $(`#tab-${tab}`);
+    const label = b.dataset.label || (b.dataset.label = b.textContent);
+    b.innerHTML = `${escapeHtml(label)}<span class="tab-count">${n}</span>`;
+  }
+}
+
+function srcIndex() {
+  const m = new Map();
+  (current?.sources || []).forEach((s, i) => m.set(s.id, i + 1));
+  return m;
+}
+function srcById(id) { return (current?.sources || []).find((s) => s.id === id); }
 // Only http(s) links are clickable: model- or API-supplied URLs must never
 // become javascript:/data: hrefs (defense in depth — server already filters).
 function safeUrl(u) { return /^https?:\/\//i.test(String(u || '')) ? u : '#'; }
-function srcLink(id) {
-  const s = srcById(id);
-  return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.domain || s.url)}</a>` : '<i>unknown source</i>';
+function extLink(url, text, cls = '') {
+  const safe = safeUrl(url);
+  if (safe === '#') return `<span class="${cls}">${escapeHtml(text)}</span>`;
+  return `<a class="${cls}" href="${escapeAttr(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
 }
-
-/** Section list that hides itself when empty (bare headers look broken). */
-function secList(title, items) {
+function chips(ids = []) {
+  const idx = srcIndex();
+  return [...new Set(ids || [])].filter((id) => idx.has(id)).map((id) => {
+    const s = srcById(id);
+    return `<button type="button" class="cite${selectedSource === id ? ' on' : ''}" data-src="${escapeAttr(id)}" aria-label="Source ${idx.get(id)}: ${escapeAttr((s.title || s.domain || '').slice(0, 80))}">${idx.get(id)}</button>`;
+  }).join('');
+}
+/** Model prose → paragraphs (blank lines split, single newlines kept). */
+function paras(text) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  return t.split(/\n{2,}/).map((p) => `<p>${escapeHtml(p).replace(/\n/g, '<br>')}</p>`).join('');
+}
+function list(items) {
   if (!items || !items.length) return '';
-  return `<h3>${title}</h3><ul>${items.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+  return `<ul>${items.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
 }
+function section(title, inner, cls = '') {
+  return inner ? `<section class="block ${cls}"><h2 class="block-h">${escapeHtml(title)}</h2>${inner}</section>` : '';
+}
+const STATE_ORDER = ['strongly-supported', 'supported', 'plausible', 'disputed', 'weakly-supported', 'unsupported', 'contradicted', 'unknown'];
+const STATE_LABEL = { 'strongly-supported': 'Strongly supported', supported: 'Supported', plausible: 'Plausible', disputed: 'Disputed', 'weakly-supported': 'Weakly supported', unsupported: 'Unsupported', contradicted: 'Contradicted', unknown: 'Unclear' };
+function stateClass(st) {
+  const s = String(st || '');
+  return s === 'strongly-supported' ? 's-strong' : s === 'supported' ? 's-good' : s === 'plausible' ? 's-mid' : s === 'disputed' ? 's-warn' : /contradicted|unsupported|weakly/.test(s) ? 's-bad' : 's-none';
+}
+function tierInfo(s) {
+  const t = s.tier;
+  const kind = isPrimary(s) ? 'primary' : s.sourceType === 'paper' ? 'scholarly' : s.sourceType === 'book' ? 'book' : s.sourceType === 'social' ? 'social' : 'web';
+  const cls = t == null ? 't-none' : t <= 1 ? 't-1' : t <= 2 ? 't-2' : t <= 4 ? 't-3' : 't-5';
+  return { label: t == null ? `Unrated · ${kind}` : `Tier ${t} · ${kind}`, cls };
+}
+function accessLabel(s) {
+  if (s.verified) return 'Read in full';
+  return { full: 'Read in full', partial: 'Partial (URL context)', grounding: 'Search excerpt', 'metadata-only': 'Metadata only', unavailable: 'Not retrievable', unknown: 'Not fetched' }[s.accessibility] || (s.accessibility || 'Not fetched');
+}
+function confBar(claims) {
+  if (!claims.length) return '';
+  const counts = {};
+  for (const c of claims) counts[c.state || 'unknown'] = (counts[c.state || 'unknown'] || 0) + 1;
+  const order = [...STATE_ORDER.filter((k) => counts[k]), ...Object.keys(counts).filter((k) => !STATE_ORDER.includes(k))];
+  return `<div class="conf" role="img" aria-label="Claim confidence: ${escapeAttr(order.map((k) => `${counts[k]} ${STATE_LABEL[k] || k}`).join(', '))}">
+    <div class="conf-bar">${order.map((k) => `<span class="${stateClass(k)}" style="flex-grow:${counts[k]}"></span>`).join('')}</div>
+    <div class="conf-legend" aria-hidden="true">${order.map((k) => `<span><i class="${stateClass(k)}"></i>${escapeHtml(STATE_LABEL[k] || k)} <b>${counts[k]}</b></span>`).join('')}</div>
+  </div>`;
+}
+function empty(msg) { return `<div class="empty-state"><p>${escapeHtml(msg)}</p></div>`; }
 
 function renderTab(tab) {
   const r = current;
   const el = $('#tabBody');
-  if (!r || !r.task) {
-    el.innerHTML = '<div class="empty-state"><p>No result loaded.</p></div>';
-    return;
+  if (!r || !r.task) { el.innerHTML = empty('No report loaded.'); return; }
+  const rep = r.report;
+  if (tab === 'report') {
+    const findings = rep.findings || [];
+    const verdict = (i) => {
+      const v = (rep.verification || []).find((x) => x.n === i);
+      if (!v) return '';
+      const cls = v.supported === 'yes' ? 'ok' : v.supported === 'no' ? 'bad' : 'warn';
+      const label = v.supported === 'yes' ? 'Cross-check: supported by cited passages' : v.supported === 'no' ? 'Cross-check: not supported by its citations — provisional' : 'Cross-check: partly supported — treat as provisional';
+      return `<p class="verdict ${cls}"${v.note ? ` title="${escapeAttr(v.note)}"` : ''}>${label}</p>`;
+    };
+    el.innerHTML = `<article class="report">
+      ${rep.synthesisFallback ? '<div class="callout warn"><b>Evidence inventory</b>Model synthesis was unavailable (quota). The sources and claims are real and cited — see Evidence and Sources.</div>' : ''}
+      <div class="bottom-line"><span class="kicker">Bottom line</span>${paras(rep.executiveSummary) || '<p>No summary was produced.</p>'}</div>
+      ${confBar(r.claims)}
+      ${findings.length > 2 ? `<nav class="toc" aria-label="Contents"><span class="kicker muted">Contents</span><ol>${findings.map((f, i) => `<li><a href="#f-${i}" data-jump="f-${i}">${escapeHtml((f.heading || `Finding ${i + 1}`).slice(0, 100))}</a></li>`).join('')}</ol></nav>` : ''}
+      ${findings.map((f, i) => `<section class="finding" id="f-${i}"><h2><span class="num">${i + 1}.</span> ${escapeHtml(f.heading || `Finding ${i + 1}`)}</h2>
+        ${paras(f.body)}${(f.cite || []).length ? `<p class="cites"><span class="hint">Sources</span> ${chips(f.cite)}</p>` : ''}${verdict(i)}</section>`).join('')}
+      ${(rep.timeline || []).length ? section('Chronology', `<div class="table-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Event</th></tr></thead><tbody>${rep.timeline.map((t) => `<tr><td class="nowrap"><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</tbody></table></div>`) : ''}
+      ${section('What we can establish', list(rep.established))}
+      ${section('Competing explanations', list(rep.competing))}
+      ${section('Still uncertain', list(rep.uncertainty))}
+      ${section('Books and scholarship', list(rep.books))}
+      ${section('Primary sources', list(rep.primarySources))}
+      ${section('Source quality', paras(rep.sourceQuality))}
+      ${section('Source independence', paras(rep.independence))}
+    </article>`;
+    $$('#tabBody [data-jump]').forEach((a) => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById(a.dataset.jump)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
+  } else if (tab === 'evidence') {
+    const groups = STATE_ORDER.map((st) => [st, r.claims.filter((c) => (c.state || 'unknown') === st)]).filter(([, cs]) => cs.length);
+    const other = r.claims.filter((c) => !STATE_ORDER.includes(c.state || 'unknown'));
+    if (other.length) groups.push(['other', other]);
+    const claimHtml = (c) => `<li class="claim"><p>${escapeHtml(c.text)}</p>
+      ${c.confidenceWhy ? `<p class="hint">${escapeHtml(c.confidenceWhy)}</p>` : ''}
+      <p class="cites">${(c.supporting || []).length ? `<span class="hint">Supports</span> ${chips(c.supporting)}` : '<span class="hint">No supporting source linked</span>'}${(c.contradicting || []).length ? ` <span class="hint sep">Contradicts</span> ${chips(c.contradicting)}` : ''}</p></li>`;
+    el.innerHTML = `<div class="evidence">
+      ${confBar(r.claims)}
+      ${r.contradictions.length ? section(`Contradictions (${r.contradictions.length})`, `<ul class="claims">${r.contradictions.map((c) => `<li class="claim contra"><p><span class="tag s-warn">${escapeHtml(c.severity || 'flag')}</span> ${escapeHtml(c.against || c.text || '')}</p><p class="cites">${chips(c.sources)}</p></li>`).join('')}</ul>`) : '<p class="hint">No contradictions were flagged — absence of contradiction is not proof; see what remains uncertain in the report.</p>'}
+      ${groups.map(([st, cs]) => section(`${STATE_LABEL[st] || 'Other'} (${cs.length})`, `<ul class="claims">${cs.map(claimHtml).join('')}</ul>`, `grp ${stateClass(st)}`)).join('') || empty('No claims were extracted.')}
+      ${section('Contradictory evidence noted in the report', list(rep.contradictions))}
+    </div>`;
+  } else if (tab === 'sources') {
+    if (!r.sources.length) { el.innerHTML = empty('No sources were gathered in this run.'); return; }
+    const idx = srcIndex();
+    const citeCount = new Map();
+    const bump = (id) => citeCount.set(id, (citeCount.get(id) || 0) + 1);
+    for (const f of rep.findings || []) for (const id of f.cite || []) bump(id);
+    for (const c of r.claims) for (const id of [...(c.supporting || []), ...(c.contradicting || [])]) bump(id);
+    const kinds = [
+      ['all', 'All', () => true],
+      ['web', 'Web', (s) => s.sourceType !== 'book' && s.sourceType !== 'paper'],
+      ['academic', 'Academic', (s) => s.sourceType === 'paper'],
+      ['books', 'Books', (s) => s.sourceType === 'book'],
+      ['primary', 'Primary', isPrimary],
+    ].map(([k, label, fn]) => [k, label, fn, r.sources.filter(fn).length]).filter(([k, , , n]) => k === 'all' || n);
+    el.innerHTML = `<div class="src-tools">
+        <div class="chips" role="group" aria-label="Source type">${kinds.map(([k, label, , n], i) => `<button type="button" class="chip${i === 0 ? ' on' : ''}" data-kind="${k}" aria-pressed="${i === 0}">${label}<span>${n}</span></button>`).join('')}</div>
+        <div class="src-filters">
+          <label class="search"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><span class="visually-hidden">Filter sources</span><input id="srcFilter" type="search" placeholder="Filter by title or domain"></label>
+          <label class="pill-select"><span class="visually-hidden">Tier</span><select id="tierFilter"><option value="">Any tier</option><option value="2">Tier 1–2</option><option value="4">Tier 1–4</option></select></label>
+        </div>
+      </div>
+      <p class="hint">Tiers grade the evidence, not the domain: tier 1 is primary evidence, tier 7 a social lead only. Book metadata is never counted as read text.</p>
+      <ol class="src-list">${r.sources.map((s) => {
+        const ti = tierInfo(s);
+        const n = citeCount.get(s.id) || 0;
+        return `<li class="src-row" data-id="${escapeAttr(s.id)}" data-kinds="${kinds.filter(([, , fn]) => fn(s)).map(([k]) => k).join(' ')}" data-tier="${escapeAttr(s.tier ?? 9)}" data-q="${escapeAttr(`${s.title || ''} ${s.domain || ''} ${s.author || ''}`.toLowerCase())}">
+          <button type="button" class="src-num" data-src="${escapeAttr(s.id)}" aria-label="Show details for source ${idx.get(s.id)}">${idx.get(s.id)}</button>
+          <div class="src-main">${extLink(s.url, s.title || s.url, 'src-title')}
+            <span class="src-by">${escapeHtml([s.domain, s.author, s.publishedDate].filter(Boolean).join(' · '))}</span>
+            ${s.passages[0]?.text ? `<span class="src-quote">“${escapeHtml(s.passages[0].text.slice(0, 220))}${s.passages[0].text.length > 220 ? '…' : ''}”</span>` : ''}
+            ${(s.relatedCopies || []).length ? `<span class="hint">${s.relatedCopies.length} related cop${s.relatedCopies.length > 1 ? 'ies' : 'y'} — same underlying source, not independent confirmation</span>` : ''}</div>
+          <div class="src-side"><span class="tag ${ti.cls}">${escapeHtml(ti.label)}</span><span class="hint">${escapeHtml(accessLabel(s))}</span></div>
+          <span class="src-cited">${n ? `cited ${n}×` : ''}</span></li>`;
+      }).join('')}</ol>
+      <p id="srcEmpty" class="hint hidden">No sources match these filters.</p>`;
+    let kind = 'all';
+    const apply = () => {
+      const q = $('#srcFilter').value.trim().toLowerCase();
+      const maxTier = Number($('#tierFilter').value || 99);
+      let shown = 0;
+      $$('#tabBody .src-row').forEach((li) => {
+        const ok = li.dataset.kinds.split(' ').includes(kind) && (!q || li.dataset.q.includes(q)) && Number(li.dataset.tier) <= maxTier;
+        li.classList.toggle('hidden', !ok);
+        if (ok) shown++;
+      });
+      $('#srcEmpty').classList.toggle('hidden', shown > 0);
+    };
+    $$('#tabBody .chip').forEach((c) => c.addEventListener('click', () => {
+      kind = c.dataset.kind;
+      $$('#tabBody .chip').forEach((x) => { x.classList.toggle('on', x === c); x.setAttribute('aria-pressed', String(x === c)); });
+      apply();
+    }));
+    $('#srcFilter').addEventListener('input', apply);
+    $('#tierFilter').addEventListener('change', apply);
+  } else if (tab === 'method') {
+    const st = r.stats;
+    el.innerHTML = `<div class="method">
+      <div class="stat-grid">
+        <div><b>${escapeHtml(st.searchCalls ?? '–')}</b><span>searches</span></div>
+        <div><b>${escapeHtml(st.fetches ?? '–')}</b><span>pages fetched</span></div>
+        <div><b>${escapeHtml(st.modelCalls ?? '–')}</b><span>model calls</span></div>
+        <div><b>${escapeHtml(fmtElapsed(st.runtimeMs || 0))}</b><span>runtime</span></div>
+      </div>
+      <p class="hint">Tokens in/out ${(st.tokensIn || 0).toLocaleString()} / ${(st.tokensOut || 0).toLocaleString()} (API-reported)${st.escalated ? ' · escalated after sources disagreed' : ''}${st.keyRotations ? ` · ${st.keyRotations} key rotation(s)` : ''}${st.quotaWaitMs ? ` · ${Math.round(st.quotaWaitMs / 1000)}s waiting for quota` : ''}</p>
+      ${section('Methodology', paras(rep.methodology))}
+      ${r.stanceDisclosure ? section('Stance', paras(r.stanceDisclosure)) : ''}
+      ${section('Research passes', (r.iterations || []).length ? `<ol>${r.iterations.map((i) => `<li>Gaps: ${escapeHtml((i.gaps || []).join('; ') || 'none')}${i.sufficient ? ' — judged sufficient' : ''}</li>`).join('')}</ol>` : '')}
+      ${section('Research gaps', list(rep.gaps))}
+      ${st.phases && Object.keys(st.phases).length ? section('Time per stage', `<p class="hint">${Object.entries(st.phases).map(([k, v]) => `${escapeHtml(k)} ${(v / 1000).toFixed(1)}s`).join(' · ')}</p>`) : ''}
+      ${st.fetchIssues && Object.keys(st.fetchIssues).length ? section('Pages that could not be read', `<p class="hint">${Object.entries(st.fetchIssues).map(([k, v]) => `${escapeHtml(v)}× ${escapeHtml(k)}`).join(' · ')} — never bypassed.</p>`) : ''}
+      ${r.claims.length ? section('Claim → source graph', '<p class="hint">Up to 8 claims. Lines show supports and contradicts; a dashed hollow circle is derived from another source.</p><svg class="graph" id="g" role="img" aria-label="Claim to source graph"></svg>') : ''}
+      ${(rep.appendix || []).length ? `<details class="appendix"><summary>Evidence appendix — every claim with its sources (${rep.appendix.length})</summary><ol>${rep.appendix.map((a) => `<li><span class="tag ${stateClass(a.state)}">${escapeHtml(STATE_LABEL[a.state] || a.state)}</span> ${escapeHtml(a.text)}${a.why ? `<br><span class="hint">${escapeHtml(a.why)}</span>` : ''}<br><span class="hint">Supports:</span> ${(a.supporting || []).map((s) => extLink(s.url, s.title)).join(' · ') || '<i>none listed</i>'}${(a.contradicting || []).length ? `<br><span class="hint">Contradicts:</span> ${a.contradicting.map((s) => extLink(s.url, s.title)).join(' · ')}` : ''}</li>`).join('')}</ol></details>` : ''}
+    </div>`;
+    if (r.claims.length) drawGraph();
   }
-  r.stats = r.stats || {};
-  r.report = r.report || {};
-  if (tab === 'overview') {
-    const fallbackBanner = r.report?.synthesisFallback ? `<div class="banner" style="margin: .8rem 0; padding: .6rem .8rem; background: var(--warn-bg, #3a2c12); border: 1px solid var(--warn, #d4a017); border-radius: 6px;">⚠ Evidence inventory — model synthesis was unavailable (quota). Sources and claims below are real and cited; read the Sources/Claims tabs for raw evidence.</div>` : '';
-    el.innerHTML = `<h2>${escapeHtml(r.task.question)}</h2>
-      <p><span class="pill">${r.task.mode}</span><span class="pill">${r.task.stance}</span>
-      <span class="pill">${r.sources.length} sources</span><span class="pill">${r.claims.length} claims</span>${r.report?.synthesisFallback ? '<span class="pill" style="background: var(--warn, #d4a017); color: #000;">inventory</span>' : ''}</p>
-      ${fallbackBanner}
-      <p>${escapeHtml(r.stanceDisclosure || '')}</p>
-      <h3>Executive summary</h3><p>${escapeHtml(r.report?.executiveSummary || '')}</p>
-      ${secList('What we can establish', r.report?.established)}
-      ${secList('Uncertainty', r.report?.uncertainty)}`;
-  } else if (tab === 'claims') {
-    el.innerHTML = (r.claims || []).map((c) => `<div class="claim"><b>[${escapeHtml(c.state)}]</b> ${escapeHtml(c.text)}
-      ${c.confidenceWhy ? `<br><span class="hint">${escapeHtml(c.confidenceWhy)}</span>` : ''}
-      <br><span class="hint">Supports:</span> ${(c.supporting || []).map(srcLink).join(' · ') || '<i>none</i>'}
-      ${(c.contradicting || []).length ? `<br><span class="hint">Contradicted by:</span> ${c.contradicting.map(srcLink).join(' · ')}` : ''}</div>`).join('') || '<p>No claims extracted.</p>';
-  } else if (tab === 'sources' || tab === 'books' || tab === 'academic' || tab === 'primary') {
-    const list = (r.sources || []).filter((s) =>
-      tab === 'sources' ? true
-      : tab === 'books' ? s.sourceType === 'book'
-      : tab === 'academic' ? s.sourceType === 'paper'
-      : s.proximity === 'primary' || s.tier === 1);
-    el.innerHTML = `<p class="hint">${list.length} item(s). Tier 1 = primary evidence … Tier 7 = social/UGC (leads only). Book metadata ≠ inspected text.</p>
-      <table><tr><th>Source</th><th>Tier</th><th>Access</th><th>Passage</th></tr>${list.map((s) => `<tr>
-      <td><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a><br><span class="hint">${escapeHtml(s.domain)} · ${escapeHtml(s.author || '')} ${escapeHtml(s.publishedDate || '')}<br>${escapeHtml(s.tierReason || '')}${s.note ? ' · ' + escapeHtml(s.note) : ''}${(s.relatedCopies || []).length ? `<br>· ${s.relatedCopies.length} related cop${s.relatedCopies.length > 1 ? 'ies' : 'y'} (same canonical source — not independent confirmation)` : ''}</span></td>
-      <td><span class="pill t${s.tier ?? ''}">${s.tier ?? '?'}</span></td>
-      <td>${s.verified ? 'inspected' : escapeHtml(s.accessibility || '')}</td>
-      <td class="hint">${escapeHtml((s.passages[0]?.text || '').slice(0, 280))}</td></tr>`).join('')}</table>`;
-  } else if (tab === 'contra') {
-    el.innerHTML = `<h3>Contradictions</h3>${(r.contradictions || []).map((c) => `<div class="claim"><b>[${c.severity}]</b> ${escapeHtml(c.against)}<br><span class="hint">${(c.sources || []).map(srcLink).join(' · ')}</span></div>`).join('') || '<p>None found.</p>'}
-      ${secList('Competing explanations', r.report?.competing)}
-      ${secList('Contradictory evidence (report)', r.report?.contradictions)}`;
-  } else if (tab === 'graph') {
-    el.innerHTML = `<p class="hint">Claims → sources. Red edges = contradicts, green = supports, dashed = derived from one underlying source.</p>${(current.claims || []).length ? '<svg class="graph" id="g"></svg>' : '<p>No claims extracted — nothing to graph yet.</p>'}`;
-    if ((current.claims || []).length) drawGraph();
-  } else if (tab === 'process') {
-    el.innerHTML = `<h3>Methodology</h3><p>${escapeHtml(r.report?.methodology || '')}</p>
-      <h3>Iterations</h3><ul>${(r.iterations || []).map((i) => `<li>Pass ${i.n}: gaps: ${(i.gaps || []).join('; ') || 'none'} ${i.sufficient ? '(sufficient)' : ''}</li>`).join('')}</ul>
-      <h3>Budget</h3><p class="hint">model calls ${r.stats.modelCalls ?? '?'} · searches ${r.stats.searchCalls ?? '?'} · fetched ${r.stats.fetches ?? '?'} · runtime ${(((r.stats.runtimeMs || 0)) / 1000).toFixed(1)}s · tokens in/out ${((r.stats.tokensIn || 0)).toLocaleString()}/${((r.stats.tokensOut || 0)).toLocaleString()} (API-reported; cost follows current Google pricing, estimate only)${r.stats.escalated ? ' · escalated (disagreement found)' : ''}${r.stats.keyRotations ? ` · ${r.stats.keyRotations} key rotation(s)` : ''}<br>${escapeHtml(r.stats.note || '')}</p>
-      ${r.stats.phases && Object.keys(r.stats.phases).length ? `<h3>Phase timings</h3><p class="hint">${Object.entries(r.stats.phases).map(([k, v]) => `${escapeHtml(k)}: ${(v / 1000).toFixed(1)}s`).join(' · ')}</p>` : ''}
-      ${r.stats.fetchIssues && Object.keys(r.stats.fetchIssues).length ? `<h3>Fetch issues</h3><p class="hint">${Object.entries(r.stats.fetchIssues).map(([k, v]) => `${v}× ${escapeHtml(k)}`).join(' · ')}</p>` : ''}
-      <h3>Research gaps</h3><ul>${(r.report?.gaps || []).map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
-  } else if (tab === 'report') {
-    const rep = r.report || {};
-    const byId = (id) => srcById(id);
-    const cite = (ids = []) => (ids || []).map((id) => { const s = byId(id); return s ? `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">[${escapeHtml((s.title || s.domain || '').slice(0, 40))}]</a>` : ''; }).join(' ');
-    el.innerHTML = `<h2>Final report</h2><p>${escapeHtml(rep.executiveSummary || '')}</p>
-      ${(rep.findings || []).length > 1 ? `<h3>Contents</h3><ul>${(rep.findings || []).map((f, i) => `<li><a href="#f-${i}">${escapeHtml((f.heading || `Finding ${i + 1}`).slice(0, 80))}</a></li>`).join('')}</ul>` : ''}
-      ${(rep.findings || []).map((f, i) => { const v = (rep.verification || []).find((x) => x.n === i); return `<h3 id="f-${i}">${escapeHtml(f.heading || '')}</h3><p>${escapeHtml(f.body || '')}</p><p>${cite(f.cite)}</p>` + (v ? `<p class="hint">Cross-check: <b>${escapeHtml(v.supported)}</b> — ${escapeHtml(v.note)}</p>` : ''); }).join('')}
-      ${(rep.timeline || []).length ? `<h3>Chronology</h3><table><tr><th>Date</th><th>Event</th></tr>${(rep.timeline || []).map((t) => `<tr><td><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</table>` : ''}
-      <h3>Source quality</h3><p>${escapeHtml(rep.sourceQuality || '')}</p>
-      <h3>Source independence</h3><p>${escapeHtml(rep.independence || '')}</p>
-      ${secList('Books', rep.books)}
-      ${secList('Primary sources', rep.primarySources)}
-      ${secList('Uncertainty', rep.uncertainty)}
-      <h3>Methodology</h3><p>${escapeHtml(rep.methodology || '')}</p>
-      ${(rep.appendix || []).length ? `<details><summary><b>Evidence appendix</b> — every extracted claim with its sources (${rep.appendix.length})</summary>${rep.appendix.map((a) => `<div class="claim"><b>${a.n}. [${escapeHtml(a.state)}]</b> ${escapeHtml(a.text)}${a.why ? `<br><span class="hint">${escapeHtml(a.why)}</span>` : ''}<br><span class="hint">Supports:</span> ${(a.supporting || []).map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ') || '<i>none listed</i>'}${(a.contradicting || []).length ? `<br><span class="hint">Contradicted by:</span> ${a.contradicting.map((s) => `<a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`).join(' · ')}` : ''}</div>`).join('')}</details>` : ''}
-      <h3>Sources</h3><ul>${(r.sources || []).map((s) => `<li><a href="${escapeAttr(safeUrl(s.url))}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span class="hint">tier ${s.tier ?? '?'} · ${escapeHtml(s.accessibility || '')}${s.verified ? ' · inspected' : ''}</span></li>`).join('')}</ul>`;
+  renderRail();
+}
+
+// Citation chips anywhere in the result open that source in the rail.
+$('#resultView').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-src]');
+  if (b) { selectSource(b.dataset.src === selectedSource && !b.classList.contains('src-num') ? null : b.dataset.src); return; }
+  if (e.target.closest('#railClose')) { selectSource(null); return; }
+  const go = e.target.closest('[data-goto]');
+  if (go) activateTab($(`#tab-${go.dataset.goto}`));
+});
+function selectSource(id) {
+  selectedSource = id;
+  $$('#tabBody .cite').forEach((c) => c.classList.toggle('on', c.dataset.src === id));
+  $$('#tabBody .src-row').forEach((c) => c.classList.toggle('on', c.dataset.id === id));
+  renderRail();
+  if (id) $('#railClose')?.focus({ preventScroll: true });
+}
+function renderRail() {
+  const r = current;
+  const rail = $('#rail');
+  if (!r) { rail.innerHTML = ''; return; }
+  const s = selectedSource ? srcById(selectedSource) : null;
+  rail.classList.toggle('sheet-open', !!s);
+  let card = '';
+  if (s) {
+    const idx = srcIndex().get(s.id);
+    const ti = tierInfo(s);
+    const findingsCiting = (r.report.findings || []).map((f, i) => ((f.cite || []).includes(s.id) ? i + 1 : 0)).filter(Boolean);
+    const claimsSupported = r.claims.filter((c) => (c.supporting || []).includes(s.id)).length;
+    const claimsContra = r.claims.filter((c) => (c.contradicting || []).includes(s.id)).length;
+    const usage = [findingsCiting.length ? `Cited in finding${findingsCiting.length > 1 ? 's' : ''} ${findingsCiting.join(', ')}` : '', claimsSupported ? `supports ${claimsSupported} claim${claimsSupported > 1 ? 's' : ''}` : '', claimsContra ? `contradicts ${claimsContra}` : ''].filter(Boolean).join(' · ');
+    card = `<div class="src-card" role="region" aria-label="Source ${idx}">
+      <div class="src-card-head"><span class="mono accent">Source ${idx}</span><button id="railClose" type="button" class="icon-btn small" aria-label="Close source details"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
+      <div class="tags"><span class="tag ${ti.cls}">${escapeHtml(ti.label)}</span><span class="tag">${escapeHtml(accessLabel(s))}</span></div>
+      <strong class="src-card-title">${escapeHtml(s.title || s.url)}</strong>
+      <span class="hint">${escapeHtml([s.domain, s.author, s.publishedDate].filter(Boolean).join(' · '))}</span>
+      ${s.passages[0]?.text ? `<blockquote>“${escapeHtml(s.passages[0].text.slice(0, 600))}${s.passages[0].text.length > 600 ? '…' : ''}”</blockquote>` : '<p class="hint">No passage was retrieved for this source.</p>'}
+      ${s.tierReason ? `<p class="hint">${escapeHtml(s.tierReason)}</p>` : ''}
+      ${s.note ? `<p class="hint">${escapeHtml(s.note)}</p>` : ''}
+      ${usage ? `<p class="hint">${escapeHtml(usage)}</p>` : ''}
+      ${safeUrl(s.url) !== '#' ? `<a class="ext-link" href="${escapeAttr(s.url)}" target="_blank" rel="noopener noreferrer">Open source <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>` : ''}
+    </div>`;
   }
+  const unc = (r.report.uncertainty || []).slice(0, 4);
+  const glance = `<div class="glance">
+    <span class="kicker muted">Still uncertain</span>
+    ${unc.length ? list(unc) : '<p class="hint">Nothing flagged.</p>'}
+    ${r.contradictions.length ? `<button type="button" class="link-btn" data-goto="evidence">${r.contradictions.length} contradiction${r.contradictions.length > 1 ? 's' : ''} → Evidence</button>` : ''}
+    <p class="hint rail-tip">Select a numbered citation to see the passage behind it.</p>
+  </div>`;
+  rail.innerHTML = card + glance;
 }
 
 function drawGraph() {
   const svg = $('#g');
   if (!svg || !current) return;
-  const claims = (current.claims || []).slice(0, 8);
+  const claims = current.claims.slice(0, 8);
   const rels = [];
   claims.forEach((c, i) => {
     (c.supporting || []).slice(0, 3).forEach((sid) => rels.push({ c: i, sid, k: 'supports' }));
     (c.contradicting || []).slice(0, 2).forEach((sid) => rels.push({ c: i, sid, k: 'contradicts' }));
   });
-  const srcIds = [...new Set(rels.map((x) => x.sid))].slice(0, 14);
-  const W = 900, H = 420;
+  const idx = srcIndex();
+  const srcIds = [...new Set(rels.map((x) => x.sid))].filter((sid) => srcById(sid)).slice(0, 14);
+  const W = 900;
+  const H = Math.max(240, 50 + Math.max(claims.length, srcIds.length) * 36);
   const pos = {};
-  claims.forEach((c, i) => { pos['c' + i] = [140, 40 + i * ((H - 60) / Math.max(claims.length, 1))]; });
-  srcIds.forEach((sid, i) => { pos[sid] = [620, 40 + i * ((H - 60) / Math.max(srcIds.length, 1))]; });
-  const derived = new Set((current.relations || []).filter((x) => x.kind === 'derived_from').map((x) => x.from + '>' + x.to));
-  const stateFill = (st) => /strongly-supported|supported/.test(st || '') ? '#12351f' : /contradicted|disputed/.test(st || '') ? '#3a1f1f' : '#3a2c12';
-  const tierFill = (t) => t <= 2 ? '#2c4a2c' : t <= 4 ? '#1b2a44' : '#3a1f1f';
+  const spread = (n, i) => 25 + (i + 0.5) * ((H - 50) / Math.max(n, 1));
+  claims.forEach((c, i) => { pos['c' + i] = [150, spread(claims.length, i)]; });
+  srcIds.forEach((sid, i) => { pos[sid] = [600, spread(srcIds.length, i)]; });
+  const derived = new Set((current.relations || []).filter((x) => x.kind === 'derived_from').map((x) => x.from));
+  const tierClass = (t) => (t <= 2 ? 'g-t-hi' : t <= 4 ? 'g-t-mid' : 'g-t-lo');
   let s = '';
   for (const x of rels) {
-    const [x1, y1] = pos['c' + x.c]; const p = pos[x.sid]; if (!p) continue;
-    const col = x.k === 'contradicts' ? 'var(--bad)' : 'var(--ok)';
-    s += `<line x1="${x1}" y1="${y1}" x2="${p[0]}" y2="${p[1]}" stroke="${col}" stroke-width="1.2" opacity="0.7"/>`;
+    const a = pos['c' + x.c]; const p = pos[x.sid]; if (!a || !p) continue;
+    s += `<line x1="${a[0] + 135}" y1="${a[1]}" x2="${p[0] - 11}" y2="${p[1]}" class="${x.k === 'contradicts' ? 'g-bad' : 'g-ok'}"/>`;
   }
   claims.forEach((c, i) => {
     const [x, y] = pos['c' + i];
-    s += `<g><rect x="${x - 120}" y="${y - 14}" width="240" height="28" rx="6" fill="${stateFill(c.state)}"/><text x="${x}" y="${y + 4}" fill="#e8edf3" font-size="11" text-anchor="middle">${escapeHtml(c.text.slice(0, 34))}…</text></g>`;
+    const text = String(c.text || '');
+    s += `<g><title>${escapeHtml(text)}</title><rect x="${x - 135}" y="${y - 14}" width="270" height="28" rx="6" class="g-claim ${stateClass(c.state)}"/><text x="${x}" y="${y + 4}" text-anchor="middle" class="g-label">${escapeHtml(text.length > 40 ? text.slice(0, 39) + '…' : text)}</text></g>`;
   });
   srcIds.forEach((sid) => {
     const src = srcById(sid); const [x, y] = pos[sid];
-    const isDerived = [...derived].some((d) => d.startsWith(sid + '>'));
-    s += `<g><circle cx="${x}" cy="${y}" r="9" fill="${isDerived ? 'none' : tierFill(src?.tier ?? 9)}" stroke="${isDerived ? 'var(--warn)' : 'var(--ok)'}" stroke-dasharray="${isDerived ? '3 2' : 'none'}"/><text x="${x + 14}" y="${y + 4}" fill="#9aa7b8" font-size="11">${escapeHtml((src?.domain || sid).slice(0, 26))}</text></g>`;
+    s += `<g><title>${escapeHtml(src?.title || sid)}</title><circle cx="${x}" cy="${y}" r="9" class="${derived.has(sid) ? 'g-derived' : tierClass(src?.tier ?? 9)}"/><text x="${x + 17}" y="${y + 4}" class="g-src">${idx.get(sid)}. ${escapeHtml((src?.domain || sid).slice(0, 30))}</text></g>`;
   });
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = s;
 }
 
-// ---------- export / history / key ----------
-$$('.exports [data-exp]').forEach((b) => b.addEventListener('click', async () => {
+// ---------- export ----------
+$$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async () => {
+  $('#exportMenu').open = false;
   if (!current) return;
-  if (!staticMode) { window.open(`/api/export/${current.id}?format=${b.dataset.exp}`, '_blank'); return; }
-  // Static mode: render client-side and download via Blob (no server).
-  const { exportMarkdown, exportHtml } = await import(`../backend/src/export.js${staticSuffix()}`);
   const fmt = b.dataset.exp;
-  const text = fmt === 'json' ? JSON.stringify(current, null, 2) : fmt === 'html' ? exportHtml(current) : exportMarkdown(current);
-  const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type }));
-  a.download = `research-${current.id}.${fmt === 'html' ? 'html' : fmt === 'json' ? 'json' : 'md'}`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  const ext = fmt === 'html' ? 'html' : fmt === 'json' ? 'json' : 'md';
+  const name = `research-${String(current.id || 'report').replace(/[^\w-]/g, '').slice(0, 40)}.${ext}`;
+  // Client-side render first (works for every result, including ones the
+  // server never saved); fall back to the server export if the shared
+  // module is not reachable from this host.
+  try {
+    let text;
+    if (fmt === 'json') text = JSON.stringify(current, null, 2);
+    else {
+      const { exportMarkdown, exportHtml } = await import(`../backend/src/export.js${staticSuffix()}`);
+      text = fmt === 'html' ? exportHtml(current) : exportMarkdown(current);
+    }
+    const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch {
+    if (staticMode) { showNotice('Export failed in this browser — try the raw data export.', 'error'); return; }
+    window.open(`/api/export/${encodeURIComponent(current.id)}?format=${fmt}`, '_blank', 'noopener');
+  }
 }));
 $('#printBtn').addEventListener('click', () => {
   if (!current) return;
-  $$('.tabs button').forEach((x) => x.classList.toggle('active', x.dataset.tab === 'report'));
-  renderTab('report');
+  activateTab($('#tab-report'), false);
   setTimeout(() => window.print(), 60); // print dialog → Save as PDF
 });
-$('#again').addEventListener('click', () => {
-  $('#resultView').classList.add('hidden');
-  $('#askView').classList.remove('hidden');
-});
-$('#historyBtn').addEventListener('click', async () => {
-  $('#askView').classList.add('hidden'); $('#resultView').classList.add('hidden');
-  $('#historyView').classList.remove('hidden');
-  let server = [];
-  try { server = (await (await fetch('/api/history')).json()).items || []; } catch { /* no server */ }
-  let local = [];
-  try { local = JSON.parse(localStorage.getItem('er_history') || '[]'); } catch { local = []; }
-  $('#histList').innerHTML = '<h3>Server</h3>' + (server.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode} · ${h.sources} sources</span> <button data-open="${h.id}">Open</button></div>`).join('') || '<p class="hint">none</p>')
-    + '<h3>This browser</h3>' + (local.map((h) => `<div>◉ ${escapeHtml(h.question)} <span class="hint">${h.mode}</span>${h.direct ? ` <button data-local="${escapeAttr(h.id)}">Open</button>` : ''}</div>`).join('') || '<p class="hint">none</p>');
-  $$('#histList [data-open]').forEach((b) => b.addEventListener('click', async () => {
-    const r = await (await fetch('/api/history/' + b.dataset.open)).json();
-    if (!r || !r.id || !r.task) { alert('Could not open that run (missing or corrupt).'); return; }
-    $('#historyView').classList.add('hidden');
-    showResult(r);
-  }));
-  $$('#histList [data-local]').forEach((b) => b.addEventListener('click', async () => {
-    const { loadLocalResult } = await import(`./direct.js${staticSuffix()}`);
-    const r = loadLocalResult(b.dataset.local);
-    if (!r || !r.id || !r.task) { alert('Saved result not found in this browser (storage may have been cleared).'); return; }
-    $('#historyView').classList.add('hidden');
-    showResult(r);
-  }));
-});
-$('#backAsk').addEventListener('click', () => { $('#historyView').classList.add('hidden'); $('#askView').classList.remove('hidden'); });
-$('#clearHist').addEventListener('click', () => { localStorage.removeItem('er_history'); alert('Local history cleared.'); });
-$('#keyBtn').addEventListener('click', () => {
-  if (!$('#keyDialog').open) {
-    renderKeyList();
-    $('#keyDialog').showModal();
-  }
-});
-$('#closeKey').addEventListener('click', () => $('#keyDialog').close());
-$('#addKey').addEventListener('click', () => {
-  const keys = getStoredKeys();
-  keys.push('');
-  localStorage.setItem('gemini_keys', JSON.stringify(keys));
+
+// ---------- keys dialog (edits a draft; storage changes only on save) ----------
+let keyDraft = [];
+let keyReturnFocus = null;
+function openKeyDialog() {
+  if ($('#keyDialog').open) return;
+  closeNav();
+  keyReturnFocus = document.activeElement;
+  keyDraft = getStoredKeys();
+  if (!keyDraft.length) keyDraft = [''];
+  $('#modelInput').value = getStoredModel();
+  updateModelHint($('#modelInput').value);
+  setKeyStatus('');
   renderKeyList();
-  // Focus new input
-  const inputs = $('#keyList').querySelectorAll('input');
-  if (inputs.length) inputs[inputs.length - 1].focus();
-});
-$('#saveKey').addEventListener('click', async () => {
-  // Collect all keys, handling comma/newline separated pastes in single field
-  const inputs = $('#keyList').querySelectorAll('input');
-  let keys = [];
-  for (const inp of inputs) {
-    const raw = inp.value.trim();
+  $('#keyDialog').showModal();
+  $('#keyList input')?.focus();
+}
+$('#keyDialog').addEventListener('close', () => { keyReturnFocus?.focus?.({ preventScroll: true }); });
+function syncDraftFromInputs() { keyDraft = $$('#keyList input').map((i) => i.value); }
+function renderKeyList(status = []) {
+  const container = $('#keyList');
+  container.innerHTML = keyDraft.map((k, i) => `
+    <div class="key-item">
+      <label class="visually-hidden" for="key-${i}">Gemini API key ${i + 1}</label>
+      <input id="key-${i}" type="password" value="${escapeAttr(k)}" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      ${status[i] ? `<span class="key-state ${status[i].cls}">${escapeHtml(status[i].text)}</span>` : ''}
+      <button type="button" class="icon-btn" data-toggle="${i}" aria-label="Show key ${i + 1}" aria-pressed="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button type="button" class="icon-btn" data-remove="${i}" aria-label="Remove key ${i + 1}">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/></svg>
+      </button>
+    </div>`).join('') || '<p class="hint">No keys yet — add one to run research.</p>';
+  $('#addKey').disabled = keyDraft.length >= 5;
+  container.querySelectorAll('[data-remove]').forEach((btn) => btn.addEventListener('click', () => {
+    syncDraftFromInputs();
+    keyDraft.splice(Number(btn.dataset.remove), 1);
+    renderKeyList();
+  }));
+  container.querySelectorAll('[data-toggle]').forEach((btn) => btn.addEventListener('click', () => {
+    const inp = $(`#key-${btn.dataset.toggle}`);
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    btn.setAttribute('aria-pressed', String(show));
+    btn.setAttribute('aria-label', `${show ? 'Hide' : 'Show'} key ${Number(btn.dataset.toggle) + 1}`);
+  }));
+}
+function setKeyStatus(msg, kind = '') {
+  const el = $('#keyStatus');
+  el.textContent = msg;
+  el.className = 'key-status' + (kind ? ' ' + kind : '') + (msg ? '' : ' hidden');
+}
+/** Split pasted "k1, k2" / newline / JSON-array input into clean unique keys. */
+function parseKeyInputs(values) {
+  const keys = [];
+  for (const raw0 of values) {
+    const raw = String(raw0 || '').trim();
     if (!raw) continue;
-    // Handle pasted "key1, key2" or "key1\nkey2" in one field
-    if (raw.includes(',') || raw.includes('\n') || raw.startsWith('[')) {
-      try {
-        const parsed = raw.startsWith('[') ? JSON.parse(raw) : raw.split(/[,;\n]+/);
-        for (const k of parsed) {
-          const v = String(k || '').trim();
-          if (v) keys.push(v);
-        }
-      } catch { keys.push(raw); }
-    } else {
-      keys.push(raw);
+    if (raw.startsWith('[')) {
+      try { for (const k of JSON.parse(raw)) keys.push(String(k || '').trim()); continue; } catch { /* treat as text */ }
     }
+    keys.push(...raw.split(/[\s,;]+/));
   }
-  keys = [...new Set(keys.map(k => k.trim()).filter(Boolean))].slice(0, 5);
-  if (keys.length === 0) {
-    showNotice('No valid keys to save.', 'error');
+  return [...new Set(keys.map((k) => k.trim()).filter(Boolean))];
+}
+/** Validate keys: via the server when present, else directly against Google
+ *  (ListModels — no generation quota). Returns per-key results or null. */
+async function validateKeys(keys) {
+  if (!staticMode) {
+    try {
+      const res = await fetch('/api/keys/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keys }) });
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data.results)) return data.results;
+    } catch { /* fall through to direct check */ }
+  }
+  try {
+    return await Promise.all(keys.map(async (key) => {
+      const masked = key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : `${key.slice(0, 2)}…`;
+      if (!/^AIza[\w-]{20,}$/.test(key)) return { valid: false, masked, error: 'not a Gemini key' };
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': key }, signal: ctrl.signal });
+        if (res.ok) return { valid: true, masked };
+        if (res.status === 429) return { valid: true, masked, warning: 'quota exceeded right now' };
+        return { valid: false, masked, error: res.status === 400 ? 'invalid key' : `HTTP ${res.status}` };
+      } finally { clearTimeout(t); }
+    }));
+  } catch {
+    return null; // offline — save unvalidated; the run will report problems
+  }
+}
+$('#keyBtn').addEventListener('click', openKeyDialog);
+$('#keyBtnMobile').addEventListener('click', openKeyDialog);
+$('#closeKey').addEventListener('click', () => $('#keyDialog').close());
+$('#closeKeyX').addEventListener('click', () => $('#keyDialog').close());
+$('#addKey').addEventListener('click', () => {
+  syncDraftFromInputs();
+  if (keyDraft.length >= 5) return;
+  keyDraft.push('');
+  renderKeyList();
+  const inputs = $$('#keyList input');
+  inputs[inputs.length - 1]?.focus();
+});
+$('#keyForm').addEventListener('submit', async (e) => {
+  e.preventDefault(); // keep the dialog open while validating
+  syncDraftFromInputs();
+  let keys = parseKeyInputs(keyDraft).slice(0, 5);
+  const model = $('#modelInput').value || '';
+  const saveModel = () => { lsSet('gemini_model', model); updateKeyStatus(); };
+  if (!keys.length) {
+    // Model-only save is fine when the server has its own key.
+    if (!staticMode && serverKey) { setStoredKeys([]); saveModel(); $('#keyDialog').close(); showNotice('Saved — using the server\'s key.', ''); return; }
+    setKeyStatus('Add at least one Gemini API key.', 'error');
+    $('#keyList input')?.focus();
     return;
   }
-  // Validate keys with lightweight server check (no quota burn)
   const saveBtn = $('#saveKey');
-  const origText = saveBtn.textContent;
-  saveBtn.textContent = 'Validating…';
   saveBtn.disabled = true;
+  saveBtn.textContent = 'Checking…';
+  setKeyStatus(`Checking ${keys.length} key${keys.length > 1 ? 's' : ''} with Google…`);
   try {
-    const res = await fetch('/api/keys/validate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.results) {
-      const validKeys = [];
-      const invalid = [];
-      for (let i = 0; i < keys.length; i++) {
-        const r = data.results[i];
-        if (r?.valid) validKeys.push(keys[i]);
-        else invalid.push(r?.masked || keys[i].slice(0, 8) + '…');
-      }
-      if (invalid.length && validKeys.length === 0) {
-        showNotice(`All keys invalid: ${invalid.join(', ')} — please check and try again.`, 'error');
-        saveBtn.textContent = origText;
-        saveBtn.disabled = false;
+    const results = await validateKeys(keys);
+    let note = '';
+    if (results) {
+      keyDraft = keys.slice();
+      renderKeyList(results.map((r) => (r?.valid ? { cls: r.warning ? 'warn' : 'ok', text: r.warning ? 'over quota' : '✓ working' } : { cls: 'bad', text: r?.error || 'invalid' })));
+      const valid = keys.filter((_, i) => results[i]?.valid);
+      const invalid = results.filter((r) => !r?.valid).length;
+      if (!valid.length) {
+        setKeyStatus('None of these keys work. Check them and try again.', 'error');
         return;
       }
-      if (invalid.length) {
-        showNotice(`Removed ${invalid.length} invalid key(s): ${invalid.join(', ')}`, 'error');
-        keys = validKeys;
-      } else if (data.results.some(r => r.warning)) {
-        const warnings = data.results.filter(r => r.warning).map(r => r.masked).join(', ');
-        showNotice(`Keys valid but quota exceeded (will work after reset): ${warnings}`, '');
-      } else {
-        showNotice(`Validated ${keys.length} key(s) — all working!`, '');
-      }
+      keys = valid;
+      const warned = results.filter((r) => r?.valid && r.warning).length;
+      note = invalid ? `Saved ${valid.length} working key${valid.length > 1 ? 's' : ''}; removed ${invalid} that did not work.`
+        : warned ? `Saved ${valid.length} key${valid.length > 1 ? 's' : ''}. ${warned} currently over quota — they work again after the limit resets.`
+          : `Connected — ${valid.length} working key${valid.length > 1 ? 's' : ''}.`;
+    } else {
+      note = `Saved ${keys.length} key${keys.length > 1 ? 's' : ''} without checking (offline).`;
     }
-  } catch (e) {
-    // Validation failed (offline/static mode) — save anyway, will be checked on use
-    console.warn('Key validation failed, saving anyway:', e.message);
+    setStoredKeys(keys);
+    saveModel();
+    $('#keyDialog').close();
+    showNotice(note, '');
   } finally {
-    saveBtn.textContent = origText;
     saveBtn.disabled = false;
+    saveBtn.textContent = 'Validate & save';
   }
-  if (keys.length) {
-    localStorage.setItem('gemini_keys', JSON.stringify(keys));
-    localStorage.setItem('gemini_key', keys[0]);
-  }
-  const model = $('#modelInput')?.value || '';
-  localStorage.setItem('gemini_model', model);
-  $('#modelSelect').value = model;
-  $('#keyCount').textContent = keys.length ? String(keys.length) : '0';
-  $('#keyCount').classList.toggle('hidden', keys.length === 0);
-  renderKeyList();
-  $('#keyDialog').close();
 });
 $('#forgetKey').addEventListener('click', () => {
-  localStorage.removeItem('gemini_keys');
-  localStorage.removeItem('gemini_key');
-  localStorage.removeItem('gemini_model');
-  $('#keyList').innerHTML = '';
+  if (!confirm('Remove all saved API keys and the model choice from this browser?')) return;
+  setStoredKeys([]);
+  lsDel('gemini_model');
+  keyDraft = [''];
   $('#modelInput').value = '';
-  $('#modelSelect').value = '';
-  $('#keyCount').textContent = '0';
-  $('#keyCount').classList.add('hidden');
+  updateModelHint('');
+  updateKeyStatus();
   renderKeyList();
+  setKeyStatus('All keys removed from this browser.');
 });
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
+function escapeAttr(s) { return escapeHtml(s); }
 
 init();

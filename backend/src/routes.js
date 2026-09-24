@@ -27,6 +27,41 @@ function cacheTtl() {
   return Math.max(0, raw);
 }
 
+/** Mask a key for display: never more than the first 6 + last 4 chars. */
+export function maskKey(k) {
+  const s = String(k || '');
+  return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : (s ? `${s.slice(0, 2)}…` : '(empty)');
+}
+
+/** Lightweight key check via ListModels (no generation quota burned).
+ *  Key goes in the x-goog-api-key header, never the URL. Exported for tests. */
+export async function validateKey(k, { fetchFn = fetch, timeoutMs = 8000 } = {}) {
+  const key = typeof k === 'string' ? k.trim() : '';
+  const masked = maskKey(key);
+  if (!key || key.length < 20) return { valid: false, masked, error: 'Too short to be a valid key' };
+  if (!key.startsWith('AIza')) return { valid: false, masked, error: 'Invalid format (should start with AIza)' };
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetchFn('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
+      headers: { 'x-goog-api-key': key }, signal: ctrl.signal,
+    });
+    if (resp.ok) return { valid: true, masked };
+    const data = await resp.json().catch(() => ({}));
+    const msg = data?.error?.message || `HTTP ${resp.status}`;
+    if (resp.status === 400 && /API key not valid/i.test(msg)) return { valid: false, masked, error: 'Invalid API key' };
+    if (resp.status === 403) return { valid: false, masked, error: 'Permission denied (check the Generative Language API is enabled)' };
+    // 429: the key is real, its quota is just hot right now.
+    if (resp.status === 429) return { valid: true, masked, warning: 'Key valid but quota exceeded (try later)' };
+    return { valid: false, masked, error: String(msg).slice(0, 80) };
+  } catch (e) {
+    if (e?.name === 'AbortError') return { valid: false, masked, error: 'Timeout' };
+    return { valid: false, masked, error: String(e?.message || 'Unknown error').slice(0, 80) };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   const r = Router();
   // Per-router concurrency guard: quota is per project, so unbounded parallel
@@ -64,37 +99,14 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   // Validate pasted keys with a lightweight model-list call (no quota burn on research).
   // Body: { keys: string[] } -> { results: [{ valid: bool, masked: string, error?: string }] }
   // Invalid keys are automatically flagged for removal; valid keys are kept.
-  r.post('/keys/validate', async (req, res) => {
+  // Key checks hit Google on the caller's behalf: rate-limit them so the
+  // endpoint can't be used as an open proxy for key probing.
+  const keyLimiter = createRateLimiter({ windowMs: 60_000, max: Number(process.env.KEY_VALIDATE_RATE_MAX || 12) });
+  r.post('/keys/validate', keyLimiter, async (req, res) => {
     const keys = Array.isArray(req.body?.keys) ? req.body.keys : [];
     if (!keys.length) return res.status(400).json({ error: 'No keys provided' });
     if (keys.length > 5) return res.status(400).json({ error: 'Max 5 keys per request' });
-    const masked = (k) => k.slice(0, 6) + '…' + k.slice(-4);
-    const results = await Promise.all(keys.map(async (k) => {
-      const key = String(k || '').trim();
-      if (!key || key.length < 20) return { valid: false, masked: masked(key), error: 'Too short to be a valid key' };
-      if (!key.startsWith('AIza')) return { valid: false, masked: masked(key), error: 'Invalid format (should start with AIza)' };
-      try {
-        // Lightweight validation: list models (1 token, minimal quota)
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 8000);
-        let resp;
-        try {
-          resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, { signal: ctrl.signal });
-        } finally { clearTimeout(t); }
-        if (resp.ok) return { valid: true, masked: masked(key) };
-        const data = await resp.json().catch(() => ({}));
-        const msg = data?.error?.message || `HTTP ${resp.status}`;
-        if (resp.status === 400 && /API key not valid/i.test(msg)) return { valid: false, masked: masked(key), error: 'Invalid API key' };
-        if (resp.status === 403) return { valid: false, masked: masked(key), error: 'Permission denied (check API enabled)' };
-        // 429 or other transient — key is valid but quota/billing issue
-        if (resp.status === 429) return { valid: true, masked: masked(key), warning: 'Key valid but quota exceeded (try later)' };
-        return { valid: false, masked: masked(key), error: msg.slice(0, 80) };
-      } catch (e) {
-        if (e.name === 'AbortError') return { valid: false, masked: masked(key), error: 'Timeout' };
-        return { valid: false, masked: masked(key), error: (e.message || 'Unknown error').slice(0, 80) };
-      }
-    }));
-    res.json({ results });
+    res.json({ results: await Promise.all(keys.map((k) => validateKey(k))) });
   });
 
   // SSE research run. Query/body: question, mode, stance, hypothesis, documentary, model, fresh.
@@ -147,16 +159,26 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary, input.model]);
     const shared = input.fresh ? null : inflight.get(bk);
     // SSE preamble shared by owner + joiner paths.
+    let heartbeat = null;
     const beginStream = () => {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no', // nginx & co: stream, don't buffer
       });
       if (typeof res.flushHeaders === 'function') { try { res.flushHeaders(); } catch { /* ignore */ } }
+      // Quota waits can leave the stream silent for minutes; proxies and load
+      // balancers drop idle connections (~60-100s). An SSE comment every 15s
+      // keeps it open and is ignored by every client.
+      heartbeat = setInterval(() => {
+        if (closed || res.writableEnded) return;
+        try { res.write(': ping\n\n'); } catch { closed = true; }
+      }, Number(process.env.SSE_HEARTBEAT_MS || 15_000));
+      if (heartbeat.unref) heartbeat.unref();
     };
     let closed = false;
-    res.on('close', () => { if (!res.writableEnded) closed = true; });
+    res.on('close', () => { if (heartbeat) clearInterval(heartbeat); if (!res.writableEnded) closed = true; });
     // Never throw on a dead socket: a disconnected client must not crash the run.
     const send = (obj) => {
       if (closed || res.writableEnded) return;
@@ -179,7 +201,10 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       if (/API key|API_KEY|key not valid/i.test(msg)) msg = 'Invalid Gemini API key. Check the key and try again.';
       send({ type: 'error', message: msg });
     };
-    const finish = () => { try { if (!res.writableEnded) res.end(); } catch { /* ignore */ } };
+    const finish = () => {
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+      try { if (!res.writableEnded) res.end(); } catch { /* ignore */ }
+    };
     // Result cache: identical repeats served from disk (zero quota, zero wait).
     // Checked before singleflight/cap so hits consume no slots. Bypass: { fresh: true }.
     if (!input.fresh && typeof store.findCached === 'function' && cacheTtl() > 0) {
@@ -237,6 +262,7 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     try {
       task = runFn(input, { key: runKeys, emit: send, isCancelled: () => entry.clients <= 0 });
     } catch (e) {
+      metrics.runsFailed++;
       sendError(e);
       activeRuns--;
       leave();
@@ -277,8 +303,11 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   });
 
   r.get('/history/:id', async (req, res) => {
-    try { res.json(await store.getResult(req.params.id)); }
-    catch { res.status(404).json({ error: 'not found' }); }
+    try {
+      const result = await store.getResult(req.params.id);
+      if (!result || !result.id) return res.status(404).json({ error: 'not found' });
+      res.json(result);
+    } catch { res.status(404).json({ error: 'not found' }); }
   });
 
   r.delete('/history/:id', async (req, res) => {
@@ -289,8 +318,9 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   // Export: ?format=md|html|json (downloads as attachment)
   r.get('/export/:id', async (req, res) => {
     try {
+      const format = String(req.query.format || 'md');
+      if (!['md', 'html', 'json'].includes(format)) return res.status(400).json({ error: 'format must be md, html or json' });
       const result = await store.getResult(req.params.id);
-      const format = req.query.format || 'md';
       const base = `research-${String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'report'}`;
       if (format === 'json') {
         res.attachment(`${base}.json`);

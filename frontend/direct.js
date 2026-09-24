@@ -10,7 +10,7 @@
 // Cache-busting version for the engine bundle. Bump together with STATIC_V in
 // app.js (enforced by tests/static-version.test.js). Browser-only suffix:
 // in Node the query string is omitted so the test suite keeps working.
-export const ENGINE_V = '2026-09-19b';
+export const ENGINE_V = '2026-09-24b';
 const engineSuffix = () => (typeof window === 'undefined' ? '' : `?v=${ENGINE_V}`);
 
 async function loadEngine() {
@@ -63,13 +63,44 @@ export async function runDirect(input, { key, emit = () => {}, deps = {}, signal
 const RESULT_PREFIX = 'er_result_';
 const MAX_STORED = 3_500_000; // localStorage safety cap per result
 
+function storedResultKeys() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(RESULT_PREFIX)) out.push(k);
+    }
+  } catch { /* blocked storage */ }
+  return out;
+}
+
+/** Oldest-first saved result keys, ordered by the er_history list (newest
+ *  first there); unknown ids count as oldest. */
+function evictionOrder() {
+  let hist = [];
+  try { hist = JSON.parse(localStorage.getItem('er_history') || '[]'); } catch { hist = []; }
+  const rank = new Map((Array.isArray(hist) ? hist : []).map((h, i) => [RESULT_PREFIX + h.id, i]));
+  return storedResultKeys().sort((a, b) => (rank.get(b) ?? Infinity) - (rank.get(a) ?? Infinity));
+}
+
 export function saveLocalResult(result) {
   try {
     if (typeof localStorage === 'undefined' || !result?.id) return false;
     const raw = JSON.stringify(result);
     if (raw.length > MAX_STORED) return false;
-    localStorage.setItem(RESULT_PREFIX + result.id, raw);
-    return true;
+    // localStorage holds ~5 MB per origin, so a second large report used to
+    // fail silently. Evict the oldest saved results until the new one fits.
+    const victims = evictionOrder().filter((k) => k !== RESULT_PREFIX + result.id);
+    for (;;) {
+      try {
+        localStorage.setItem(RESULT_PREFIX + result.id, raw);
+        return true;
+      } catch {
+        const v = victims.shift();
+        if (!v) return false;
+        localStorage.removeItem(v);
+      }
+    }
   } catch {
     return false; // quota/full/blocked storage must never break the run
   }
@@ -81,5 +112,15 @@ export function loadLocalResult(id) {
     return JSON.parse(localStorage.getItem(RESULT_PREFIX + id) || 'null');
   } catch {
     return null;
+  }
+}
+
+export function removeLocalResult(id) {
+  try { localStorage.removeItem(RESULT_PREFIX + id); } catch { /* ignore */ }
+}
+
+export function clearLocalResults() {
+  for (const k of storedResultKeys()) {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
   }
 }

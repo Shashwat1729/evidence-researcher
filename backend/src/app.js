@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { apiRouter } from './routes.js';
 import { runResearch } from './engine/orchestrator.js';
-import { saveResult, getResult, listResults, deleteResult } from './store.js';
+import { saveResult, getResult, listResults, deleteResult, findCached, saveCacheEntry } from './store.js';
 import { requestId, securityHeaders, cors } from './middleware/security.js';
 import { validateMiddleware } from './middleware/validate.js';
 import { openapiSpec } from './openapi.js';
@@ -19,6 +19,9 @@ const ROOT = path.resolve(__dirname, '..', '..');
 // Shared middleware stack — used by the local server AND the Vercel entry
 // so both deployments get identical security/validation/observability.
 export function applyApiMiddleware(app) {
+  // Behind one proxy hop (Vercel, Docker ingress): req.ip must be the client,
+  // not the proxy — otherwise every user shares one rate-limit bucket.
+  app.set('trust proxy', 1);
   app.use(requestId);
   app.use(securityHeaders);
   app.use(cors);
@@ -32,16 +35,22 @@ export function applyApiMiddleware(app) {
   app.get('/api/openapi.json', (_req, res) => res.json(openapiSpec));
 }
 
+/** Unknown /api/* routes answer JSON 404 (they used to fall through to the
+ *  SPA catch-all and return index.html with HTTP 200). */
+export function apiNotFound(req, res) {
+  res.status(404).json({ error: `Unknown API route: ${req.method} ${req.originalUrl.split('?')[0].slice(0, 120)}` });
+}
+
 export function createApp({ runFn = runResearch, store = null } = {}) {
   const app = express();
-  app.set('trust proxy', 1);
   applyApiMiddleware(app);
   // Note: the BYOK key arrives in the x-gemini-key header, is used for the
   // research run only, and is never logged or persisted (see routes.js).
   app.use('/api', apiRouter({
     runFn,
-    store: store || { saveResult, getResult, listResults, deleteResult },
+    store: store || { saveResult, getResult, listResults, deleteResult, findCached, saveCacheEntry },
   }));
+  app.use('/api', apiNotFound);
 
   // Static frontend when present (local/Docker). On Vercel the CDN serves
   // `frontend/` directly, so this is skipped if the directory is absent.
