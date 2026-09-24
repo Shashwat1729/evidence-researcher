@@ -25,7 +25,7 @@ limited by site CORS policies (recorded honestly, never bypassed).
 
 <table>
 <tr>
-<td><img src="docs/screenshots/ask-desktop.png" alt="Research form on desktop — question, mode cards, stance" width="100%"><br><em>Desktop — ask with mode cards and stance</em></td>
+<td><img src="docs/screenshots/ask-desktop.png" alt="Home — one question box with depth, stance and options; your research in the sidebar" width="100%"><br><em>Home — ask one question; depth, stance and options sit in the composer; past reports live in the sidebar</em></td>
 </tr>
 </table>
 
@@ -39,7 +39,7 @@ limited by site CORS policies (recorded honestly, never bypassed).
 </tr>
 </table>
 
-> Screenshots are desktop-only, captured headlessly at 1440×960 from the live Pages build (`scripts/build-pages.js` verifies every import resolves, so screenshots never go stale). Report screenshots are from a live **Standard Harappan** run — fully model-written (30 sources → 12 claims → 14 findings, ~30k chars, 7 sections with cold-open story; with quota hot it degrades to the same chapter-like inventory).
+> Screenshots are desktop-only, captured headlessly at 1440×960 from the Pages build. The home screenshot shows the current "reading room" interface; the three report screenshots were captured with the previous interface (before the September 2026 redesign) and will be refreshed from the next live run. They come from a live **Standard Harappan** run — fully model-written (30 sources → 12 claims → 14 findings, ~30k chars, 7 sections with cold-open story; with quota hot it degrades to the same chapter-like inventory).
 
 ## Quickstart (local, 2 minutes)
 
@@ -84,7 +84,7 @@ JSON schemas, and every cited id is integrity-checked against retrieved sources.
 | Fetch | Dependency-free HTML extraction: charset-aware decoding, robots.txt respect, timeouts, size caps, final-URL citation, no paywall/auth/CAPTCHA bypass. |
 | Engine | Budgets (iterations, searches, sources, fetches, model calls, runtime, output tokens), early stopping, adaptive escalation on disagreement, per-claim confidence, provenance graph, post-synthesis cross-check. |
 | API | Express + SSE (`POST /api/research` streams progress, never chain-of-thought). Validation, per-IP rate limiting, concurrency guard, singleflight dedup, result cache, OpenAPI at `/api/openapi.json`. |
-| Frontend | Zero-build HTML/CSS/JS: ask form, live progress, 10-tab dashboard, SVG source graph, Markdown/HTML/JSON export, print/PDF, keyboard tabs, ARIA live regions. Static mode runs everything in-browser. |
+| Frontend | Zero-build HTML/CSS/JS "reading room": runs sidebar, single-box composer, live stage timeline, report-first workspace (Report · Evidence · Sources · Method) where every numbered citation opens its source passage in a side rail (bottom sheet on phones), source filters by type/tier, SVG claim graph, Markdown/HTML/JSON export, print/PDF, light + dark themes, keyboard tabs, ARIA live regions. Static mode runs everything in-browser. |
 | Persistence | Atomic JSON file store (`DATA_DIR`); browser localStorage history. Swappable for a real DB. |
 | Ops | Structured logs, `/api/health` + `/api/metrics`, CLI, MCP tool stub, GitHub Actions CI + Pages deploy. |
 

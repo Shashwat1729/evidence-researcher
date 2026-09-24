@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-24 — "reading room" UI/UX overhaul
+
+- New information architecture: a persistent sidebar of your research runs replaces the separate history page; "New research" is always one click away.
+- Home is a single question composer — depth, stance and options live inside it; first-run visitors get an inline "Connect Gemini" prompt instead of a surprise dialog.
+- Research progress is a live stage timeline (plan → search → read → analyze → independence → write → verify) with per-stage logs, live counts and an explicit "waits are normal" explainer when quota pauses.
+- Results are report-first: 10 tabs became 4 (Report · Evidence · Sources · Method). The report opens with a "Bottom line" and a claim-confidence bar; numbered citations open the exact passage in a side rail (a bottom sheet on phones).
+- Evidence groups claims by confidence with contradictions first; Sources has type chips (web/academic/books/primary), a tier filter, search, access status and citation counts.
+- New visual system: warm paper light theme and matching dark theme (toggle, remembered per browser), Newsreader serif for reading and IBM Plex for the interface, export menu, print stylesheet.
+- Accessibility: real buttons for every citation, stage and run; screen-reader phase announcements; Escape closes menus, the source rail and the mobile menu; no horizontal scroll at 390 px.
+
 ## 2026-09-24 — end-to-end hardening + frontend redesign
 
 ### Backend

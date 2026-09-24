@@ -4,256 +4,259 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Evidence-first deep research agent powered by Gemini — auditable, citation-backed reports">
-<meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
-<title>Evidence Researcher — Deep Research, Verified</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b8def'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%230d1117' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%230d1117'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=2026-09-24a">
+<meta name="color-scheme" content="light dark">
+<title>Evidence Researcher</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231c1b18'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23f5f3ee' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%235b7be0'/%3E%3C/svg%3E">
+<script src="theme.js?v=2026-09-24b"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&amp;display=swap">
+<link rel="stylesheet" href="styles.css?v=2026-09-24b">
 </head>
 <body>
 <a href="#main" class="skip-link">Skip to content</a>
+<p id="srStatus" class="visually-hidden" role="status" aria-live="polite"></p>
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="./" aria-label="Evidence Researcher — home">
-      <span class="brand-mark" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/></svg>
-      </span>
-      <span class="brand-text">
-        <strong>Evidence Researcher</strong>
-        <span>Gemini deep research · auditable</span>
-      </span>
-    </a>
-    <nav class="top-actions" aria-label="Primary">
-      <label class="visually-hidden" for="modelSelect">Gemini model</label>
-      <select id="modelSelect" class="select compact">
-        <option value="">Auto model</option>
-      </select>
-      <button id="historyBtn" type="button" class="btn ghost">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
-        <span>History</span>
+<div class="app">
+  <!-- Sidebar: runs are the navigation -->
+  <aside id="sidebar" class="sidebar" aria-label="Your research">
+    <div class="side-brand">
+      <a class="brand" href="./" aria-label="Evidence Researcher — home">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="7.5"/><circle class="brand-dot" cx="12" cy="12" r="2.2" stroke="none"/></svg></span>
+        <span class="brand-name">Evidence Researcher</span>
+      </a>
+      <button id="closeNav" type="button" class="icon-btn only-mobile" aria-label="Close menu">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
       </button>
-      <button id="keyBtn" type="button" class="btn ghost" aria-describedby="keyCount">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="m16 7 3 3"/><path d="m19 4 2 2"/></svg>
-        <span>Keys</span>
-        <span id="keyCount" class="badge hidden" aria-label="saved keys">0</span>
-      </button>
-    </nav>
-  </div>
-</header>
-
-<main id="main" tabindex="-1">
-  <div id="notice" class="notice hidden" role="status" aria-live="polite">
-    <span id="noticeText"></span>
-    <button id="noticeClose" type="button" class="icon-btn" aria-label="Dismiss message">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </div>
+    <button id="newBtn" type="button" class="btn new-btn">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+      New research
     </button>
-  </div>
-
-  <!-- Ask -->
-  <section id="askView" class="ask-view" aria-labelledby="askTitle">
-    <div class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">Research, not chat · every claim cited</p>
-        <h1 id="askTitle">Ask a question.<br>Get a <em>verifiable</em> report.</h1>
-        <p class="sub">Searches broadly, grades every source, hunts for contradicting evidence and shows its work — with each conclusion traceable to a passage and a source.</p>
-        <ol class="how" aria-label="How it works">
-          <li><strong>Search broadly</strong><span>Web, scholarship and books — not the top three links.</span></li>
-          <li><strong>Grade sources</strong><span>Tier 1 primary evidence to tier 7 social leads.</span></li>
-          <li><strong>Hunt contradictions</strong><span>Asks what would prove each finding wrong.</span></li>
-          <li><strong>Cite everything</strong><span>Claim → passage → source, exportable.</span></li>
-        </ol>
-        <p id="staticBanner" class="banner hidden" role="note">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
-          <span>Static mode — runs entirely in your browser with your own Gemini key. Some page fetches may be blocked by site CORS policies; search excerpts are still cited.</span>
-        </p>
-      </div>
-
-      <form id="askForm" class="ask-card card elevated" novalidate>
-        <label class="lbl" for="q">
-          <span class="lbl-title">Research question</span>
-          <span class="lbl-hint">Be specific: a focused question gets a sharper, better-sourced report.</span>
-        </label>
-        <textarea id="q" rows="4" maxlength="5000" required aria-describedby="qCount modeHint" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
-        <div class="field-meta">
-          <span id="modeHint" class="hint" aria-live="polite"></span>
-          <span id="qCount" class="hint count">0 / 5000</span>
-        </div>
-
-        <fieldset class="mode-grid">
-          <legend class="lbl-title">Depth</legend>
-          <label class="mode-card">
-            <input type="radio" name="mode" value="quick">
-            <span class="mode-head"><strong>Quick</strong><span class="pill">~1–2 min</span></span>
-            <span class="hint">Fast check · 2 searches · escalates if sources disagree</span>
-          </label>
-          <label class="mode-card">
-            <input type="radio" name="mode" value="standard" checked>
-            <span class="mode-head"><strong>Standard</strong><span class="pill">≤ 25 min</span></span>
-            <span class="hint">Cross-checking, academic + books, contradiction search</span>
-          </label>
-          <label class="mode-card">
-            <input type="radio" name="mode" value="deep">
-            <span class="mode-head"><strong>Deep</strong><span class="pill">≤ 45 min</span></span>
-            <span class="hint">Books, primary sources, provenance · heavy</span>
-          </label>
-          <label class="mode-card">
-            <input type="radio" name="mode" value="exhaustive">
-            <span class="mode-head"><strong>Exhaustive</strong><span class="pill">≤ 90 min</span></span>
-            <span class="hint">Documentary-grade · many sources · most quota</span>
-          </label>
-        </fieldset>
-
-        <fieldset class="stance-row">
-          <legend class="lbl-title">Stance</legend>
-          <div class="segmented">
-            <label><input type="radio" name="stance" value="neutral" checked><span>Neutral</span></label>
-            <label><input type="radio" name="stance" value="lean"><span>Lean</span></label>
-            <label><input type="radio" name="stance" value="adversarial"><span>Adversarial</span></label>
-            <label><input type="radio" name="stance" value="steelman"><span>Steelman</span></label>
-            <label><input type="radio" name="stance" value="comparative"><span>Compare</span></label>
-          </div>
-          <span class="hint">Stance changes the objective, never the truth conditions. Contradictions are always hunted.</span>
-        </fieldset>
-
-        <details class="advanced">
-          <summary>Advanced options</summary>
-          <div class="advanced-body">
-            <label class="lbl" for="hyp">
-              <span class="lbl-title">Hypothesis to test <span class="optional">optional</span></span>
-            </label>
-            <input id="hyp" type="text" maxlength="2000" placeholder="e.g. Economic decline was the primary cause">
-            <div class="toggles">
-              <label class="check"><input id="docu" type="checkbox"><span>Documentary mode</span><span class="hint">chronology · myths vs evidence · source notes</span></label>
-              <label class="check"><input id="fresh" type="checkbox"><span>Fresh run</span><span class="hint">skip the recent-result cache (uses quota)</span></label>
-            </div>
-          </div>
-        </details>
-
-        <div class="ask-actions">
-          <button id="start" type="submit" class="btn primary large">
-            <span>Start research</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-          </button>
-          <p id="costNote" class="hint"></p>
-        </div>
-        <p class="hint kbd-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to start</p>
-      </form>
-    </div>
-  </section>
-
-  <!-- Progress -->
-  <section id="progressView" class="card hidden" aria-labelledby="progressTitle" aria-busy="false">
-    <div class="progress-head">
-      <div>
-        <h2 id="progressTitle">Researching…</h2>
-        <p id="progressQuestion" class="hint progress-question"></p>
-      </div>
-      <button id="cancelBtn" type="button" class="btn ghost danger">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-        Cancel
+    <nav class="runs" aria-labelledby="runsTitle">
+      <h2 id="runsTitle" class="side-label">Your research</h2>
+      <ul id="runList" class="run-list"></ul>
+    </nav>
+    <div class="side-foot">
+      <button id="keyBtn" type="button" class="key-btn">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="m16 7 3 3"/></svg>
+        <span id="keyLabel">Connect Gemini</span>
+        <span id="keyDot" class="key-dot" aria-hidden="true"></span>
+        <span id="keyCount" class="visually-hidden">0</span>
       </button>
+      <div class="side-meta">
+        <span class="hint">Keys stay in this browser · <span id="buildTag"></span></span>
+        <button id="themeBtn" type="button" class="icon-btn small" aria-label="Switch to dark theme">
+          <svg class="i-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+          <svg class="i-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+      </div>
     </div>
-    <ol id="phaseTrack" class="phase-track" aria-label="Pipeline stages">
-      <li data-phase="plan">Plan</li>
-      <li data-phase="search">Search</li>
-      <li data-phase="read">Read</li>
-      <li data-phase="analyze">Analyze</li>
-      <li data-phase="provenance">Independence</li>
-      <li data-phase="synthesize">Write</li>
-      <li data-phase="verify">Verify</li>
-    </ol>
-    <div class="progress-bar" role="progressbar" aria-label="Research progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill" class="progress-fill"></div></div>
-    <div id="liveStats" class="live-stats" aria-live="off"></div>
-    <div id="steps" class="steps" role="log" aria-live="polite" aria-label="Progress log"></div>
-    <div class="skeleton hidden" id="skeleton" aria-hidden="true"><div class="sk-line"></div><div class="sk-line"></div><div class="sk-line short"></div></div>
-  </section>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
 
-  <!-- Result -->
-  <section id="resultView" class="hidden" aria-label="Research result">
-    <header class="result-head card">
-      <div class="result-title">
-        <p class="eyebrow subtle">Research report</p>
-        <h2 id="resultQuestion"></h2>
-        <div id="resultMeta" class="pills"></div>
-      </div>
-      <div class="exports" role="group" aria-label="Export and actions">
-        <button data-exp="md" type="button" class="btn small">Markdown</button>
-        <button data-exp="html" type="button" class="btn small">HTML</button>
-        <button data-exp="json" type="button" class="btn small">JSON</button>
-        <button id="printBtn" type="button" class="btn small">Print / PDF</button>
-        <button id="again" type="button" class="btn small primary">New research</button>
-      </div>
+  <div class="main-col">
+    <header class="mobile-bar only-mobile">
+      <button id="menuBtn" type="button" class="icon-btn" aria-label="Open your research" aria-controls="sidebar" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+      </button>
+      <a class="brand" href="./"><span class="brand-mark small" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="7.5"/><circle class="brand-dot" cx="12" cy="12" r="2.2" stroke="none"/></svg></span><span class="brand-name">Evidence Researcher</span></a>
+      <button id="keyBtnMobile" type="button" class="icon-btn" aria-label="API keys">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="m16 7 3 3"/></svg>
+      </button>
     </header>
-    <div class="tabs" role="tablist" aria-label="Result sections">
-      <button type="button" id="tab-overview" data-tab="overview" class="active" role="tab" aria-selected="true" aria-controls="tabBody" tabindex="0">Overview</button>
-      <button type="button" id="tab-report" data-tab="report" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Report</button>
-      <button type="button" id="tab-claims" data-tab="claims" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Claims</button>
-      <button type="button" id="tab-sources" data-tab="sources" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Sources</button>
-      <button type="button" id="tab-books" data-tab="books" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Books</button>
-      <button type="button" id="tab-academic" data-tab="academic" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Academic</button>
-      <button type="button" id="tab-primary" data-tab="primary" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Primary</button>
-      <button type="button" id="tab-contra" data-tab="contra" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Contradictions</button>
-      <button type="button" id="tab-graph" data-tab="graph" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Graph</button>
-      <button type="button" id="tab-process" data-tab="process" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Process</button>
-    </div>
-    <div id="tabBody" class="card tab-body" role="tabpanel" aria-labelledby="tab-overview" tabindex="0"></div>
-  </section>
 
-  <!-- History -->
-  <section id="historyView" class="card hidden" aria-labelledby="historyTitle">
-    <div class="history-head">
-      <h2 id="historyTitle">Research history</h2>
-      <button id="backAsk" type="button" class="btn ghost">Back</button>
-    </div>
-    <div id="histList"></div>
-    <div class="history-actions">
-      <button id="clearHist" type="button" class="btn ghost danger">Clear this browser's history</button>
-    </div>
-  </section>
-</main>
+    <main id="main" tabindex="-1">
+      <div id="notice" class="notice hidden" role="status">
+        <span id="noticeText"></span>
+        <button id="noticeClose" type="button" class="icon-btn small" aria-label="Dismiss message">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
 
-<footer class="footer">
-  <span>Built by <a href="https://github.com/Shashwat1729" target="_blank" rel="noopener">Shashwat Bajpai</a> · <a href="https://github.com/Shashwat1729/evidence-researcher" target="_blank" rel="noopener">Source</a> · Evidence-first · Uncertainty is a feature</span>
-  <span class="hint">Keys stay in your browser. No analytics. No paywall bypass. <span id="buildTag" title="Static build id — if errors persist after a deploy, hard-refresh (Ctrl+Shift+R)"></span></span>
-</footer>
+      <!-- Home / ask -->
+      <section id="askView" class="view ask-view" aria-labelledby="askTitle">
+        <div class="ask-inner">
+          <p class="kicker">Evidence-first research</p>
+          <h1 id="askTitle" class="display">What do you want to know?</h1>
+          <p class="lede">Every answer is a cited report — sources graded, contradictions hunted, uncertainty stated plainly.</p>
+
+          <div id="setupCard" class="setup hidden" role="note">
+            <div>
+              <strong>Connect a Gemini API key to start</strong>
+              <span id="setupText">It's free from Google AI Studio and stays in this browser.</span>
+            </div>
+            <button id="setupBtn" type="button" class="btn primary">Connect Gemini</button>
+          </div>
+
+          <form id="askForm" class="composer" novalidate>
+            <label for="q" class="visually-hidden">Research question</label>
+            <textarea id="q" rows="3" maxlength="5000" required aria-describedby="composerHint" placeholder="e.g. What were the major causes of the collapse of the Western Roman Empire?"></textarea>
+            <div class="composer-bar">
+              <fieldset class="depth">
+                <legend class="visually-hidden">Depth</legend>
+                <label><input type="radio" name="mode" value="quick"><span><b>Quick</b><small>~2 min</small></span></label>
+                <label><input type="radio" name="mode" value="standard" checked><span><b>Standard</b><small>≤ 25 min</small></span></label>
+                <label><input type="radio" name="mode" value="deep"><span><b>Deep</b><small>≤ 45 min</small></span></label>
+                <label><input type="radio" name="mode" value="exhaustive"><span><b>Exhaustive</b><small>≤ 90 min</small></span></label>
+              </fieldset>
+              <label class="pill-select">
+                <span>Stance:</span>
+                <select id="stance" aria-label="Research stance">
+                  <option value="neutral">Neutral</option>
+                  <option value="lean">Lean</option>
+                  <option value="adversarial">Adversarial</option>
+                  <option value="steelman">Steelman</option>
+                  <option value="comparative">Compare</option>
+                </select>
+              </label>
+              <details id="optionsMenu" class="menu options">
+                <summary class="pill-btn">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10"/><circle cx="16" cy="6" r="2"/><path d="M4 12h4"/><path d="M12 12h8"/><circle cx="10" cy="12" r="2"/><path d="M4 18h12"/><circle cx="18" cy="18" r="2"/></svg>
+                  Options<span id="optCount" class="opt-count hidden"></span>
+                </summary>
+                <div class="menu-panel options-panel">
+                  <label for="hyp" class="field-label">Hypothesis to test <span class="hint">optional</span></label>
+                  <input id="hyp" type="text" maxlength="2000" placeholder="e.g. Economic decline was the primary cause">
+                  <p class="hint">Tested honestly — evidence is never bent to fit it.</p>
+                  <label class="check"><input id="docu" type="checkbox"><span><b>Documentary mode</b><small>chronology · myths vs evidence · source notes</small></span></label>
+                  <label class="check"><input id="fresh" type="checkbox"><span><b>Fresh run</b><small>skip the recent-result cache (uses quota)</small></span></label>
+                </div>
+              </details>
+              <span class="grow"></span>
+              <button id="start" type="submit" class="send" aria-label="Start research">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+                <span class="send-label" aria-hidden="true">Start research</span>
+              </button>
+            </div>
+          </form>
+          <div id="composerHint" class="composer-hint">
+            <span><span id="costNote"></span> <span id="modeHint"></span></span>
+            <span class="kbd-hint"><kbd>Ctrl</kbd> <kbd>↵</kbd> to start · <span id="qCount">0 / 5000</span></span>
+          </div>
+          <p id="staticBanner" class="static-note hidden">Runs entirely in your browser. Some pages block cross-site reading; their search excerpts are still cited.</p>
+
+          <ol class="how" aria-label="How it works">
+            <li><span>01</span><b>Search broadly</b>Web, scholarship and books — far past the top three links.</li>
+            <li><span>02</span><b>Grade every source</b>Tier 1 primary evidence down to tier 7 social leads.</li>
+            <li><span>03</span><b>Hunt contradictions</b>Looks for what would prove each finding wrong.</li>
+            <li><span>04</span><b>Cite everything</b>Claim → passage → source, exportable and auditable.</li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- Researching -->
+      <section id="progressView" class="view hidden" aria-labelledby="progressQuestion" aria-busy="false">
+        <header class="doc-head">
+          <div class="doc-title">
+            <p id="progressEyebrow" class="kicker">Researching</p>
+            <h1 id="progressQuestion" class="doc-h1"></h1>
+          </div>
+          <button id="cancelBtn" type="button" class="btn danger">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            Cancel
+          </button>
+        </header>
+        <div class="progress-bar" role="progressbar" aria-label="Research progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill" class="progress-fill"></div></div>
+        <div class="progress-grid">
+          <ol id="stages" class="stages" aria-label="Pipeline stages">
+            <li data-phase="plan"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Plan</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="search"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Search</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="read"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Read</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="analyze"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Analyze</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="provenance"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Check independence</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="synthesize"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Write</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+            <li data-phase="verify"><span class="st-icon" aria-hidden="true"></span><div class="st-body"><button type="button" class="st-head"><b>Verify</b><span class="st-meta"></span></button><ol class="st-events"></ol></div></li>
+          </ol>
+          <div class="progress-side">
+            <div id="liveStats" class="live-stats"></div>
+            <div id="waitNote" class="callout warn hidden"><b>Waits are normal</b>Free-tier keys refill every minute. The run pauses and resumes by itself — you can leave this tab in the background.</div>
+            <div id="tipNote" class="callout"><b>What's happening</b>Each stage is logged as it runs. Select a finished stage to see its details.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Result -->
+      <section id="resultView" class="view hidden" aria-labelledby="resultQuestion">
+        <header class="doc-head">
+          <div class="doc-title">
+            <p id="resultEyebrow" class="kicker muted"></p>
+            <h1 id="resultQuestion" class="doc-h1"></h1>
+            <p id="resultMeta" class="doc-meta"></p>
+          </div>
+          <div class="doc-actions">
+            <details id="exportMenu" class="menu right">
+              <summary class="btn">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+                Export
+              </summary>
+              <div class="menu-panel" role="group" aria-label="Export formats">
+                <button type="button" data-exp="md">Markdown <small>.md</small></button>
+                <button type="button" data-exp="html">Web page <small>.html</small></button>
+                <button type="button" data-exp="json">Raw data <small>.json</small></button>
+              </div>
+            </details>
+            <button id="printBtn" type="button" class="btn icon" aria-label="Print or save as PDF">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M7 9V4h10v5"/><rect x="4" y="9" width="16" height="8" rx="1"/><path d="M7 14h10v6H7z"/></svg>
+            </button>
+          </div>
+        </header>
+        <div class="tabs" role="tablist" aria-label="Result sections">
+          <button type="button" id="tab-report" data-tab="report" class="active" role="tab" aria-selected="true" aria-controls="tabBody" tabindex="0">Report</button>
+          <button type="button" id="tab-evidence" data-tab="evidence" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Evidence</button>
+          <button type="button" id="tab-sources" data-tab="sources" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Sources</button>
+          <button type="button" id="tab-method" data-tab="method" role="tab" aria-selected="false" aria-controls="tabBody" tabindex="-1">Method</button>
+        </div>
+        <div class="doc-layout">
+          <div id="tabBody" class="tab-body" role="tabpanel" aria-labelledby="tab-report" tabindex="0"></div>
+          <aside id="rail" class="rail" aria-label="Source details"></aside>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
 
 <dialog id="keyDialog" aria-labelledby="keyDialogTitle">
   <form id="keyForm" class="dialog-form" novalidate>
     <div class="dialog-head">
-      <h3 id="keyDialogTitle">API keys &amp; model</h3>
+      <div>
+        <h2 id="keyDialogTitle">Connect Gemini</h2>
+        <p id="serverKeyNote" class="dialog-lede"></p>
+      </div>
       <button id="closeKeyX" type="button" class="icon-btn" aria-label="Close">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
       </button>
     </div>
-    <p id="serverKeyNote" class="hint"></p>
-
-    <div class="lbl">
-      <span class="lbl-title">Gemini API keys <span class="optional">up to 5 · rotate on rate limits</span></span>
+    <div class="field">
+      <span class="field-label">API keys <span class="hint">— up to 5</span></span>
       <div id="keyList" class="key-list"></div>
-      <button type="button" id="addKey" class="btn ghost small">+ Add key</button>
-      <p class="hint">Stored in <b>this browser only</b>. Sent with each run, never stored server-side. Keys from <b>different Google Cloud projects</b> multiply throughput; keys from one project share a single quota.</p>
+      <button type="button" id="addKey" class="btn dashed small">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        Add key
+      </button>
+      <p class="hint">Keys from <b>different Google Cloud projects</b> add up; keys from one project share a single quota.</p>
     </div>
-
-    <label class="lbl" for="modelInput">
-      <span class="lbl-title">Model</span>
-    </label>
-    <select id="modelInput" class="select">
-      <option value="">Auto (per-task optimal)</option>
-    </select>
-    <p id="modelHint" class="hint model-hint hidden"></p>
-
+    <div class="field">
+      <label for="modelInput" class="field-label">Model</label>
+      <select id="modelInput" class="select">
+        <option value="">Auto — best model per task</option>
+      </select>
+      <p id="modelHint" class="hint hidden"></p>
+    </div>
     <p id="keyStatus" class="key-status hidden" role="status" aria-live="polite"></p>
-    <p class="hint">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
-    <div class="row">
-      <button id="saveKey" type="submit" class="btn primary">Validate &amp; save</button>
-      <button id="forgetKey" type="button" class="btn ghost danger">Forget all</button>
-      <button id="closeKey" type="button" class="btn ghost">Close</button>
+    <div class="dialog-foot">
+      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="ext-link">Get a free key
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+      </a>
+      <div class="row">
+        <button id="forgetKey" type="button" class="btn ghost danger">Forget all</button>
+        <button id="closeKey" type="button" class="btn ghost">Cancel</button>
+        <button id="saveKey" type="submit" class="btn primary">Validate &amp; save</button>
+      </div>
     </div>
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=2026-09-24a"></script>
+<script type="module" src="app.js?v=2026-09-24b"></script>
 </body>
 </html>

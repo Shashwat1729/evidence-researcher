@@ -10,7 +10,7 @@
 // Cache-busting version for the engine bundle. Bump together with STATIC_V in
 // app.js (enforced by tests/static-version.test.js). Browser-only suffix:
 // in Node the query string is omitted so the test suite keeps working.
-export const ENGINE_V = '2026-09-24a';
+export const ENGINE_V = '2026-09-24b';
 const engineSuffix = () => (typeof window === 'undefined' ? '' : `?v=${ENGINE_V}`);
 
 async function loadEngine() {
