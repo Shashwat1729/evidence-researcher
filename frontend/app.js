@@ -820,10 +820,36 @@ function renderTab(tab) {
           <span class="fig-credit">${escapeHtml(g.author || 'Unknown')} / ${escapeHtml(g.license || 'see source')} · ${escapeHtml(g.provider || 'Wikimedia Commons')} · <a href="${escapeAttr(g.sourcePage || g.url)}" target="_blank" rel="noopener noreferrer nofollow">source</a></span>
         </figcaption>
       </figure>`).join('');
+    // Evidence-quality metrics. Computed server-side with zero extra model
+    // calls; shown because a run can look finished while being thinly sourced,
+    // and nothing else in the product would reveal it.
+    const qualityStrip = (q) => {
+      if (!q) return '';
+      const pct = (v) => (v === null || v === undefined ? null : Math.round(v * 100));
+      const cell = (label, value, title) => {
+        if (value === null || value === undefined) return '';
+        return `<div class="qcell" title="${escapeAttr(title || '')}"><span class="qv">${value}${typeof value === 'number' && label.includes('%') === false ? '' : ''}</span><span class="ql">${escapeHtml(label)}</span></div>`;
+      };
+      const cells = [
+        cell('findings cited', pct(q.attributableFindingRate) === null ? null : `${pct(q.attributableFindingRate)}%`,
+          `${q.findingsCited} of ${q.findingsTotal} findings carry at least one citation`),
+        cell('claims supported', pct(q.claimSupportRate) === null ? null : `${pct(q.claimSupportRate)}%`,
+          'Share of extracted claims that are supported rather than disputed or unknown'),
+        cell('sources load-bearing', pct(q.citationPrecision) === null ? null : `${pct(q.citationPrecision)}%`,
+          `${q.decorativeCitations || 0} cited source(s) support no claim`),
+        cell('independently corroborated', pct(q.independenceAdjustedRate) === null ? null : `${pct(q.independenceAdjustedRate)}%`,
+          'Claims whose support spans two independent provenance groups'),
+        cell('sources inspected', pct(q.inspectedSourceRate) === null ? null : `${pct(q.inspectedSourceRate)}%`,
+          `${q.sourcesInspected || 0} of ${q.sourcesTotal || 0} sources were read in full`),
+      ].filter(Boolean).join('');
+      if (!cells) return '';
+      return `<details class="qstrip"><summary>Evidence quality${q.weakestLink ? ` — ${escapeHtml(q.weakestLink)}` : ''}</summary><div class="qgrid">${cells}</div></details>`;
+    };
     el.innerHTML = `<article class="report">
-      ${rep.synthesisFallback ? '<div class="callout warn"><b>Evidence inventory</b>Model synthesis was unavailable (quota). The sources and claims are real and cited — see Evidence and Sources.</div>' : ''}
+      ${rep.synthesisFallback ? '<div class="callout warn"><b>Cited extracts</b>The model quota ran out before the write-up, so each finding is a cited extract carrying its own supporting passage rather than an interpreted argument. Everything here is traceable; nothing is asserted without a link.</div>' : ''}
       <div class="bottom-line"><span class="kicker">Bottom line</span>${paras(rep.executiveSummary) || '<p>No summary was produced.</p>'}</div>
       ${confBar(r.claims)}
+      ${qualityStrip(r.quality)}
       ${findings.length > 2 ? `<nav class="toc" aria-label="Contents"><span class="kicker muted">Contents</span><ol>${findings.map((f, i) => `<li><a href="#f-${i}" data-jump="f-${i}">${escapeHtml((f.heading || `Finding ${i + 1}`).slice(0, 100))}</a></li>`).join('')}</ol></nav>` : ''}
       ${findings.map((f, i) => `<section class="finding" id="f-${i}"><h2><span class="num">${i + 1}.</span> ${escapeHtml(f.heading || `Finding ${i + 1}`)}</h2>
         ${paras(f.body)}${figuresFor(i)}${(f.cite || []).length ? `<p class="cites"><span class="hint">Sources</span> ${chips(f.cite)}</p>` : ''}${verdict(i)}</section>`).join('')}

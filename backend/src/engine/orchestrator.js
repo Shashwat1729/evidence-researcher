@@ -27,6 +27,7 @@ import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompl
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 import { figuresForReport } from '../providers/images.js';
+import { evidenceQuality } from '../quality.js';
 
 export const defaultDeps = {
   plan: (args) => planResearch({ ...args, model: args.model || MODEL_CONFIG.planner }),
@@ -1063,13 +1064,18 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // Cost snapshot LAST: estimateCost's keys overlap stats', so spreading it
   // earlier would freeze modelCalls/searchCalls/tokens at pre-synthesis values
   // and silently drop the synthesis (+verification) usage from the report.
-  const cost = estimateCost(stats.modelCalls, stats.searchCalls, stats.tokensIn, stats.tokensOut, stats.keyRotations);
+const cost = estimateCost(stats.modelCalls, stats.searchCalls, stats.tokensIn, stats.tokensOut, stats.keyRotations);
+  // Evidence-quality metrics. `stats` is cost telemetry; this says whether the
+  // output is actually evidence-backed. Zero extra model calls - everything is
+  // derived from data the run already produced.
+  const quality = evidenceQuality({ report, claims, sources, provenance });
   const result = {
     id: task.id,
     task, plan, report,
     claims, sources, contradictions, provenance,
     relations: provenance.relations || [],
     iterations,
+    quality,
     stats: { ...stats, ...cost, runtimeMs: Date.now() - started, escalated },
     stanceDisclosure: task.stance !== 'neutral'
       ? `Research stance: user requested "${task.stance}" investigation${task.hypothesis ? ` ("${task.hypothesis}")` : ''}. Contradicting evidence was actively searched for and is reported; the stance changed the research objective, not the truth conditions.`
@@ -1077,6 +1083,6 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     completedAt: new Date().toISOString(),
   };
   currentPhase = 'done';
-  ev('done', 'Research complete', { stats: result.stats });
+  ev('done', 'Research complete', { stats: result.stats, quality: result.quality });
   return result;
 }

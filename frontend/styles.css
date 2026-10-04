@@ -300,6 +300,17 @@ select option:disabled { color: var(--mut) }
 .tab-body { min-width: 0 }
 .tab-body:focus-visible { outline-offset: 6px; border-radius: 4px }
 .report, .evidence, .method { display: flex; flex-direction: column; gap: 26px; max-width: 720px }
+/* Evidence-quality strip: the run's own numbers, so a report that looks
+   finished but is thinly sourced cannot pass unnoticed. Collapsed by default —
+   it is context, not the deliverable. */
+.qstrip { margin: 18px 0 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--sunk); padding: 10px 12px }
+.qstrip summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); font-weight: 600 }
+.qstrip[open] summary { margin-bottom: 10px }
+.qgrid { display: flex; flex-wrap: wrap; gap: 8px 22px }
+.qcell { display: flex; flex-direction: column; gap: 2px; min-width: 92px }
+.qv { font-size: 17px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums }
+.ql { font-size: 11px; color: var(--mut); line-height: 1.3 }
+
 /* Figures: report images (freely-licensed Wikimedia media).
    The credit line is part of the component, not decoration — the licence
    permits redistribution only with author and licence visible, so it is styled
