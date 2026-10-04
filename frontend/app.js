@@ -15,7 +15,7 @@ let serverRuns = [];
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-10-04a';
+const STATIC_V = '2026-10-04b';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -380,6 +380,8 @@ function run(body) {
     onResult: () => { live.gotResult = true; },
     onError: () => { live.gotError = true; },
     onWait: () => { $('#waitNote').classList.remove('hidden'); $('#tipNote').classList.add('hidden'); },
+  // Clear the "waits are normal" explainer once the run settles.
+  onSettled: () => { $('#waitNote').classList.add('hidden'); },
     onStats: (stats, extra = {}) => {
       if (stats) live.stats = stats;
       if (extra.sources != null) live.sources = extra.sources;
@@ -564,6 +566,10 @@ function handleEvent(ev, step, hooks = {}) {
   }
   if (/waiting for api quota|quota is hot/i.test(ev.message || '')) hooks.onWait?.();
   if (ev.type === 'sources' || ev.type === 'claims') return step('ok', ev.message);
+  // The quota-wait explainer is a PROGRESS affordance. Leaving it up after the
+  // run ends tells the reader to expect more waiting for a run that is already
+  // finished — seen on a live run that ended on the daily cap.
+  if (ev.type === 'done' || ev.type === 'error' || ev.type === 'result') hooks.onSettled?.();
   step(ev.type === 'warning' ? 'warn' : ev.type === 'done' ? 'ok' : 'info', ev.message || ev.type);
 }
 
