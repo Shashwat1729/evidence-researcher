@@ -15,11 +15,11 @@ remains uncertain — with every conclusion traceable to its sources.
 
 ## Live demo (no install)
 
-**Try it now: https://shashwat1729.github.io/evidence-researcher/frontend/** —
+**Try it now: https://shashwat1729.github.io/evidence-researcher/** —
 the page detects the static host and runs the **full pipeline in your browser**
 with your own Gemini key — grounding search, academic discovery, claims,
-provenance, cited report, exports. No server, no signup; page fetches may be
-limited by site CORS policies (recorded honestly, never bypassed).
+provenance, cited report, figures, exports. No server, no signup; page fetches
+may be limited by site CORS policies (recorded honestly, never bypassed).
 
 ### Screenshots
 
@@ -83,8 +83,11 @@ JSON schemas, and every cited id is integrity-checked against retrieved sources.
 | Academic/books | Free, keyless: OpenAlex, Crossref, arXiv, Semantic Scholar, PubMed, Open Library, Google Books, Internet Archive (metadata = discovery, never "read"; 20-min LRU cache). |
 | Fetch | Dependency-free HTML extraction: charset-aware decoding, robots.txt respect, timeouts, size caps, final-URL citation, no paywall/auth/CAPTCHA bypass. |
 | Engine | Budgets (iterations, searches, sources, fetches, model calls, runtime, output tokens), early stopping, adaptive escalation on disagreement, per-claim confidence, provenance graph, post-synthesis cross-check. |
-| API | Express + SSE (`POST /api/research` streams progress, never chain-of-thought). Validation, per-IP rate limiting, concurrency guard, singleflight dedup, result cache, OpenAPI at `/api/openapi.json`. |
-| Frontend | Zero-build HTML/CSS/JS "reading room": runs sidebar, single-box composer, live stage timeline, report-first workspace (Report · Evidence · Sources · Method) where every numbered citation opens its source passage in a side rail (bottom sheet on phones), source filters by type/tier, SVG claim graph, Markdown/HTML/JSON export, print/PDF, light + dark themes, keyboard tabs, ARIA live regions. Static mode runs everything in-browser. |
+| Figures | Freely-licensed Wikimedia Commons images matched per section and placed between the prose and its citations. Attribution (author, licence, Commons file page) is structural — an image whose licence cannot be resolved is **dropped**, never shown unattributed. Queries are built from proper nouns in the section text, because long words are not names. |
+| Quality | Evidence-quality metrics computed with **zero** extra model calls: attributable-finding rate, claim support rate (~FActScore), citation precision (~ALCE, flags sources that support no claim), independence-adjusted support (two pages of one site are not cross-verification), inspected-source rate. A rate with no denominator is `null`, never `0`, and `weakestLink` names the shortfall instead of assigning a grade. |
+| API | Express + SSE (`POST /api/research` streams progress, never chain-of-thought). Validation, per-IP rate limiting, concurrency guard, singleflight dedup, result cache, live model discovery (`GET /api/models`), OpenAPI at `/api/openapi.json`. |
+| Frontend | Zero-build HTML/CSS/JS "reading room": runs sidebar, single-box composer, live stage timeline, report-first workspace (Report · Evidence · Sources · Method) where every numbered citation opens its source passage in a side rail (bottom sheet on phones), source filters by type/tier, SVG claim graph, collapsed evidence-quality disclosure, light + dark themes, keyboard tabs, ARIA live regions. Static mode runs everything in-browser. |
+| Exports | Markdown, standalone HTML, raw JSON, a **NotebookLM dossier** (bare URLs a notebook can resolve, every claim's evidence state, figure credits) and a **media brief** (per-section narration, on-screen titles, runtime, citations to display, figure to show). |
 | Persistence | Atomic JSON file store (`DATA_DIR`); browser localStorage history. Swappable for a real DB. |
 | Ops | Structured logs, `/api/health` + `/api/metrics`, CLI, MCP tool stub, GitHub Actions CI + Pages deploy. |
 
@@ -124,10 +127,14 @@ All in `.env` (never committed — see `.gitignore` + `.dockerignore`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | — | Primary key (required unless BYOK per request) |
+| `GEMINI_API_KEY` | — | Primary key (required unless BYOK per request). Both Google formats work: `AIza…` (standard) and `AQ.…` (authorization — the only kind AI Studio has issued since June 2026) |
+| `GEMINI_API_KEYS` | — | Any number of extra keys, comma/space/newline separated |
 | `GEMINI_API_KEY_FALLBACK` | — | Second key: auto-rotation on 429 (only multiplies quota when from a different project) |
-| `DEFAULT_MODEL` | `gemini-2.5-flash` | Base model; override per role (`PLANNER/RESEARCH/ANALYSIS/SYNTHESIS_MODEL`) |
+| `DEFAULT_MODEL` | unset | Leave unset to use the verified defaults (Flash-Lite for planning/analysis, Flash for search and writing). Pinning a model your project cannot serve is what previously degraded runs to cited extracts |
+| `PLANNER/RESEARCH/ANALYSIS/SYNTHESIS_MODEL` | — | Per-role model override |
 | `PORT` / `DATA_DIR` | `8787` / `./data` | Server port / persistence volume |
+| `MAX_KEYS_PER_REQUEST` | `25` | Keys accepted per request: dialog rows, validation, rotation pool |
+| `MODEL_CACHE_TTL_MS` | `600000` | Live model-discovery cache |
 | `MAX_CONCURRENT_RUNS` | `8` | Concurrent-run guard (503 beyond) |
 | `RATE_LIMIT_MAX` | `30` | Per-IP research POSTs per minute |
 | `SEARCH_STAGGER_MS` | `350` | Spacing between parallel search bursts |
@@ -135,10 +142,19 @@ All in `.env` (never committed — see `.gitignore` + `.dockerignore`):
 | `RESEARCH_BUDGETS_JSON` | — | Override mode budgets, e.g. `{"quick":{"maxSearches":3}}` |
 | `CORS_ORIGIN` / `LOG_LEVEL` | `*` / `info` | Deployment hardening |
 
+Quota note, measured on a live free-tier project: limits are **per project, not
+per key**, and they are very uneven per model — full Flash models allow 20
+requests/day while Flash-Lite allows 500/day and search grounding 1500/day. Extra
+keys only help when each comes from a **different** Cloud project. When a model's
+daily cap is spent the run continues on the next model in the fallback ladder
+rather than failing.
+
 ## Deployment
 
 - **GitHub Pages (static demo):** push to `master` — `.github/workflows/pages.yml` stages
-  `frontend/` + engine JS, verifies every static import resolves, and deploys. No secrets
+  `frontend/` + engine JS, writes a root `index.html` (the only path Pages serves),
+  verifies every static import resolves **and** that the root document's assets exist,
+  then deploys. The build fails rather than shipping an unservable site. No secrets
   involved (keys stay in visitors' browsers).
 - **Vercel:** `vercel.json` + `api/index.js` Express-as-function adapter (only Quick
   fits the hobby 60s cap — Standard+ needs Docker/VPS or a longer function timeout).
@@ -171,6 +187,7 @@ source diversity, stated uncertainty), never prose beauty.
 ```
 backend/src/{engine,providers,middleware}  pipeline, search, hardening
 backend/src/{config,schemas,gemini,store,routes,app,cache,logger,openapi,export}.js
+backend/src/{keys,models,quality}.js                key formats, live model discovery, metrics
 frontend/{index.html,styles.css,app.js,direct.js}   UI + static-mode runner
 api/index.js           Vercel adapter (same middleware stack)
 eval/                  benchmark questions + audit scorer

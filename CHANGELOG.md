@@ -1,5 +1,65 @@
 # Changelog
 
+## 2026-10-04 (later) - figures, Pages, evidence metrics
+
+Found by real end-to-end runs, not by unit tests.
+
+### Wrong and unlicensed images
+
+A live run put **"Major Arcana" (a tarot deck)** under a heading about Harappan
+water management and **"Collapse of the World Trade Center"** under the Late
+Harappan phase, both credited "Unknown / see source". Four distinct bugs:
+
+- **A one-word query matches that word anywhere.** "Urban Planning, Architecture,
+  and Water Management Systems of Major Cities" reduced to the single identifying
+  token "major", and Wikipedia's top hit was the Tarot article. A short generic
+  token is no longer searched at all; the guard sits at the search boundary and
+  short-circuits before any network call.
+- **Word length is not specificity.** "legacy transitions" matched "Microsoft Edge
+  Legacy"; "chronological phases transition" matched "Demographic transition".
+  Queries are now derived from capitalised non-sentence-initial words in the
+  section body, which is where the subject is actually named.
+- **Licence metadata lives on the FILE, not the article.** When `pageimages`
+  returned no file name the code fell back to the article title, so the lookup
+  missed and the image shipped unattributed. Attribution is now a hard gate: a
+  figure whose licence cannot be resolved is **dropped**.
+- **One bad title killed the whole batch.** A single unresolvable title failed the
+  multi-title licence request and took every other figure with it, so runs rendered
+  with no photos at all. Requests are chunked with a per-title retry.
+
+Also accepted `thumb.wikimedia.org`, which was silently rejecting every
+thumb-scaled lead image. Verified against a real report: water management →
+a Mohenjo-daro photograph; society/trade → the Akkadian seal of the Meluhhan
+interpreter; Iron Age legacy → Painted Grey Ware.
+
+### GitHub Pages served 404 for everyone
+
+`build-pages.js` staged `frontend/` and `backend/src/` but never wrote an index
+document at the artifact root — the only path Pages serves. Every deploy reported
+success and every URL 404'd; two deploys went unnoticed. The build now writes a
+root `index.html` with prefixed asset paths and **fails if that document or any
+asset it references is missing**, so an unservable static build cannot ship again.
+
+### Heading repair
+
+The section-writing call leaked structural debris into titles (a trailing
+`”, "`) and echoed its own placeholders ("Finding 2", "Finding 4", "Finding 6").
+Debris is stripped, dangling punctuation trimmed, and a bare "Finding N" replaced
+from the plan's arc. Run-together words ("CivilizationSafe Zone") are deliberately
+**not** split in the heading: a lowercase→capitalised boundary mangles `eBay` and
+`openAI` and broke a third of the suite.
+
+### Evidence-quality metrics
+
+The run reported cost telemetry but nothing about whether the output was
+evidence-backed. `backend/src/quality.js` adds, with **zero** extra model calls:
+attributable-finding rate (~Auto-AIS), claim support rate + histogram
+(~FActScore), citation precision (~ALCE, flagging sources that support no claim),
+independence-adjusted support (no published analogue; two pages of one site are
+not cross-verification), and inspected-source rate. A rate with no denominator is
+`null`, never `0`. There is no letter grade — `weakestLink` names the actual
+shortfall. A degraded write-up still surfaces even when every rate looks clean.
+
 ## 2026-10-04 - keys, models, figures, exports (all API formats work)
 
 ### The reported bug: "6 keys, 1 valid, 4 removed"
