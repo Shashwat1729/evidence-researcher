@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   enrichFiguresFromCommons, figureBudget, figuresForReport, fileKey, findFigure, findFigurePage,
-  imageQueryFor, imageQueryNarrow, matchSignals, queryTokens, stripHtml, titleMatch, toFigure,
+  imageQueryFor, narrowImageQueries, matchSignals, queryTokens, stripHtml, titleMatch, toFigure,
 } from '../backend/src/providers/images.js';
 import { exportMarkdown, exportHtml, exportNotebookLm, exportMediaBrief } from '../backend/src/export.js';
 import { runResearch } from '../backend/src/engine/orchestrator.js';
@@ -66,8 +66,8 @@ describe('candidate scoring — a wrong photo is worse than none', () => {
     assert.ok(s.coverage < 0.5);
   });
   it('the narrow query exposes the proper noun', () => {
-    assert.equal(imageQueryNarrow('Grid plan citadel Mohenjo-daro'), 'mohenjo-daro');
-    assert.equal(imageQueryNarrow(''), '');
+    assert.ok(narrowImageQueries('Grid plan citadel Mohenjo-daro').includes('mohenjo-daro'));
+    assert.deepEqual(narrowImageQueries(''), []);
   });
 });
 
@@ -124,11 +124,15 @@ describe('figure records are attributable', () => {
     assert.equal(fig.sourcePage, 'https://commons.wikimedia.org/wiki/File:Drainage_system.jpg');
   });
 
-  it('a failed licence lookup leaves the image rather than dropping it', async () => {
+  it('DROPS a figure whose licence cannot be resolved', async () => {
+    // Reversed deliberately. An unattributed figure must NOT ship: free-licensed
+    // media may only be redistributed with author and licence visible, and a
+    // missing licence is also the tell-tale of a bogus match (the "file name" was
+    // an article title). A report with fewer photos is fine; a report with
+    // unattributed or wrong photos is not.
     const fetchFn = async () => { throw new Error('offline'); };
-    const [fig] = await enrichFiguresFromCommons([toFigure(page(), 'q')], { fetchFn });
-    assert.ok(fig.url, 'image survives');
-    assert.equal(fig.author, '', 'but it is not falsely credited');
+    const out = await enrichFiguresFromCommons([toFigure(page(), 'q')], { fetchFn });
+    assert.deepEqual(out, [], 'unattributed figure is dropped, never shown as "Unknown / see source"');
   });
 });
 
@@ -154,17 +158,47 @@ describe('figure lookup', () => {
 });
 
 describe('figuresForReport', () => {
-  const dep = async () => ({
-    ok: true, status: 200,
-    json: async () => ({ query: { pages: [page({ title: 'Ancient drainage', pageimage: 'Ancient_drainage.jpg' })] } }),
-  });
+  // The provider makes TWO kinds of call: a search (prop=pageimages) and a
+  // licence lookup (prop=imageinfo). Both must be faked, because an unresolvable
+  // licence now DROPS the figure — which is exactly what the tests below would
+  // otherwise trip over.
+  const searchHit = { title: 'Ancient drainage', pageimage: 'Ancient_drainage.jpg', thumbnail: { source: IMG, width: 1280, height: 800 }, index: 0 };
+  const fakeApi = (match = () => true) => async (url) => {
+    if (String(url).includes('prop=imageinfo')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          query: {
+            pages: [{
+              title: 'File:Ancient drainage.jpg',
+              imageinfo: [{
+                descriptionurl: 'https://commons.wikimedia.org/wiki/File:Ancient_drainage.jpg',
+                extmetadata: { Artist: { value: 'X' }, LicenseShortName: { value: 'CC BY-SA 4.0' }, LicenseUrl: { value: 'https://creativecommons.org/licenses/by-sa/4.0' } },
+              }],
+            }],
+          },
+        }),
+      };
+    }
+    const q = decodeURIComponent(String(url));
+    return {
+      ok: true, status: 200,
+      json: async () => ({ query: { pages: match(q) ? [searchHit] : [] } }),
+    };
+  };
+  const dep = fakeApi();
+
   it('tags each figure with the section it belongs to', async () => {
     const figs = await figuresForReport({
       findings: [{ heading: 'Ancient drainage', body: 'Covered drains ran the length of the street.' }, { heading: 'Well yards', body: 'Every house had a well.' }],
-      mode: 'standard', fetchFn: async (url) => (/drainage|well/i.test(decodeURIComponent(url)) ? dep() : { ok: true, status: 200, json: async () => ({ query: { pages: [] } }) }),
+      mode: 'standard',
+      fetchFn: fakeApi((q) => /drainage|well/i.test(q)),
     });
     assert.ok(figs.length >= 1);
-    for (const f of figs) assert.equal(typeof f.section, 'number', 'figure knows its section index');
+    for (const f of figs) {
+      assert.equal(typeof f.section, 'number', 'figure knows its section index');
+      assert.ok(f.author && f.license, 'every shipped figure is attributed');
+    }
   });
   it('never shows the same photograph twice in one report', async () => {
     const figs = await figuresForReport({

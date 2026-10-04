@@ -37,6 +37,43 @@ for (const f of ['LICENSE', 'README.md']) {
   try { await fs.copyFile(path.join(ROOT, f), path.join(OUT, f)); } catch { /* optional */ }
 }
 
+// Root index document.
+//
+// The artifact root is what GitHub Pages serves, and it looks for index.html
+// THERE. Copying frontend/ to site/frontend/ therefore left the published site
+// with no document at its root: every deploy reported success and every URL
+// 404'd. Two deploys "succeeded" before this was noticed.
+//
+// The frontend keeps using relative asset paths, and app.js imports the engine
+// as ../backend/src/*.js — so the modules must stay in frontend/ and
+// backend/src/ side by side. Only index.html's OWN references need the
+// frontend/ prefix, which is what this rewrite does.
+const srcHtml = path.join(OUT, 'frontend', 'index.html');
+const rootHtml = path.join(OUT, 'index.html');
+const html = (await fs.readFile(srcHtml, 'utf8'))
+  .replace(/(src|href)="([A-Za-z0-9_.-]+\.(?:js|css|svg|png|webp|ico|json)(?:\?[^"]*)?)"/g, (m, attr, file) => `${attr}="frontend/${file}"`);
+await fs.writeFile(rootHtml, html, 'utf8');
+
+// Servability gate. A static build that cannot be served must fail CI, not
+// ship: assert the root document exists and that every asset it references
+// actually landed in the artifact.
+let missingAssets = 0;
+const refRe = /(?:src|href)="([^"]+)"/g;
+let m;
+while ((m = refRe.exec(html))) {
+  const ref = m[1];
+  if (/^(https?:)?\/\//.test(ref) || ref.startsWith('data:') || ref.startsWith('#')) continue;
+  const target = path.join(OUT, ref.split('?')[0]);
+  try { await fs.access(target); } catch {
+    missingAssets++;
+    console.error(`MISSING ASSET index.html -> ${ref}`);
+  }
+}
+if (!html.includes('frontend/app.js')) {
+  console.error('ROOT INDEX does not reference frontend/app.js');
+  missingAssets++;
+}
+
 // Import-integrity: every relative `from '...'` / `import '...'` must resolve.
 // Also covers versioned template imports: import(`../x.js${suffix}`) is
 // checked against ../x.js (query strings and ${} parts stripped).
@@ -60,5 +97,5 @@ for (const f of files) {
     }
   }
 }
-console.log(`pages: staged ${files.length} JS files, ${missing} broken imports`);
-process.exit(missing ? 1 : 0);
+console.log(`pages: staged ${files.length} JS files, ${missing} broken imports, ${missingAssets} missing asset(s) from the root index`);
+process.exit(missing || missingAssets ? 1 : 0);

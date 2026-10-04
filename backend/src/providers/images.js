@@ -46,6 +46,11 @@ export function imageQueryFor(heading, body = '') {
   const clean = (s) => String(s || '')
     // Drop parentheticals and trailing clauses: "Mohenjo-daro (UNESCO site)" → "Mohenjo-daro"
     .replace(/\([^)]*\)/g, ' ')
+    // The synthesis model sometimes emits structural junk into a heading —
+    // a trailing `”, "` or a stray closing quote. Left in, these become search
+    // terms that guarantee no match. Strip leading/trailing quote and bracket
+    // debris before anything else looks at the words.
+    .replace(/["“”'‘’)\]}]+/g, ' ')
     // Punctuation that cannot occur inside a name. Hyphens and apostrophes are
     // PRESERVED on purpose: stripping them turns "Mohenjo-daro" into
     // "Mohenjo daro", which no encyclopedia title will ever match.
@@ -133,7 +138,10 @@ function usableThumb(page) {
   const src = String(page?.thumbnail?.source || '');
   if (!src) return '';
   if (/\.svg($|\?)/i.test(src)) return '';
-  if (!/^https:\/\/upload\.wikimedia\.org\//i.test(src)) return '';
+  // Wikimedia serves scaled thumbs from thumb.wikimedia.org as well as
+  // upload.wikimedia.org. Allowing only the latter silently dropped every
+  // article whose lead image came back thumb-scaled.
+  if (!/^https:\/\/(?:upload|thumb)\.wikimedia\.org\//i.test(src)) return '';
   return src;
 }
 
@@ -196,6 +204,11 @@ const TTL_MS = 24 * 3600_000;
 export async function findFigurePage(query, { fetchFn = fetch, timeoutMs = 7000, minScore = 0.34, maxRank = 3, now = Date.now() } = {}) {
   const q = String(query || '').trim();
   if (!q) return null;
+  // A one-word query matches that word ANYWHERE, so a short generic word finds
+  // whatever Wikipedia happens to rank first ("major" -> "Major Arcana"). Only
+  // search a single token when it is proper-noun shaped.
+  const tokens = queryTokens(q);
+  if (tokens.length < 2 && !(tokens.length === 1 && tokens[0].length >= 6)) return null;
   const hit = cache.get(q);
   if (hit && now - hit.at < TTL_MS) return hit.page;
   const ctrl = new AbortController();
@@ -232,26 +245,23 @@ export async function findFigure(query, opts = {}) {
 
 /**
  * Attach author, licence, licence URL and file description to figures whose
- * underlying file is named. One batched request for the whole set: licence
- * metadata is only available via prop=imageinfo on the FILE, so without this
- * every image would ship as "unknown / see source page" — unattributed, which
- * the licence does not permit.
+ * underlying file is named. Chunked (a long title list is a slow, failure-prone
+ * request) and best-effort per chunk, so one slow chunk cannot starve the rest.
  *
- * Best-effort: a failure leaves the figures intact but unattributed.
+ * Licence metadata is only available via prop=imageinfo on the FILE. When
+ * pageimages returns no file name the fallback was the ARTICLE title, the
+ * lookup missed, and the report shipped "Unknown / see source" — unattributed.
+ * So this now returns ONLY ATTRIBUTED figures and drops the rest: freely
+ * licensed media may only be redistributed with author and licence visible, and
+ * an unattributed figure is in practice a reliable signal that the match itself
+ * was bogus.
  */
-export async function enrichFiguresFromCommons(figures, { fetchFn = fetch, timeoutMs = 9000 } = {}) {
+export async function enrichFiguresFromCommons(figures, { fetchFn = fetch, timeoutMs = 12000 } = {}) {
   const withFile = (figures || []).filter((f) => f?.file);
-  if (!withFile.length) return figures || [];
+  if (!withFile.length) return [];
   const titles = [...new Set(withFile.map((f) => `File:${f.file}`))];
   const byName = new Map();
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const url = `${API}?action=query&format=json&formatversion=2&prop=imageinfo` +
-      `&iiprop=extmetadata%7Curl&titles=${encodeURIComponent(titles.slice(0, 40).join('|'))}`;
-    const res = await fetchFn(url, { headers: { 'Api-User-Agent': UA, Accept: 'application/json' }, signal: ctrl.signal });
-    if (!res.ok) return figures;
-    const data = await res.json().catch(() => ({}));
+  const byNameFrom = (data) => {
     const pages = Array.isArray(data?.query?.pages) ? data.query.pages : [];
     for (const p of pages) {
       const info = p?.imageinfo?.[0];
@@ -269,31 +279,72 @@ export async function enrichFiguresFromCommons(figures, { fetchFn = fetch, timeo
         sourcePage: String(info.descriptionurl || '') || `https://commons.wikimedia.org/wiki/${encodeURIComponent(String(p.title || ''))}`,
       });
     }
-  } catch { /* leave figures unattributed rather than dropping them */ }
-  finally { clearTimeout(t); }
-  return (figures || []).map((f) => {
-    const m = byName.get(fileKey(f.file));
-    if (!m) return f;
-    return {
-      ...f,
-      author: m.author,
-      license: m.license,
-      licenseUrl: m.licenseUrl,
-      alt: m.description || f.alt,
-      sourcePage: m.sourcePage || f.sourcePage,
-    };
-  });
+  };
+  const fetchMeta = async (titleList) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const url = `${API}?action=query&format=json&formatversion=2&prop=imageinfo` +
+        `&iiprop=extmetadata%7Curl&titles=${encodeURIComponent(titleList.join('|'))}`;
+      const res = await fetchFn(url, { headers: { 'Api-User-Agent': UA, Accept: 'application/json' }, signal: ctrl.signal });
+      if (!res.ok) return false;
+      byNameFrom(await res.json().catch(() => ({})));
+      return true;
+    } catch { return false; }
+    finally { clearTimeout(t); }
+  };
+  // Small chunks, and a failed chunk is retried one title at a time. A single
+  // unresolvable title (an SVG logo, a .gif) otherwise fails the whole request
+  // and every figure in it was dropped — which is exactly how a run ended up
+  // with zero attributed images.
+  const CHUNK = 3;
+  for (let i = 0; i < titles.length; i += CHUNK) {
+    const chunk = titles.slice(i, i + CHUNK);
+    if (await fetchMeta(chunk)) continue;
+    for (const one of chunk) await fetchMeta([one]);
+  }
+  return (figures || [])
+    .map((f) => {
+      const m = byName.get(fileKey(f.file));
+      if (!m) return null;
+      return {
+        ...f,
+        author: m.author,
+        license: m.license,
+        licenseUrl: m.licenseUrl,
+        alt: m.description || f.alt,
+        sourcePage: m.sourcePage || f.sourcePage,
+      };
+    })
+    .filter(Boolean);
 }
 
 /**
- * Narrow query: only the IDENTIFYING tokens of the heading.
- * "Grid plan citadel Mohenjo-daro" -> "mohenjo-daro", which is the article that
- * actually exists. The full heading buries the proper noun under descriptors
- * and searches for nothing. Tried after the rich query fails.
+ * Narrow query: only the IDENTIFYING tokens of the heading, longest first
+ * (long tokens are proper-noun-like: "harappan", "civilization", "indus").
+ *
+ * Two real disasters came from the previous version, which used generic-filtered
+ * tokens in heading order:
+ *   • "Urban Planning, Architecture, and Water Management Systems of Major Cities"
+ *     reduced to the single token "major" -> Wikipedia's top hit was
+ *     "Major Arcana", a TAROT DECK, and it was published under a water-management
+ *     heading.
+ *   • "The Late Harappan Phase and Regional Cultural Continuities" searched as
+ *     "late harappan regional cultural" and matched nothing, so the section got
+ *     no image at all even though "harappan" is a perfect query.
+ *
+ * So: never search a bare short generic word, and try progressively shorter
+ * proper-noun queries. Both "harappan" and "mohenjo-daro" were verified to
+ * return exactly the right article.
  */
-export function imageQueryNarrow(heading) {
-  const tokens = queryTokens(heading);
-  return tokens.length ? tokens.slice(0, 4).join(' ').slice(0, 80) : '';
+export function narrowImageQueries(heading) {
+  const long = queryTokens(heading).filter((t) => t.length >= 6);
+  const out = [];
+  if (long.length >= 3) out.push(long.slice(0, 3).join(' '));
+  if (long.length >= 2) out.push(long.slice(0, 2).join(' '));
+  // A single token is only trustworthy when it is proper-noun shaped (>= 6 chars).
+  if (long.length === 1) out.push(long[0]);
+  return out;
 }
 
 /** Per-mode budget. Quick stays lean; deeper modes get several per section. */
@@ -326,12 +377,12 @@ export async function figuresForReport({ findings = [], plan = null, mode = 'sta
   let index = 0;
   for (const f of list) {
     if (out.length >= total) break;
-    // Three query forms, cheapest-and-most-likely first: the full cleaned
-    // heading, then only its identifying tokens (which expose the proper noun),
-    // then the opening clause of the body for headings that name nothing.
+    // Query forms to try, most specific first: the proper-noun-biased narrow
+    // queries, then the full cleaned heading, then the opening clause of the
+    // body for headings that name nothing at all.
     const queries = [
+      ...narrowImageQueries(f.heading),
       imageQueryFor(f.heading, f.body),
-      imageQueryNarrow(f.heading),
       imageQueryFor(null, f.body),
     ].filter(Boolean);
     for (const q of queries) {
