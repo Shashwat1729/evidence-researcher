@@ -51,7 +51,7 @@ describe('route hardening', () => {
     assert.match((await res.json()).error, /busy/i);
   });
 
-  it('labels cached inventories honestly (never masquerades as a fresh report)', async () => {
+  it('labels a cached extract-written report honestly (never masquerades as a fresh full report)', async () => {
     const app2 = createApp({
       runFn: async () => { throw new Error('must not run on cache hit'); },
       store: {
@@ -69,8 +69,9 @@ describe('route hardening', () => {
         body: JSON.stringify({ question: 'Is this ok?' }),
       });
       const text = await res.text();
-      assert.ok(text.includes('cached evidence inventory'), 'fallback cache labeled honestly');
-      assert.ok(!text.includes('Served from a recent identical run'), 'full-report message not used for inventory');
+      assert.ok(text.includes('cached report written from cited extracts'), 'extract-written cache labeled honestly');
+      assert.ok(text.includes('fresh: true'), 'tells the user how to force a new run now quota may have refilled');
+      assert.ok(!text.includes('Served from a recent identical run'), 'full-report message not used for the extract-written report');
     } finally {
       s2.closeAllConnections?.();
       await new Promise((r) => s2.close(r));

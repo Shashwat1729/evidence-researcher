@@ -7,13 +7,15 @@ if (typeof window !== 'undefined') window.__setCurrentForScreenshot = (r) => { c
 let serverKey = false;
 let staticMode = false;
 let serverModels = [];
+let discoveredModels = [];
+let modelsLive = false;
 let selectedSource = null;
 let serverRuns = [];
 // Static cache-busting version. MUST match ENGINE_V in direct.js (enforced by
 // tests/static-version.test.js). Bump both on any static-mode change so Pages
 // visitors never run a stale engine bundle (stale bundles caused confusing
 // "process is not defined" errors after deploys).
-const STATIC_V = '2026-09-24b';
+const STATIC_V = '2026-10-04a';
 const staticSuffix = () => (typeof window === 'undefined' ? '' : `?v=${STATIC_V}`);
 
 const MODE_BLURB = {
@@ -147,20 +149,11 @@ async function init() {
       serverKey = !!cfg.serverKey;
       hasFallback = !!cfg.hasFallback;
       apiOk = Array.isArray(cfg.modes);
+      // Server owns the key-count limit; the UI follows it instead of a
+      // hardcoded 5 that silently discarded the tail of a pasted list.
+      if (Number(cfg.maxKeysPerRequest) > 0) maxKeyRows = Math.floor(Number(cfg.maxKeysPerRequest));
     }
   } catch { /* offline or static host → static mode */ }
-  // Populate the model picker (server list wins, static falls back to the
-  // backend catalog so Pages gets the same list). Runs OUTSIDE the fetch
-  // try/catch: a 404 HTML page makes .json() throw on Pages.
-  const populateModels = (models) => {
-    serverModels = models;
-    $('#modelInput').innerHTML = '<option value="">Auto — best model per task</option>'
-      + models.map((m) => `<option value="${escapeAttr(m.id)}">${escapeHtml(m.label)} — ${escapeHtml(m.blurb || '')}</option>`).join('');
-    // Drop retired saved ids: a stale value would send a dead model id.
-    const savedModel = getStoredModel();
-    if (savedModel && models.some((m) => m.id === savedModel)) $('#modelInput').value = savedModel;
-    else if (savedModel) lsDel('gemini_model');
-  };
   if (cfg && Array.isArray(cfg.models) && cfg.models.length) {
     populateModels(cfg.models);
   } else {
@@ -170,6 +163,10 @@ async function init() {
     } catch { /* Auto only — the engine default still works */ }
   }
   staticMode = !apiOk;
+  // Live discovery, in the background: it must never block first paint, and it
+  // must run AFTER staticMode is known so Pages goes straight to the browser
+  // path instead of probing an /api/models that does not exist there.
+  refreshModels();
   $('#staticBanner').classList.toggle('hidden', !staticMode);
   $('#buildTag').textContent = `build ${STATIC_V}`;
   $('#serverKeyNote').textContent = staticMode
@@ -215,7 +212,7 @@ function autoGrow() {
 function updateModelHint(value) {
   const hint = $('#modelHint');
   hint.classList.toggle('hidden', !!value);
-  if (!value) hint.textContent = 'Auto uses Flash-Lite for planning and analysis and Gemini 2.5 Flash for search and writing — two separate quota buckets. If a picked model is unavailable on your key, the run falls back to Flash and says so.';
+  if (!value) hint.textContent = 'Auto uses Flash-Lite for planning and analysis and Gemini Flash for search and writing — two separate quota buckets. If a model is unavailable on your key, the run moves to another model that works and says so.';
 }
 
 function val(name) {
@@ -805,13 +802,31 @@ function renderTab(tab) {
       const label = v.supported === 'yes' ? 'Cross-check: supported by cited passages' : v.supported === 'no' ? 'Cross-check: not supported by its citations — provisional' : 'Cross-check: partly supported — treat as provisional';
       return `<p class="verdict ${cls}"${v.note ? ` title="${escapeAttr(v.note)}"` : ''}>${label}</p>`;
     };
+    // Figures for section `n`, placed between the prose and its citations so the
+    // image illustrates the text it belongs to. Attribution is rendered, never
+    // omitted: freely-licensed Wikimedia media may only be redistributed with
+    // author + licence visible.
+    // Figures for section `n`, placed between the prose and its citations so the
+    // image illustrates the text it belongs to. Attribution is rendered, never
+    // omitted: freely-licensed Wikimedia media may only be redistributed with
+    // author + licence visible.
+    const figuresFor = (n) => (rep.figures || []).filter((g) => Number(g.section) === n).map((g) => `
+      <figure class="fig">
+        <a href="${escapeAttr(g.sourcePage || g.url)}" target="_blank" rel="noopener noreferrer nofollow">
+          <img src="${escapeAttr(g.url)}" alt="${escapeAttr(g.alt || g.caption || '')}" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+        </a>
+        <figcaption>
+          <span class="fig-cap">${escapeHtml(g.caption || '')}</span>
+          <span class="fig-credit">${escapeHtml(g.author || 'Unknown')} / ${escapeHtml(g.license || 'see source')} · ${escapeHtml(g.provider || 'Wikimedia Commons')} · <a href="${escapeAttr(g.sourcePage || g.url)}" target="_blank" rel="noopener noreferrer nofollow">source</a></span>
+        </figcaption>
+      </figure>`).join('');
     el.innerHTML = `<article class="report">
       ${rep.synthesisFallback ? '<div class="callout warn"><b>Evidence inventory</b>Model synthesis was unavailable (quota). The sources and claims are real and cited — see Evidence and Sources.</div>' : ''}
       <div class="bottom-line"><span class="kicker">Bottom line</span>${paras(rep.executiveSummary) || '<p>No summary was produced.</p>'}</div>
       ${confBar(r.claims)}
       ${findings.length > 2 ? `<nav class="toc" aria-label="Contents"><span class="kicker muted">Contents</span><ol>${findings.map((f, i) => `<li><a href="#f-${i}" data-jump="f-${i}">${escapeHtml((f.heading || `Finding ${i + 1}`).slice(0, 100))}</a></li>`).join('')}</ol></nav>` : ''}
       ${findings.map((f, i) => `<section class="finding" id="f-${i}"><h2><span class="num">${i + 1}.</span> ${escapeHtml(f.heading || `Finding ${i + 1}`)}</h2>
-        ${paras(f.body)}${(f.cite || []).length ? `<p class="cites"><span class="hint">Sources</span> ${chips(f.cite)}</p>` : ''}${verdict(i)}</section>`).join('')}
+        ${paras(f.body)}${figuresFor(i)}${(f.cite || []).length ? `<p class="cites"><span class="hint">Sources</span> ${chips(f.cite)}</p>` : ''}${verdict(i)}</section>`).join('')}
       ${(rep.timeline || []).length ? section('Chronology', `<div class="table-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Event</th></tr></thead><tbody>${rep.timeline.map((t) => `<tr><td class="nowrap"><b>${escapeHtml(t.date || '')}</b></td><td>${escapeHtml(t.event || '')}</td></tr>`).join('')}</tbody></table></div>`) : ''}
       ${section('What we can establish', list(rep.established))}
       ${section('Competing explanations', list(rep.competing))}
@@ -1010,7 +1025,8 @@ $$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async ()
   if (!current) return;
   const fmt = b.dataset.exp;
   const ext = fmt === 'html' ? 'html' : fmt === 'json' ? 'json' : 'md';
-  const name = `research-${String(current.id || 'report').replace(/[^\w-]/g, '').slice(0, 40)}.${ext}`;
+  const suffix = fmt === 'brief' ? '-media-brief' : fmt === 'notebooklm' ? '-notebooklm' : '';
+  const name = `research-${String(current.id || 'report').replace(/[^\w-]/g, '').slice(0, 40)}${suffix}.${ext}`;
   // Client-side render first (works for every result, including ones the
   // server never saved); fall back to the server export if the shared
   // module is not reachable from this host.
@@ -1018,8 +1034,11 @@ $$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async ()
     let text;
     if (fmt === 'json') text = JSON.stringify(current, null, 2);
     else {
-      const { exportMarkdown, exportHtml } = await import(`../backend/src/export.js${staticSuffix()}`);
-      text = fmt === 'html' ? exportHtml(current) : exportMarkdown(current);
+      const mod = await import(`../backend/src/export.js${staticSuffix()}`);
+      if (fmt === 'html') text = mod.exportHtml(current);
+      else if (fmt === 'brief') text = mod.exportMediaBrief(current);
+      else if (fmt === 'notebooklm') text = mod.exportNotebookLm(current);
+      else text = mod.exportMarkdown(current);
     }
     const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
     const a = document.createElement('a');
@@ -1038,9 +1057,134 @@ $('#printBtn').addEventListener('click', () => {
   setTimeout(() => window.print(), 60); // print dialog → Save as PDF
 });
 
+/**
+ * Discover which models the saved keys can actually call, then re-populate the
+ * picker. Two paths, same result:
+ *   • server available → GET /api/models (server-side union across keys)
+ *   • static/Pages     → ListModels straight from the browser (the endpoint
+ *                        allows CORS; key validation already does this)
+ /**
+ * Fill the model picker. Curated suggestions lead (they carry the written
+ * blurbs), then everything DISCOVERED from the live catalogue — so a model
+ * released after this build shipped is selectable immediately, with no code
+ * change.
+ *
+ * MODULE scope, deliberately. It used to be a `const` inside init(), which made
+ * it invisible to refreshModels() — that call threw ReferenceError, the catch
+ * swallowed it, and discovery silently never applied while /api/models returned a
+ * perfectly good 16-model list. A silent catch hid a real bug for a whole
+ * verification cycle; the catch in refreshModels now reports instead.
+ */
+function populateModels(models, { live = false } = {}) {
+  modelsLive = live;
+  const seen = new Set();
+  const merged = [];
+  for (const m of models || []) {
+    const id = m?.id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push({ id, label: m.label || id, blurb: m.blurb || '', curated: Boolean(m.curated) });
+  }
+  serverModels = merged;
+  $('#modelInput').innerHTML = '<option value="">Auto — best model per task</option>'
+    + merged.map((m) => `<option value="${escapeAttr(m.id)}"${m.blurb ? ` title="${escapeAttr(m.blurb)}"` : ''}>${escapeHtml(m.label)}${m.curated ? '' : ' ·new'}</option>`).join('');
+  const count = $('#modelCount');
+  if (count) {
+    count.textContent = live
+      ? `${merged.length} models your key${merged.length === 1 ? '' : 's'} can call — including any released after this build`
+      : `${merged.length} suggested models — connect a key to see every model available to you`;
+  }
+  // Drop retired saved ids: a stale value would send a dead model id.
+  const savedModel = getStoredModel();
+  if (savedModel && merged.some((m) => m.id === savedModel)) $('#modelInput').value = savedModel;
+  else if (savedModel) lsDel('gemini_model');
+  updateModelHint($('#modelInput').value);
+}
+
+async function refreshModels() {
+  const keys = getStoredKeys();
+  if (!keys.length) return;
+  const curated = serverModels.length ? serverModels : [];
+  try {
+    let models = null;
+    if (!staticMode) {
+      try {
+        const headers = keys.length === 1 ? { 'x-gemini-key': keys[0] } : { 'x-gemini-keys': JSON.stringify(keys) };
+        const res = await fetch('/api/models', { headers, cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.models) && data.models.length) models = { list: data.models, live: !!data.live };
+        }
+      } catch { /* fall through to direct discovery */ }
+    }
+    if (!models) {
+      // Direct discovery. Uses the server-side filter when the module is
+      // reachable (Pages ships backend/src), else the local mirror — the
+      // parity between the two is asserted in tests/keyshape.test.js.
+      let select = null;
+      try {
+        ({ selectResearchModels: select } = await import(`../backend/src/models.js${staticSuffix()}`));
+      } catch { /* module not reachable — use the mirror below */ }
+      const found = await discoverModelsDirect(keys, select);
+      if (found.length) models = { list: [...curated, ...found], live: true };
+    }
+    if (models?.list?.length) populateModels(models.list, { live: models.live });
+  } catch (e) {
+    // Discovery failing is invisible by nature — the picker just looks shorter,
+    // with no indication anything went wrong. That is exactly how a
+    // ReferenceError here went unnoticed for a whole verification cycle, so say
+    // so in the UI instead of swallowing it. Never blocks starting a run.
+    const count = $('#modelCount');
+    if (count && !modelsLive) {
+      count.textContent = `Could not list your models (${(e?.message || 'unknown error').slice(0, 40)}). Showing suggested models only.`;
+    }
+  }
+}
+
+/** Union the catalogue across a few keys (model availability is per-project,
+ *  so one key's catalogue is not the whole story) and run it through `select`
+ *  when available. Never throws. */
+async function discoverModelsDirect(keys, select) {
+  const found = [];
+  await Promise.all(keys.slice(0, 3).map(async (k) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': k }, signal: ctrl.signal });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      for (const m of data?.models || []) found.push(m);
+    } catch { /* one dead key must not hide the others */ }
+    finally { clearTimeout(t); }
+  }));
+  if (!found.length) return [];
+  if (typeof select === 'function') return select(found);
+  // Local mirror of backend/src/models.js UNUSABLE + MODEL_ID_SHAPE.
+  const UNUSABLE = /(embedding|tts|transcribe|translat|native-audio|audio|image|vision|live|realtime|robotics|computer-use|omni|deep-research)/i;
+  const SHAPE = /^gemini-[A-Za-z0-9][A-Za-z0-9._-]*$/i;
+  return found
+    .map((m) => String(m?.name || '').replace(/^models\//, ''))
+    .filter((id) => SHAPE.test(id) && !UNUSABLE.test(id))
+    .filter((id, i, a) => a.indexOf(id) === i)
+    .sort()
+    .map((id) => ({ id, label: id, blurb: '', curated: false }));
+}
+
 // ---------- keys dialog (edits a draft; storage changes only on save) ----------
 let keyDraft = [];
 let keyReturnFocus = null;
+// How many keys this deployment accepts. Published by GET /api/config
+// (backend keys.js maxKeys(), env MAX_KEYS_PER_REQUEST, default 25). It was a
+// hardcoded 5 everywhere, which is why the UI silently threw away every key
+// past the fifth one you pasted — you typed six and the app kept one.
+const DEFAULT_MAX_KEYS = 25;
+let maxKeyRows = DEFAULT_MAX_KEYS;
+// Format check, mirroring backend/src/keys.js KEY_SHAPE. Google issues AIza…
+// (standard) and AQ.… (authorization) keys — AI Studio has issued only AQ
+// since June 2026 — so an AIza-only test here reported working keys as broken
+// and deleted them. tests/keyshape.test.js asserts both copies agree, so this
+// mirror cannot drift.
+const KEY_SHAPE = /^(?:AIza|AQ\.)[A-Za-z0-9._-]{20,}$/;
 function openKeyDialog() {
   if ($('#keyDialog').open) return;
   closeNav();
@@ -1061,7 +1205,7 @@ function renderKeyList(status = []) {
   container.innerHTML = keyDraft.map((k, i) => `
     <div class="key-item">
       <label class="visually-hidden" for="key-${i}">Gemini API key ${i + 1}</label>
-      <input id="key-${i}" type="password" value="${escapeAttr(k)}" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      <input id="key-${i}" type="password" value="${escapeAttr(k)}" placeholder="AIza… or AQ.…" autocomplete="off" spellcheck="false">
       ${status[i] ? `<span class="key-state ${status[i].cls}">${escapeHtml(status[i].text)}</span>` : ''}
       <button type="button" class="icon-btn" data-toggle="${i}" aria-label="Show key ${i + 1}" aria-pressed="false">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -1070,7 +1214,9 @@ function renderKeyList(status = []) {
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/></svg>
       </button>
     </div>`).join('') || '<p class="hint">No keys yet — add one to run research.</p>';
-  $('#addKey').disabled = keyDraft.length >= 5;
+  $('#addKey').disabled = keyDraft.length >= maxKeyRows;
+  const cap = $('#keyCapHint');
+  if (cap) cap.textContent = `- up to ${maxKeyRows}`;
   container.querySelectorAll('[data-remove]').forEach((btn) => btn.addEventListener('click', () => {
     syncDraftFromInputs();
     keyDraft.splice(Number(btn.dataset.remove), 1);
@@ -1102,8 +1248,69 @@ function parseKeyInputs(values) {
   }
   return [...new Set(keys.map((k) => k.trim()).filter(Boolean))];
 }
+
+/**
+ * Pasting several keys into one field must produce one row per key.
+ *
+ * This is not a nicety: a single-line <input> silently STRIPS newlines from
+ * pasted text, so pasting a .env-style list concatenated every key into one
+ * unrecognisable blob. That blob passed no format check, was sent to Google as
+ * a single key, and came back as "Request had invalid authentication
+ * credentials" — which is exactly the "these keys do not work" symptom this
+ * whole fix set exists to eliminate. Commas survive an <input>, newlines do
+ * not, so the clipboard is intercepted and the keys distributed into rows.
+ */
+$('#keyList').addEventListener('paste', (e) => {
+  const text = e.clipboardData?.getData('text');
+  if (!text) return;
+  const parts = parseKeyInputs([text]);
+  if (parts.length < 2) return; // a single key: let the browser paste it normally
+  e.preventDefault();
+  syncDraftFromInputs();
+  const idx = Math.max(0, keyDraft.indexOf(e.target));
+  keyDraft.splice(idx, 1, ...parts.slice(0, maxKeyRows));
+  renderKeyList();
+  const inputs = $$('#keyList input');
+  inputs[Math.min(idx + parts.length, inputs.length - 1)]?.focus();
+});
+/**
+ * Recover keys that were GLUED together before the paste handler could see
+ * them (autofill, drag-and-drop, or an <input> that had already stripped the
+ * newlines). Every Google key begins "AIza" or "AQ." and neither prefix occurs
+ * anywhere inside a key, so a second occurrence proves two keys were
+ * concatenated. Split there, and only accept the result when every segment is
+ * itself a well-formed key — never guess.
+ */
+function splitConcatenatedKeys(value) {
+  const v = String(value || '');
+  const starts = [...v.matchAll(/AIza|AQ\./g)].map((m) => m.index);
+  if (starts.length < 2) return null;
+  const parts = starts.map((idx, i) => v.slice(idx, i + 1 < starts.length ? starts[i + 1] : undefined));
+  return parts.every((p) => KEY_SHAPE.test(p)) ? parts : null;
+}
+
+/** Parse the dialog into individual keys AND grow the draft to one row per key,
+ *  so a single field holding six pasted keys visibly becomes six rows. Truncating
+ *  instead (the old `.slice(0, 5)`) is what made keys vanish without notice.
+ *  Returns { keys, duplicates, dropped }. */
+function draftKeysFromInputs() {
+  syncDraftFromInputs();
+  const expanded = [];
+  for (const raw of keyDraft) {
+    const glued = splitConcatenatedKeys(raw);
+    if (glued) expanded.push(...glued);
+    else expanded.push(...parseKeyInputs([raw]));
+  }
+  const keys = [...new Set(expanded.filter(Boolean))].slice(0, maxKeyRows);
+  // Re-render so the user sees exactly which keys are in play.
+  if (keys.length !== keyDraft.length || keyDraft.some((k, i) => String(k || '').trim() !== (keys[i] || ''))) {
+    keyDraft = keys.slice();
+    renderKeyList();
+  }
+  return { keys, duplicates: expanded.filter(Boolean).length - keys.length, dropped: Math.max(0, expanded.filter(Boolean).length - keys.length) };
+}
 /** Validate keys: via the server when present, else directly against Google
- *  (ListModels — no generation quota). Returns per-key results or null. */
+ *  (ListModels - no generation quota). Returns per-key results or null. */
 async function validateKeys(keys) {
   if (!staticMode) {
     try {
@@ -1115,7 +1322,7 @@ async function validateKeys(keys) {
   try {
     return await Promise.all(keys.map(async (key) => {
       const masked = key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : `${key.slice(0, 2)}…`;
-      if (!/^AIza[\w-]{20,}$/.test(key)) return { valid: false, masked, error: 'not a Gemini key' };
+      if (!KEY_SHAPE.test(key)) return { valid: false, masked, error: 'unrecognized key format' };
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
       try {
@@ -1135,7 +1342,7 @@ $('#closeKey').addEventListener('click', () => $('#keyDialog').close());
 $('#closeKeyX').addEventListener('click', () => $('#keyDialog').close());
 $('#addKey').addEventListener('click', () => {
   syncDraftFromInputs();
-  if (keyDraft.length >= 5) return;
+  if (keyDraft.length >= maxKeyRows) return;
   keyDraft.push('');
   renderKeyList();
   const inputs = $$('#keyList input');
@@ -1143,8 +1350,9 @@ $('#addKey').addEventListener('click', () => {
 });
 $('#keyForm').addEventListener('submit', async (e) => {
   e.preventDefault(); // keep the dialog open while validating
-  syncDraftFromInputs();
-  let keys = parseKeyInputs(keyDraft).slice(0, 5);
+  // One row per key, whatever was pasted where. No silent truncation.
+  const { keys: parsed, duplicates, dropped } = draftKeysFromInputs();
+  let keys = parsed;
   const model = $('#modelInput').value || '';
   const saveModel = () => { lsSet('gemini_model', model); updateKeyStatus(); };
   if (!keys.length) {
@@ -1178,10 +1386,18 @@ $('#keyForm').addEventListener('submit', async (e) => {
     } else {
       note = `Saved ${keys.length} key${keys.length > 1 ? 's' : ''} without checking (offline).`;
     }
+    // Never let a key disappear without a word: say what was folded away.
+    const extras = [];
+    if (duplicates) extras.push(`${duplicates} duplicate${duplicates > 1 ? 's' : ''} ignored (a repeated key shares one quota)`);
+    if (dropped) extras.push(`${dropped} beyond the ${maxKeyRows}-key limit ignored`);
+    if (extras.length) note += ` (${extras.join('; ')})`;
     setStoredKeys(keys);
     saveModel();
     $('#keyDialog').close();
     showNotice(note, '');
+    // The key set just changed, so what the models can do may have changed
+    // too (availability is per-project). Re-discover in the background.
+    refreshModels();
   } finally {
     saveBtn.disabled = false;
     saveBtn.textContent = 'Validate & save';

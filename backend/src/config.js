@@ -6,17 +6,30 @@
 const env = (typeof process !== 'undefined' && process.env) || {};
 
 export const MODEL_CONFIG = {
-  // Verified live 2026-09-18 with real generate calls on a NEW free-tier key
-  // (not just ListModels, which lies by omission): gemini-2.5-flash,
-  // gemini-flash-latest, and gemini-flash-lite-latest all return 200 (lite
-  // answered fastest at ~0.9s); gemini-2.5-flash-lite AND gemini-2.5-pro both
-  // 404 ("no longer available to new users"). Limits are per model per
-  // project, so planning/analysis ride the lite alias while research and
-  // synthesis use flash — two live buckets instead of one.
+  // Verified live 2026-10-04 with REAL generate + google_search grounding calls
+  // against ten keys across several projects — not just ListModels, which lies
+  // by omission:
+  //   gemini-flash-latest        6/6 keys OK, grounding OK
+  //   gemini-flash-lite-latest   6/6 keys OK
+  //   gemini-3.5-flash           6/6 keys OK
+  //   gemini-2.5-flash           404 on a NEWER project: "no longer available
+  //                              to new users" — it was the old default, which
+  //                              meant every synthesis call on such a project
+  //                              died and the run degraded to an inventory.
+  //
+  // Quota, measured on the same free-tier project's rate-limit dashboard:
+  //   full flash models -> 5 RPM, 250K TPM,  20 requests/DAY
+  //   flash-LITE models  -> 15 RPM, 250K TPM, 500 requests/DAY
+  // Limits are per model per PROJECT, so planning, analysis and the many cheap
+  // extraction calls ride the lite alias (500/day) while search and writing use
+  // flash. That split is what keeps a standard run inside its daily budget
+  // instead of exhausting 20 requests and producing an inventory.
+  // Search grounding has its own, far larger daily budget (1500/day), so the
+  // searches are not the bottleneck — the generation calls are.
   planner: env.PLANNER_MODEL || env.DEFAULT_MODEL || 'gemini-flash-lite-latest',
-  research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  research: env.RESEARCH_MODEL || env.DEFAULT_MODEL || 'gemini-flash-latest',
   analysis: env.ANALYSIS_MODEL || env.DEFAULT_MODEL || 'gemini-flash-lite-latest',
-  synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-2.5-flash',
+  synthesis: env.SYNTHESIS_MODEL || env.DEFAULT_MODEL || 'gemini-flash-latest',
 };
 
 export const MODES = {
@@ -97,26 +110,45 @@ export const MODES = {
 export const STANCES = ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'];
 
 // Curated Gemini models offered in the UI picker (alongside the API key).
-// Verified live 2026-09-18 with REAL generate calls on a new free-tier key:
-// every id below returned HTTP 200 (flash-lite-latest fastest at ~0.9s).
-// The 1.5/2.0 families are retired (canonicalized to Auto below); 2.5-lite
-// and 2.5-pro 404 for new keys ("no longer available to new users") so they
-// are NOT offered — but stay accepted for old keys that still have access
-// (COMPAT_MODELS), with automatic fallback to the default on 404.
+// Verified live 2026-10-04 with REAL generate calls on six independent keys
+// (see MODEL_CONFIG). Every id below answered 200 on all of them.
+// The 1.5/2.0 families are retired (canonicalized to Auto below); the 2.5
+// family now 404s on newer projects ("no longer available to new users"), so
+// it is NOT offered — but stays accepted for old keys that still have access
+// (COMPAT_MODELS), with automatic fallback down MODEL_FALLBACK_LADDER on 404.
 export const AVAILABLE_MODELS = [
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', blurb: 'Default — best balance of depth and free-tier quota (10 RPM).' },
-  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)', blurb: 'Fastest, most quota headroom — verified on new keys, best for planning.' },
-  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)', blurb: 'Tracks the newest flash — an extra quota bucket for research.' },
+  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)', blurb: 'Default — newest flash, best balance of depth and free-tier quota.', curated: true },
+  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)', blurb: 'Fastest, most quota headroom — verified on new keys, best for planning.', curated: true },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', blurb: 'Pinned 3.5 flash — a second research bucket that does not move under you.', curated: true },
+];
+
+// Ordered recovery path when a model is unavailable (404 / not supported) or its
+// DAILY request cap is spent. The requested id is always tried first; this list
+// is what comes after.
+//
+// Order is quota-driven, measured on a real free-tier project's rate-limit
+// dashboard (2026-10-04):
+//   gemini-flash-latest      5 RPM,  250K TPM,  20 requests/day
+//   gemini-3.5-flash         5 RPM,  250K TPM,  20 requests/day
+//   gemini-3.1-flash-lite   15 RPM,  250K TPM, 500 requests/day
+//   gemini-flash-lite-latest 15 RPM, 250K TPM, 500 requests/day
+// So when a full-flash daily cap is spent, falling back to LITE keeps the run
+// alive on a 25x larger budget. Lite is therefore the LAST rung, not the first:
+// it is the fallback that keeps working when everything else is dry. Every entry
+// was verified callable on six independent keys.
+export const MODEL_FALLBACK_LADDER = [
+  'gemini-flash-latest',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
 ];
 
 // Legacy ids: accepted (old keys may still resolve them) but never offered
 // and never defaulted. A 404 on these triggers automatic fallback, never a
-// dead run.
-const COMPAT_MODELS = new Set(['gemini-2.5-flash-lite', 'gemini-2.5-pro']);
-
-export function isKnownModel(id) {
-  return AVAILABLE_MODELS.some((m) => m.id === id) || COMPAT_MODELS.has(id);
-}
+// dead run. Kept for reference/telemetry only — isKnownModel() is now
+// pattern-based, so these are not a gate.
+const COMPAT_MODELS = new Set(['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', ...MODEL_FALLBACK_LADDER]);
+export { COMPAT_MODELS };
 
 // Retired model ids (verified gone 2026-09-16). Saved preferences and old
 // clients may still send them — map to '' (Auto) instead of failing, so a
@@ -130,6 +162,25 @@ export function canonicalizeModel(id) {
   const v = String(id || '').trim();
   if (!v || RETIRED_MODELS.has(v)) return '';
   return v;
+}
+
+/**
+ * Accept ANY well-formed Gemini id, not just the curated list.
+ *
+ * This is the difference between this app aging gracefully and not. The old
+ * allow-list meant a model Google shipped yesterday returned
+ * "400 Unknown model" until somebody edited this file — the exact failure the
+ * user hit when 2.5-flash stopped serving their project and nothing newer was
+ * offered. Discovery (backend/src/models.js) now populates the picker from the
+ * live catalogue, and this gate only rejects things that cannot be a model id
+ * or are known-retired. Anything unrecognised still degrades safely: a 404 on
+ * the id walks the fallback ladder instead of failing the run.
+ */
+const MODEL_ID_SHAPE = /^gemini-[A-Za-z0-9][A-Za-z0-9._-]*$/i;
+export function isKnownModel(id) {
+  const v = String(id || '').trim();
+  if (!v || RETIRED_MODELS.has(v)) return false;
+  return MODEL_ID_SHAPE.test(v);
 }
 
 export const STANCE_GUARDRAIL =

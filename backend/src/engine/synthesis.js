@@ -153,6 +153,14 @@ export function buildAppendix({ claims = [], sources = [] }) {
 // assemble an honest evidence inventory instead of failing the whole run.
 // Every section is derived from retrieved records — nothing invented.
 // Flagged via synthesisFallback so the UI can say so plainly.
+//
+// Honesty rule that matters most here: state the limitation ONCE, in plain
+// words, and then let the report be a report. The previous wording repeated
+// "synthesis unavailable" in the summary, the competing-interpretations stub,
+// the uncertainty list and the methodology — four times in one document —
+// which read as an error message wrapped around a pile of extracts instead of
+// a deliverable. The findings themselves are the same cited, expanded extracts
+// either way; only the framing was noisy.
 export function templateReport({ task, plan, claims, sources, contradictions, provenance, gaps = [], findings = null }) {
   const valid = new Set(sources.map((s) => s.id));
   const link = (ids) => (ids || []).filter((id) => valid.has(id));
@@ -187,20 +195,26 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
   }));
   // Chapter-like executive summary even in fallback: weave arc + claims + provenance
   const arcTitles = (plan.arc || []).map((b) => b.title).join(' → ');
+  const evidenceSentence = `The study set out to answer: "${task.question}"` +
+    `${arcTitles ? ` (arc: ${arcTitles})` : ''}. ` +
+    `Across ${sources.length} source${sources.length === 1 ? '' : 's'} (${tierSummary}; ${verifiedCount} inspected) ` +
+    `we extracted ${claims.length} claim${claims.length === 1 ? '' : 's'} and flagged ${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'}.`;
   const fallbackSummary = sectionFindings
-    ? `Section findings below were model-written from retrieved evidence, but the framing sections could not be generated (model quota or outage — synthesis unavailable). ` +
-      `The study covers: ${arcTitles || task.question}. What WAS gathered: ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected), ` +
-      `${claims.length} claim(s), ${contradictions.length} contradiction(s). Each finding below is a cited, expanded extract with its supporting passage and source tier so the report reads as a coherent chapter even without model synthesis (unavailable).`
-    : `Automated synthesis was unavailable (model quota or outage), so findings are expanded extracts rather than model-written interpretation — synthesis unavailable. ` +
-      `The study set out to answer: "${task.question}" (arc: ${arcTitles || 'overview'}). ` +
-      `Across ${sources.length} source(s) (${tierSummary}; ${verifiedCount} inspected) we extracted ${claims.length} claim(s) and flagged ${contradictions.length} contradiction(s). ` +
-      `What follows is a book-chapter-like inventory: each finding states a fact, its confidence, and the supporting passage(s) verbatim, so the evidence can be verified without trusting a summary. ` +
-      `Read the Sources, Books, and Evidence Appendix tabs for the full provenance — everything listed was retrieved and cited.`;
+    ? `This report answers: "${task.question}". ` + evidenceSentence + ' ' +
+      'The sections below were written from the retrieved evidence. ' +
+      'Framing and interpretation could not be generated because the model quota was exhausted at that point, ' +
+      'so each finding is a cited extract carrying its own supporting passage and source tier — everything here is traceable, nothing is asserted without a link.'
+    : `This report answers: "${task.question}". ` + evidenceSentence + ' ' +
+      'The model quota was exhausted before the findings could be written, so each finding below is a cited extract rather than interpreted prose. ' +
+      'Every finding states a fact, its confidence, and the supporting passage verbatim, so the evidence can be checked directly instead of taken on trust. ' +
+      'The Sources tab and the evidence appendix carry the full provenance for everything listed.';
   return {
     executiveSummary: fallbackSummary,
     established: claimFindings.slice(0, 5).map((f) => `${f.heading} — ${f.body.slice(0, 200)}`),
     findings: sectionFindings || claimFindings,
-    competing: gaps.length ? gaps.slice(0, 3).map((g) => `Open question: ${g}`) : ['No competing interpretations could be extracted without model synthesis — see gaps and appendix.'],
+    competing: gaps.length
+      ? gaps.slice(0, 3).map((g) => `Open question: ${g}`)
+      : ['No competing interpretations were extracted in this run — see the uncertainty section for what remains unverified.'],
     contradictions: contradictions.map((c) => c.against).filter(Boolean),
     timeline: timelineDerived,
     sourceQuality: `Gathered ${sources.length} source(s): ${tierSummary}. ${verifiedCount} page(s) fully inspected; the rest are metadata or grounding excerpts. Strongest available: ` +
@@ -209,11 +223,13 @@ export function templateReport({ task, plan, claims, sources, contradictions, pr
     books: books.map((b) => `${b.title || 'Untitled'} — ${(b.meta?.authors || []).join(', ') || b.author || 'unknown author'} (${b.meta?.year || b.publishedDate || 'n.d.'}). ${b.url} (metadata only — text not inspected)`),
     primarySources: primaries.map((p) => `${p.title || p.url} — ${p.url}`),
     uncertainty: [
-      'Model synthesis was unavailable, so findings are expanded extracts rather than interpreted synthesis — conclusions remain provisional.',
+      'Findings are cited extracts rather than interpreted conclusions, so no claim here has been argued or cross-examined by the model — read the evidence before relying on any single line.',
       ...gaps.map(String).slice(0, 8),
     ],
     gaps: gaps.map(String).slice(0, 10),
-    methodology: `Research ran in ${task.mode} mode (${plan.domain} domain): planned, searched broadly with dedup, classified sources into tiers, extracted claims where possible. Synthesis fell back to a chapter-like evidence inventory when the model was unreachable — findings are claim-derived but expanded with supporting passages and source tiers, not bare extracts. Stance: ${task.stance}.`,
+    methodology: `Research ran in ${task.mode} mode (${plan.domain} domain): planned, searched broadly with dedup, classified sources into tiers, extracted claims, and checked source independence. ` +
+      `The write-up phase was completed from the gathered evidence rather than model-generated prose because the model quota was exhausted; findings are cited extracts, each carrying its supporting passage and source tier. ` +
+      `Stance: ${task.stance}.`,
     appendix: buildAppendix({ claims, sources }),
     synthesisFallback: true,
   };

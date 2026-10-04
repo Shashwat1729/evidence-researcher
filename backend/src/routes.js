@@ -11,9 +11,12 @@ import { getKeys } from './gemini.js';
 import { AVAILABLE_MODELS, canonicalizeModel, isKnownModel } from './config.js';
 import { academicCache } from './cache.js';
 import { createRateLimiter } from './middleware/security.js';
-import { exportMarkdown, exportHtml } from './export.js';
+import { exportMarkdown, exportHtml, exportNotebookLm, exportMediaBrief } from './export.js';
+import { keyKind, looksLikeKey, maskKey, maxKeys, normalizeKeys } from './keys.js';
+import { DISCOVERY_MAX_KEYS, discoverModelsCached, modelCacheTtlMs } from './models.js';
 import * as defaultStore from './store.js';
 export { exportMarkdown, exportHtml };
+export { maskKey };
 
 const PKG_VERSION = (() => {
   try {
@@ -27,36 +30,61 @@ function cacheTtl() {
   return Math.max(0, raw);
 }
 
-/** Mask a key for display: never more than the first 6 + last 4 chars. */
-export function maskKey(k) {
-  const s = String(k || '');
-  return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : (s ? `${s.slice(0, 2)}…` : '(empty)');
+/** Curated suggestions first (order and written blurbs preserved), then every
+ *  discovered model the keys can call, de-duplicated by id. Keeps the picker
+ *  useful with no network and current with a live catalogue. */
+export function mergeModels(curated, discovered) {
+  const out = [];
+  const seen = new Set();
+  for (const m of [...(curated || []), ...(discovered || [])]) {
+    const id = m?.id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: m.label || id, blurb: m.blurb || '', curated: Boolean(m.curated) });
+  }
+  return out;
 }
 
 /** Lightweight key check via ListModels (no generation quota burned).
- *  Key goes in the x-goog-api-key header, never the URL. Exported for tests. */
+ *  Key goes in the x-goog-api-key header, never the URL. Exported for tests.
+ *
+ *  Format gate accepts BOTH formats Google issues (AIza standard keys and AQ.
+ *  authorization keys). Gating on "AIza" alone was the bug that reported four
+ *  perfectly working AQ keys as invalid and then deleted them. The gate is now
+ *  only a typo filter — the live call below is the real arbiter.
+ *
+ *  Returns { valid, masked, kind, error?, warning? }. */
 export async function validateKey(k, { fetchFn = fetch, timeoutMs = 8000 } = {}) {
   const key = typeof k === 'string' ? k.trim() : '';
   const masked = maskKey(key);
-  if (!key || key.length < 20) return { valid: false, masked, error: 'Too short to be a valid key' };
-  if (!key.startsWith('AIza')) return { valid: false, masked, error: 'Invalid format (should start with AIza)' };
+  const kind = keyKind(key);
+  if (!key || key.length < 20) return { valid: false, masked, kind, error: 'Too short to be a valid key' };
+  if (!looksLikeKey(key)) return { valid: false, masked, kind, error: 'Unrecognized key format (expected AIza… or AQ.…)' };
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const resp = await fetchFn('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
       headers: { 'x-goog-api-key': key }, signal: ctrl.signal,
     });
-    if (resp.ok) return { valid: true, masked };
+    if (resp.ok) return { valid: true, masked, kind };
     const data = await resp.json().catch(() => ({}));
     const msg = data?.error?.message || `HTTP ${resp.status}`;
-    if (resp.status === 400 && /API key not valid/i.test(msg)) return { valid: false, masked, error: 'Invalid API key' };
-    if (resp.status === 403) return { valid: false, masked, error: 'Permission denied (check the Generative Language API is enabled)' };
+    if (resp.status === 400 && /API key not valid/i.test(msg)) return { valid: false, masked, kind, error: 'Invalid API key' };
+    if (resp.status === 403) {
+      // Since 2026-06-19 the Gemini API rejects UNRESTRICTED standard keys
+      // outright. That is fixable in the Cloud console and the message is
+      // uselessly generic without saying so — name it and point at the fix.
+      if (/unrestricted|api keys? (is|are) not allowed|create keys/i.test(msg) || /API_KEY_INVALID/i.test(String(data?.error?.status || ''))) {
+        return { valid: false, masked, kind, error: 'Key rejected as unrestricted — restrict it to the Gemini API (generativelanguage.googleapis.com)' };
+      }
+      return { valid: false, masked, kind, error: 'Permission denied (check the Generative Language API is enabled for the project)' };
+    }
     // 429: the key is real, its quota is just hot right now.
-    if (resp.status === 429) return { valid: true, masked, warning: 'Key valid but quota exceeded (try later)' };
-    return { valid: false, masked, error: String(msg).slice(0, 80) };
+    if (resp.status === 429) return { valid: true, masked, kind, warning: 'Key valid but quota exceeded (try later)' };
+    return { valid: false, masked, kind, error: String(msg).slice(0, 80) };
   } catch (e) {
-    if (e?.name === 'AbortError') return { valid: false, masked, error: 'Timeout' };
-    return { valid: false, masked, error: String(e?.message || 'Unknown error').slice(0, 80) };
+    if (e?.name === 'AbortError') return { valid: false, masked, kind, error: 'Timeout' };
+    return { valid: false, masked, kind, error: String(e?.message || 'Unknown error').slice(0, 80) };
   } finally {
     clearTimeout(t);
   }
@@ -88,31 +116,79 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
   }));
 
   r.get('/config', (_req, res) => res.json({
-    serverKey: !!process.env.GEMINI_API_KEY,
+    serverKey: !!process.env.GEMINI_API_KEY || !!process.env.GEMINI_API_KEYS,
     hasFallback: !!process.env.GEMINI_API_KEY_FALLBACK,
     modes: ['quick', 'standard', 'deep', 'exhaustive'],
     stances: ['neutral', 'lean', 'adversarial', 'steelman', 'comparative'],
+    // Suggestions only. Any well-formed gemini-* id is accepted (see
+    // GET /api/models for what your keys can actually call), so a new release
+    // never requires a code change to be usable.
     models: AVAILABLE_MODELS,
-    maxKeysPerRequest: 5,
+    // Dynamic, not a hardcoded 5: the client renders this many key rows and the
+    // validator accepts this many keys. Both used to be pinned to 5, which made
+    // the UI discard everything past the fifth pasted key without a word.
+    maxKeysPerRequest: maxKeys(),
+    keyFormats: ['AIza…', 'AQ.…'],
   }));
 
+  // Live model discovery. Answers "what can these keys actually call?" instead
+  // of shipping a frozen list, so a model Google released this morning is
+  // selectable this morning. Curated ids keep their position and written blurb;
+  // everything else is appended in ranked order. Falls back to the curated
+  // catalog when no key is available or every probe fails — the picker must
+  // never be empty.
+  r.get('/models', async (req, res) => {
+    const explicit = [];
+    const single = (req.header('x-gemini-key') || '').trim();
+    if (single) explicit.push(single);
+    try {
+      const arr = JSON.parse(req.header('x-gemini-keys') || '[]');
+      if (Array.isArray(arr)) explicit.push(...arr);
+    } catch { /* malformed header ignored */ }
+    const serverKey = (process.env.GEMINI_API_KEY || '').trim();
+    const keys = getKeys(explicit.length ? explicit : serverKey);
+    if (!keys.length) return res.json({ models: AVAILABLE_MODELS, live: false, reason: 'no key supplied' });
+    try {
+      const discovered = await discoverModelsCached(keys, modelCacheTtlMs());
+      const merged = mergeModels(AVAILABLE_MODELS, discovered);
+      if (!discovered.length) return res.json({ models: merged, live: false, reason: 'no models returned' });
+      // Report what was ACTUALLY probed, not how many keys exist: discovery
+      // deliberately asks only the first few (a catalogue from one project is
+      // enough, and every extra key is another request).
+      res.json({ models: merged, live: true, discovered: discovered.length, keys: keys.length, probed: Math.min(keys.length, DISCOVERY_MAX_KEYS) });
+    } catch {
+      res.json({ models: AVAILABLE_MODELS, live: false, reason: 'discovery failed' });
+    }
+  });
+
   // Validate pasted keys with a lightweight model-list call (no quota burn on research).
-  // Body: { keys: string[] } -> { results: [{ valid: bool, masked: string, error?: string }] }
+  // Body: { keys: string[] } -> { results: [{ valid, masked, kind, error? }],
+  //                              duplicates, dropped }
   // Invalid keys are automatically flagged for removal; valid keys are kept.
+  // Duplicates are REPORTED, never silently swallowed: a key pasted twice shares
+  // one quota, so pretending it doubled your capacity is a lie.
   // Key checks hit Google on the caller's behalf: rate-limit them so the
   // endpoint can't be used as an open proxy for key probing.
   const keyLimiter = createRateLimiter({ windowMs: 60_000, max: Number(process.env.KEY_VALIDATE_RATE_MAX || 12) });
   r.post('/keys/validate', keyLimiter, async (req, res) => {
-    const keys = Array.isArray(req.body?.keys) ? req.body.keys : [];
-    if (!keys.length) return res.status(400).json({ error: 'No keys provided' });
-    if (keys.length > 5) return res.status(400).json({ error: 'Max 5 keys per request' });
-    res.json({ results: await Promise.all(keys.map((k) => validateKey(k))) });
+    const input = Array.isArray(req.body?.keys) ? req.body.keys : [];
+    if (!input.length) return res.status(400).json({ error: 'No keys provided' });
+    const limit = maxKeys();
+    const { keys, duplicates, dropped } = normalizeKeys(input, limit);
+    if (!keys.length) return res.status(400).json({ error: 'No usable keys provided' });
+    res.json({
+      results: await Promise.all(keys.map((k) => validateKey(k))),
+      duplicates,
+      dropped,
+      limit,
+    });
   });
 
   // SSE research run. Query/body: question, mode, stance, hypothesis, documentary, model, fresh.
   r.post('/research', researchLimiter, async (req, res) => {
-    // Multi-key: x-gemini-key (single) and/or x-gemini-keys (JSON array, max 5).
-    // All supplied keys rotate on 429 — N keys multiply effective quota.
+    // Multi-key: x-gemini-key (single) and/or x-gemini-keys (JSON array or
+    // separated list). All supplied keys rotate on 429 — N keys multiply
+    // effective quota. Cap comes from maxKeys(), never a hardcoded number.
     let explicit = [];
     const single = (req.header('x-gemini-key') || '').trim();
     if (single) explicit.push(single);
@@ -191,12 +267,22 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
       // These are already retried patiently in gemini.js; if they surface here,
       // the wait budget was truly exhausted. Handle gracefully with fallback info.
       if (e.code === 'RPD_EXHAUSTED') {
-        msg = 'Daily API quota exhausted (resets at midnight PT). Try a billed project for higher limits. Partial results may still be available from cache.';
+        // The ladder already tried every configured model, so this only fires
+        // when each model's own daily cap is spent. Google's free tiers are
+        // uneven (full flash 20/day, flash-LITE 500/day per project), so the
+        // actionable advice is a project with its own budget, or a billed tier.
+        msg = 'Daily request cap reached on every model this key can use (free tier: ~20/day per full model, ~500/day per Flash-Lite model, per project). '
+          + 'Quota is per project, not per key — so extra keys from the SAME project do not help. '
+          + 'Use a key from a different Google Cloud project, enable billing, or try again after midnight Pacific.';
       } else if (e.code === 'QUOTA_EXHAUSTED' || status === 429 || /quota|rate|429/i.test(msg)) {
         // This should rarely happen now that gemini.js waits patiently (5 min).
         // Same-project keys share ONE quota — extra keys only help when each
         // comes from a different Google Cloud project (per-project quota).
         msg = 'API quota temporarily exhausted after patient retries. Keys from the SAME project share one quota — add keys from different Google Cloud projects to multiply quota, use Quick mode (~5 calls vs ~21), or try again shortly. Partial results may be in cache.';
+      } else if (e.code === 'MODEL_UNAVAILABLE' || e.modelUnavailable) {
+        // Every configured model 404'd on every key. Say what to do about it
+        // instead of echoing a raw provider error.
+        msg = 'None of the configured Gemini models are available on the supplied key(s) for this project. Leave the model picker on "Auto", or create a key in AI Studio for a project that has the Gemini API enabled.';
       }
       if (/API key|API_KEY|key not valid/i.test(msg)) msg = 'Invalid Gemini API key. Check the key and try again.';
       send({ type: 'error', message: msg });
@@ -214,8 +300,8 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
         // Honesty: a cached INVENTORY must never masquerade as a fresh full
         // report — say what it is so the user can force a new run now that
         // quota may have refilled.
-        if (hit.report?.synthesisFallback) {
-          send({ type: 'progress', message: 'Served a cached evidence inventory (synthesis was unavailable then) — no quota used. Send { fresh: true } for a new run now that quota may have refilled.' });
+if (hit.report?.synthesisFallback) {
+          send({ type: 'progress', message: 'Served a cached report written from cited extracts (the model quota was exhausted during that run) — no quota used. Send { fresh: true } for a new run now that quota may have refilled.' });
         } else {
           send({ type: 'progress', message: 'Served from a recent identical run — no quota used. Send { fresh: true } to force a new run.' });
         }
@@ -315,16 +401,29 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     catch { res.status(404).json({ error: 'not found' }); }
   });
 
-  // Export: ?format=md|html|json (downloads as attachment)
+  // Export: ?format=md|html|json|notebooklm|brief (downloads as attachment)
   r.get('/export/:id', async (req, res) => {
     try {
       const format = String(req.query.format || 'md');
-      if (!['md', 'html', 'json'].includes(format)) return res.status(400).json({ error: 'format must be md, html or json' });
+      // notebooklm = uploadable dossier for NotebookLM's audio/video/notes
+      // outputs; brief = a per-section narration + on-screen production outline.
+      const formats = ['md', 'html', 'json', 'notebooklm', 'brief'];
+      if (!formats.includes(format)) return res.status(400).json({ error: `format must be one of ${formats.join(', ')}` });
       const result = await store.getResult(req.params.id);
       const base = `research-${String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'report'}`;
       if (format === 'json') {
         res.attachment(`${base}.json`);
         return res.json(result);
+      }
+      if (format === 'notebooklm') {
+        res.attachment(`${base}-notebooklm.md`);
+        res.type('markdown');
+        return res.send(exportNotebookLm(result));
+      }
+      if (format === 'brief') {
+        res.attachment(`${base}-media-brief.md`);
+        res.type('markdown');
+        return res.send(exportMediaBrief(result));
       }
       if (format === 'html') {
         res.attachment(`${base}.html`);

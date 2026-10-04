@@ -12,3 +12,7 @@ coverage/
 .DS_Store
 *.log
 dist/
+
+# Local verification artefacts (Playwright MCP output)
+.playwright-mcp/
+*.playwright-mcp*

@@ -26,6 +26,7 @@ import { findContradictionsAndGaps } from './contradictions.js';
 import { synthesizeReport, templateReport, repairFindingCites, ensureReportCompleteness, buildAppendix, partitionBeats, DEPTH } from './synthesis.js';
 import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
+import { figuresForReport } from '../providers/images.js';
 
 export const defaultDeps = {
   plan: (args) => planResearch({ ...args, model: args.model || MODEL_CONFIG.planner }),
@@ -44,6 +45,10 @@ export const defaultDeps = {
   synthesize: (args) => synthesizeReport(args),
   urlContext: (args) => urlContext(args),
   verify: (args) => verifyFindings(args),
+  // Figures: freely-licensed photographs/diagrams matched to each section, so
+  // a report reads like a chapter instead of a wall of text. Quota-free
+  // (Wikimedia), best-effort, never fatal.
+  figures: (args) => figuresForReport(args),
 };
 
 function domainOf(url) {
@@ -125,10 +130,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     } else if (info?.type === 'resumed') {
       waitNoticeShown = false;
     } else if (info?.type === 'model-fallback') {
-      // A requested model 404'd on this key (retired/gated id) — the call
-      // already retried on the default model. Loud on purpose: a stale picker
-      // choice must be visible, never silently substituted.
-      ev('warning', `Model ${info.from} unavailable on this key — using ${info.to} instead.`);
+      // A model was unavailable (retired/gated id, or a project without it).
+      // The call already continued on the next id in the ladder — this is a
+      // calm progress line, not a failure: the report is still being written.
+      ev('progress', `Model ${info.from} is unavailable for this key's project — continuing with ${info.to}.`);
     }
   };
   // Circuit breaker: cap TOTAL quota-waiting per run so a dead quota fails
@@ -225,7 +230,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const maybeFallback = (e) => {
     const hasEvidence = (_sourcesRef && _sourcesRef.length) || (_allResultsRef && _allResultsRef.length);
     if (isQuotaError(e) && hasEvidence) {
-      ev('warning', `Quota exhausted mid-run — assembling evidence inventory from gathered sources instead (${(_sourcesRef || _allResultsRef || []).length} sources).`);
+      ev('warning', `Quota exhausted mid-run — continuing with the ${(_sourcesRef || _allResultsRef || []).length} source(s) already gathered.`);
       return true;
     }
     return false;
@@ -375,12 +380,14 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   const searchStagger = Math.max(0, Number(penv.SEARCH_STAGGER_MS || 350));
   const batch = queries.slice(0, Math.max(0, budget.maxSearches - stats.searchCalls));
   let searchIdx = 0;
+  // Every search gets the WHOLE key pool, not one pre-picked key. gemini.js
+  // already starts each call at a rotating offset (even distribution across
+  // projects) and fails over mid-call on 429/404. Pinning a single key per
+  // search — the old behaviour — disabled that failover, so one hot key simply
+  // lost its search instead of handing the work to an idle one.
   const doSearchWithKey = async (q, cat) => {
-    const keys = getKeys(key);
-    // Round-robin explicit key per search call to spread load across keys
-    // preemptively (not just on 429), doubling effective RPM with 2 keys.
-    const explicit = keys.length > 1 ? keys[(searchIdx++) % keys.length] : key;
-    return doSearch(q, cat, explicit);
+    searchIdx++;
+    return doSearch(q, cat, key);
   };
   // Quota-resilient search: if the grounding pool aborts on quota (global
   // wait budget spent across concurrent searches), do NOT discard the run —
@@ -911,7 +918,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
             continue;
           }
           if (isQuota || isHardCap) {
-            ev('progress', `${label} quota unavailable (${isHardCap ? 'hard cap — no refill' : 'deadline reached'}) — will be covered in fallback inventory`);
+            ev('progress', `${label} quota unavailable (${isHardCap ? 'hard cap — no refill' : 'deadline reached'}) — will be covered by the evidence-backed report`);
           } else {
             ev('warning', `${label} unavailable (${(e.message || '').slice(0, 80)}) — continuing with other sections`);
           }
@@ -968,9 +975,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         maxTokens: budget.reportTokens,
       })));
     } catch (e) {
-      // Model synthesis unavailable (quota/outage) → honest evidence inventory.
-      // The run still delivers everything actually gathered, flagged as fallback.
-      ev('warning', `Model synthesis unavailable (${(e.message || '').slice(0, 100)}) — assembling evidence inventory instead`);
+      // Quota ran out before the write-up. The gathered evidence is still
+      // delivered as a report — say it once, calmly, without dressing it as an
+      // error the user has to act on.
+      ev('warning', `Model quota ran out during the write-up — delivering the report from the ${sources.length} gathered source(s) as cited extracts instead.`);
       report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
     }
   }
@@ -990,6 +998,28 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   ensureReportCompleteness(report, { claims, iterations });
   // appendix: deterministic claim-by-claim evidence ledger (zero model cost)
   report.appendix = buildAppendix({ claims, sources });
+  // ---- FIGURES ----
+  // Freely-licensed images matched per section, so the report reads like a
+  // chapter rather than a wall of text. Quota-free and best-effort: a failed
+  // image lookup must never affect the report, so failures degrade to none.
+  //
+  // Only for un-scripted runs. Injecting deps means the caller is driving the
+  // pipeline itself (tests, eval harness) and expects no hidden network calls,
+  // so a scripted run gets no figures unless it asks for them via deps.figures.
+  const wantsFigures = Object.keys(deps).length === 0 || typeof deps.figures === 'function';
+  if (wantsFigures && (report.findings || []).length) {
+    currentPhase = 'figures';
+    try {
+      const figures = await phase('figures', () => D.figures({ findings: report.findings || [], plan, mode: task.mode }));
+      if (figures?.length) {
+        report.figures = figures;
+        const credited = figures.filter((f) => f.author && f.license).length;
+        ev('progress', `${figures.length} figure(s) matched (${credited} fully credited — Wikimedia, free licence)`);
+      }
+    } catch (e) {
+      ev('progress', `Figures unavailable (${(e.message || '').slice(0, 60)}) — report delivered without images`);
+    }
+  }
 
   // Close quota-aware try started after sources — handle mid-run quota hits gracefully.
   } catch (e) {
@@ -1002,7 +1032,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         ensureReportCompleteness(report, { claims, iterations });
         report.appendix = buildAppendix({ claims, sources });
       } catch { /* inventory is still valid without the extras */ }
-      ev('warning', 'Report generated from evidence inventory due to quota — open Sources/Books tabs for raw evidence.');
+      ev('warning', 'Quota ran out during the write-up — the report below is built from the evidence gathered so far (open the Sources tab for the raw material).');
     } else {
       throw e;
     }

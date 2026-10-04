@@ -104,7 +104,7 @@ describe('ensureReportCompleteness', () => {
 });
 
 describe('templateReport honesty', () => {
-  it('flags fallback and cites only real ids', () => {
+  it('flags fallback, cites only real ids, and discloses the limitation ONCE', () => {
     const sources = [
       { id: 's1', title: 'Charter', url: 'https://a.example/x', tier: 1, proximity: 'primary', verified: true, meta: {}, domain: 'a.example' },
       { id: 's2', title: 'Book', url: 'https://b.example/y', tier: 2, sourceType: 'book', meta: { authors: ['A. Uthor'], year: 1999 }, domain: 'b.example' },
@@ -115,10 +115,44 @@ describe('templateReport honesty', () => {
       sources, contradictions: [], provenance: { note: 'n/a' }, gaps: ['g1'],
     });
     assert.equal(r.synthesisFallback, true);
-    assert.ok(r.executiveSummary.includes('unavailable'));
     assert.deepEqual(r.findings[0].cite, ['s1']);
     assert.ok(!JSON.stringify(r).includes('ghost'));
     assert.ok(r.books[0].includes('A. Uthor'));
+
+    // The limitation must be disclosed — a fallback that pretends to be a
+    // normal report is the failure mode here.
+    assert.match(r.executiveSummary, /quota/i, 'summary discloses why findings are extracts');
+    assert.match(r.executiveSummary, /extract/i, 'summary says what the findings actually are');
+    assert.match(r.methodology, /extract/i, 'methodology is honest about the write-up');
+    // ...and disclosed ONCE, not repeated in every field. The old wording
+    // stamped "synthesis unavailable" into the summary, competing, uncertainty
+    // and methodology, which read as an error wrapped around a pile of
+    // extracts. Guard the fix: no single phrase may dominate the document.
+    const blob = JSON.stringify(r).toLowerCase();
+    for (const phrase of ['unavailable', 'synthesis unavailable', 'could not']) {
+      const hits = blob.split(phrase).length - 1;
+      assert.ok(hits <= 1, `"${phrase}" appears ${hits} times — the fallback disclaimer must be stated once, not repeated`);
+    }
+    // And it must not read as an apology: the summary leads with the answer.
+    assert.ok(r.executiveSummary.startsWith('This report answers'), 'summary leads with the finding, not the failure');
+  });
+
+  it('keeps section findings when only the framing call failed', () => {
+    const sources = [
+      { id: 's1', title: 'Charter', url: 'https://a.example/x', tier: 1, verified: true, meta: {}, domain: 'a.example' },
+    ];
+    const r = templateReport({
+      task: { mode: 'standard', stance: 'neutral', question: 'Why did it fail?' },
+      plan: { domain: 'history', arc: [{ title: 'Origins' }] },
+      claims: [{ text: 'X founded 1901', state: 'supported', supporting: ['s1'], contradicting: [] }],
+      sources, contradictions: [], provenance: { note: 'n/a' }, gaps: [],
+      findings: [{ heading: 'Origins', body: 'A model-written section body.', cite: ['s1'] }],
+    });
+    assert.equal(r.synthesisFallback, true);
+    assert.equal(r.findings.length, 1);
+    assert.equal(r.findings[0].heading, 'Origins');
+    assert.match(r.executiveSummary, /sections below were written/i, 'says the sections are real, model-written work');
+    assert.ok(!r.uncertainty.join(' ').includes('unavailable'), 'no availability apology in the uncertainty list');
   });
 });
 

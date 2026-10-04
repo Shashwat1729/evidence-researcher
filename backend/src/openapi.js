@@ -80,7 +80,7 @@ export const openapiSpec = {
     '/api/export/{id}': {
       get: {
         summary: 'Export a run',
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['md', 'html', 'json'], default: 'md' } }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['md', 'html', 'json', 'notebooklm', 'brief'], default: 'md' } }],
         responses: { '200': { description: 'OK' } },
       },
     },

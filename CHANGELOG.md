@@ -1,5 +1,91 @@
 # Changelog
 
+## 2026-10-04 - keys, models, figures, exports (all API formats work)
+
+### The reported bug: "6 keys, 1 valid, 4 removed"
+
+Root-caused with live calls against all ten supplied keys. Three independent bugs
+stacked up; none of them were the user's keys.
+
+- **`AQ.` keys were rejected on a string-prefix test.** Google moved AI Studio to
+  `AQ.` authorization keys in June 2026 (the `AIza...` format is now legacy).
+  `validateKey()` gated on `startsWith('AIza')`, so four working keys were
+  reported invalid and then deleted. Both formats are accepted now; the format
+  check is a typo filter only, and the live call is the arbiter.
+- **The UI silently dropped keys past the fifth.** `parseKeyInputs(...).slice(0, 5)`
+  discarded the rest with no message. The limit is now dynamic
+  (`MAX_KEYS_PER_REQUEST`, default 25), published by `/api/config` and rendered by
+  the UI. Pasting several keys into one box expands them into one row per key.
+- **Duplicates were swallowed.** A repeated key shares one quota, so counting it
+  twice is a configuration mistake worth surfacing; duplicates are now reported
+  (`duplicates`/`dropped` in the response and in the save notice).
+- Verified: all 10 keys validate `valid=true` through `POST /api/keys/validate`.
+
+### Reports were dying on quota, not just failing over
+
+- **Model-404 no longer kills a run.** Model availability is per-PROJECT, so a
+  404 on one key says nothing about the next. It previously fell through to a
+  bare `throw`, silencing every other key and degrading the run to an evidence
+  inventory. It now rotates to the next key, and only reports a typed
+  `MODEL_UNAVAILABLE` when *every* key 404s.
+- **A spent daily cap walks the ladder instead of failing.** Google's free tiers
+  are wildly uneven (measured on a live project's rate-limit dashboard: full
+  Flash models 20 requests/day, Flash-LITE 500/day, search grounding 1500/day).
+  `RPD_EXHAUSTED` used to be fatal; now it continues on the next model, whose
+  daily bucket is independent. This was the main cause of "model synthesis
+  unavailable, no report" late in the day.
+- **Defaults moved off the dying 2.5 family.** `gemini-2.5-flash` returns
+  "no longer available to new users" on newer projects. Defaults are
+  `gemini-flash-latest` (research/writing) and `gemini-flash-lite-latest`
+  (planning/analysis), split so cheap calls ride the 500/day bucket.
+- **Searches use the whole key pool.** One key was pinned per search, which
+  disabled mid-call failover. Rotation in `post()` already spreads load evenly.
+
+### Models: dynamic, and future-proof
+
+- **Any well-formed `gemini-*` id is accepted.** The curated allow-list returned
+  "400 Unknown model" for anything it had not heard of, so a new Google model was
+  unusable until someone edited the source.
+- **Live discovery.** `GET /api/models` returns what the supplied keys can
+  actually call, newest first, unioned across up to three keys (availability is
+  per project). Verified returning 16 models including `gemini-3.8-flash`, which
+  this build predates. Curated ids keep their written blurbs and lead the list.
+- The model picker shows every model the key can call, marks the discovered ones,
+  and re-discovers after keys change.
+
+### Figures (free-licensed Wikimedia, never generated)
+
+- One or more photographs/diagrams per section, placed between the prose and its
+  citations so the report reads like a chapter.
+- Attribution is structural, not decorative: author, licence and Commons file page
+  are stored and rendered in the app, the Markdown, the HTML, the NotebookLM
+  dossier and the media brief. Unattributed media may not be redistributed.
+- Matching is deliberately strict: a candidate must overlap an IDENTIFYING query
+  token, because search rank alone put a photograph of Chang'an under a heading
+  about Mohenjo-daro. A missing photo is cheaper than a wrong one.
+- Licence metadata is fetched in one batched `prop=imageinfo` call (it lives on
+  the FILE, not the article). Never throws: a failed lookup just means no photo.
+
+### Exports
+
+- `?format=notebooklm` - an uploadable dossier for NotebookLM: bare URLs (which a
+  notebook resolves; inline markdown stays inert), every claim's evidence state,
+  and figure credits. NotebookLM has no public write API, so this is the honest
+  form of "send to NotebookLM".
+- `?format=brief` - a per-section media brief: narration, on-screen titles,
+  runtime, citations to display, figure to show, required caveats.
+
+### UI
+
+- Fixed invisible dropdown text: native select popups were painted by the browser
+  with no colour of their own, so light theme ink landed on a light list and was
+  only visible on hover. Every popup colour is now explicit, with the selected row
+  themed (the platform highlight is not themeable). Verified >= 7.76:1 contrast on
+  every text/background pair in both themes.
+- The fallback report states its limitation once instead of stamping "synthesis
+  unavailable" into the summary, competing-interpretations, uncertainty and
+  methodology.
+
 ## 2026-09-24 — "reading room" UI/UX overhaul
 
 - New information architecture: a persistent sidebar of your research runs replaces the separate history page; "New research" is always one click away.

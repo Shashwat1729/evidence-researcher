@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { topicOf, normalizeQueries } from '../backend/src/engine/queries.js';
 import { templatePlan, suggestArc, normalizeArc } from '../backend/src/engine/planner.js';
 import { getKeys } from '../backend/src/gemini.js';
+import { maxKeys } from '../backend/src/keys.js';
 import { AVAILABLE_MODELS, isKnownModel } from '../backend/src/config.js';
 import { validateResearchBody } from '../backend/src/middleware/validate.js';
 import { runResearch } from '../backend/src/engine/orchestrator.js';
@@ -85,11 +86,21 @@ describe('planner outputs: queries, book variants, narrative arc', () => {
   });
 });
 
-describe('multi-key support', () => {  it('accepts arrays, dedupes, caps fan-out', () => {
+describe('multi-key support', () => {
+  it('accepts arrays, dedupes, and caps at the dynamic limit', () => {
     const keys = getKeys(['k1', 'k1', 'k2', '', 'k3', 'k4', 'k5', 'k6', 'k7']);
     assert.ok(keys.includes('k1') && keys.includes('k2'));
-    assert.ok(keys.length <= 6);
-    assert.equal(new Set(keys).size, keys.length);
+    // The cap used to be a hardcoded 6, which silently dropped every key past
+    // the sixth with no warning. It is now MAX_KEYS_PER_REQUEST (default 25).
+    assert.ok(keys.length <= maxKeys(), `capped at maxKeys() (${maxKeys()})`);
+    assert.equal(keys.length, 7, 'nothing dropped below the cap — the old bug was silent truncation');
+    assert.equal(new Set(keys).size, keys.length, 'duplicates removed');
+    assert.ok(!keys.includes(''), 'blank entries dropped');
+  });
+  it('honours an explicit lower cap', () => {
+    // 12 keys used to come back as 6 with no indication; now the limit is visible.
+    const many = Array.from({ length: 40 }, (_, i) => `k${i}`);
+    assert.equal(getKeys(many).length, maxKeys());
   });
   it('strings still work as before', () => {
     assert.deepEqual(getKeys('solo'), ['solo']);

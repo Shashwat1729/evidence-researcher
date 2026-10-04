@@ -2,28 +2,67 @@
 // Uses generateContent with google_search grounding, url_context, and
 // structured JSON outputs (responseMimeType + responseSchema).
 // Docs: ai.google.dev/gemini-api/docs/{google-search,url-context,structured-output}
-import { MODEL_CONFIG } from './config.js';
+import { MODEL_CONFIG, MODEL_FALLBACK_LADDER } from './config.js';
+import { dedupeKeys, maxKeys, splitKeyInput } from './keys.js';
 
 /** True when the API says the MODEL itself is unavailable (not quota, not key).
- *  Retired/region-gated ids 404 this way — retrying the same id is futile,
- *  but a sibling model on the same key usually works (quotas are per-model). */
+ *  Retired/region-gated/project-gated ids 404 this way — retrying the same id
+ *  on the same project is futile, but a sibling model usually works (quotas and
+ *  model availability are per-project, so another KEY's project may well have
+ *  the model even when this one does not). */
 export function isModelNotFound(err) {
   return err?.status === 404 && /not[ _-]found|no longer available|not supported/i.test(err?.message || '');
 }
-/** Run fn(model); on model-404 retry once on the default model. 404s burn no
- *  quota so the retry is free; warns loudly so a stale picker choice is
- *  visible instead of silently substituted. Exported for tests. */
+
+/** Full recovery order for one call: what was asked for, then the default,
+ *  then the verified ladder. Deduped, empties dropped. Pure — exported so the
+ *  tests can assert the walk instead of a single hardcoded retry. */
+export function modelLadder(model) {
+  return [...new Set([model, MODEL_CONFIG.research, ...MODEL_FALLBACK_LADDER].filter(Boolean))];
+}
+
+/**
+ * Run fn(model); if the model is unavailable OR its DAILY quota is spent, walk
+ * the ladder instead of giving up.
+ *
+ * Two distinct failures send us down the ladder, and they behave very
+ * differently in production:
+ *
+ *  • model-404 — this project cannot serve the id at all. Costless to retry.
+ *  • RPD_EXHAUSTED — the model's DAILY request cap is spent. Google enforces
+ *    these PER MODEL, and the free tiers are wildly uneven: measured on a real
+ *    project's rate-limit dashboard, full Flash models allow 20 requests/day
+ *    while the Flash-LITE models allow 500/day (25x). So the correct response
+ *    to "Flash is out for today" is to CONTINUE ON LITE, which still has its
+ *    own budget — not to abandon the run. Treating a spent daily cap as fatal
+ *    is what turned a long research run into "model synthesis unavailable,
+ *    no report" every single evening.
+ *
+ * Walks the whole ladder rather than retrying once onto MODEL_CONFIG.research —
+ * that single retry frequently landed on the very id that had just failed.
+ * Every rung is announced, so a substituted model is never silent.
+ */
 export async function withModelFallback(model, onKeyEvent, fn) {
-  try {
-    return await fn(model);
-  } catch (e) {
-    const fb = MODEL_CONFIG.research;
-    if (isModelNotFound(e) && model && model !== fb) {
-      onKeyEvent?.({ type: 'model-fallback', from: model, to: fb });
-      return await fn(fb);
+  const ladder = modelLadder(model);
+  let lastErr;
+  for (let i = 0; i < ladder.length; i++) {
+    const m = ladder[i];
+    try {
+      return await fn(m);
+    } catch (e) {
+      lastErr = e;
+      // Only the DAY-SPECIFIC text counts. Do NOT match on "quota exceeded for quota
+    // metric" — that phrase introduces the metric name, which reads
+    // "...requests per minute" just as often as "per day", and matching it made
+    // every brief rate-limit abandon the requested model. post() sets
+    // code/dailyCap explicitly when it has already proven a daily cap.
+    const dailyCap = e?.code === 'RPD_EXHAUSTED' || e?.dailyCap === true || /\bper day\b|\bdaily limit\b/i.test(String(e?.message || ''));
+      const unavailable = isModelNotFound(e) || e?.code === 'MODEL_UNAVAILABLE';
+      if ((!dailyCap && !unavailable) || i + 1 >= ladder.length) throw e;
+      onKeyEvent?.({ type: 'model-fallback', from: m, to: ladder[i + 1], reason: dailyCap ? 'daily-cap' : 'unavailable' });
     }
-    throw e;
   }
+  throw lastErr;
 }
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -32,29 +71,32 @@ export function getKey(explicit) {
   return getKeys(explicit)[0] || '';
 }
 
-/** Ordered key list: explicit BYOK (string, array, or comma-separated) → server primary → server
- *  fallback (deduped, capped). Rotation in post() cycles this list, so N user
- *  keys multiply effective quota instead of failing over once.
- *  Handles comma, newline, and JSON-array formats from multi-key UI.
- *  Browser-safe (`process` guarded) for the static Pages build. */
+/** Ordered key list: explicit BYOK (string, array, or comma-separated) →
+ *  server GEMINI_API_KEYS list → server primary → server fallback (deduped,
+ *  capped). Rotation in post() cycles this list, so N user keys multiply
+ *  effective quota instead of failing over once.
+ * Handles comma, newline, whitespace, semicolon and JSON-array input, because
+ * that is what people actually paste. Duplicate keys are dropped here (a
+ * repeated key shares one quota, so rotating onto it is a wasted slot); the
+ * caller-facing paths report the duplicate count to the user instead of
+ * silently swallowing it. Browser-safe (`process` guarded) for Pages. */
 export function getKeys(explicit) {
   const penv = (typeof process !== 'undefined' && process.env) || {};
   let listed = [];
   if (Array.isArray(explicit)) {
-    listed = explicit;
-  } else if (typeof explicit === 'string' && explicit.trim().startsWith('[')) {
-    try { listed = JSON.parse(explicit); } catch { listed = [explicit]; }
-  } else if (typeof explicit === 'string' && explicit.includes(',')) {
-    listed = explicit.split(/[,;\n]+/);
+    listed = explicit.flatMap((e) => splitKeyInput(e));
   } else {
-    listed = [explicit];
+    listed = splitKeyInput(explicit);
   }
   const list = [
-    ...listed.map((k) => String(k || '').trim()).filter(Boolean),
+    ...listed,
+    ...splitKeyInput(penv.GEMINI_API_KEYS || ''),
     (penv.GEMINI_API_KEY || '').trim(),
     (penv.GEMINI_API_KEY_FALLBACK || '').trim(),
   ].filter(Boolean);
-  return [...new Set(list)].slice(0, 6);
+  // Dynamic cap (MAX_KEYS_PER_REQUEST, default 25). It used to be a hard 6,
+  // which silently dropped every key past the sixth with no warning at all.
+  return dedupeKeys(list).keys.slice(0, maxKeys());
 }
 
 // The key travels in the x-goog-api-key header, never the query string:
@@ -86,8 +128,9 @@ export function resetKeyState() {
 // project ID extraction (not available from key alone).
 const keyBlockedUntil = new Map(); // keyHash -> timestamp (ms)
 // Whole-key FNV-1a digest: a prefix slice collided for keys sharing their
-// first characters (every Gemini key starts "AIzaSy"), merging their block
-// and pacing state. Never exposes key material in map keys.
+// first characters (every key of a kind starts with the same prefix — "AIzaSy"
+// or "AQ.Ab8RN"), merging their block and pacing state. Never exposes key
+// material in map keys.
 function keyHash(k) {
   const s = String(k || '');
   let h = 0x811c9dc5;
@@ -249,6 +292,11 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
   let waitedMs = 0;
   let round = 0;
   let waited = false;
+  // Keys whose project does not serve this model. Model availability is a
+  // per-project property, so a 404 on one key says nothing about the next one —
+  // but if EVERY key 404s, the model itself is the problem and the caller must
+  // walk the fallback ladder instead of re-issuing the same dead id.
+  const modelDeadOn = new Set();
   for (;;) {
     round++;
     let round429 = null;
@@ -279,6 +327,7 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
       } catch (e) {
         if (e?.name === 'AbortError') throw e;
         firstErr = firstErr || e;
+        let modelGone = false;
         if (e.status === 429) {
           round429 = round429 || e;
           if (model) notePaceBackoff(model, keys[ki]); // adaptive pacing: back off
@@ -297,12 +346,32 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
             onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'rate-limit' });
             continue;
           }
+        } else if (isModelNotFound(e)) {
+          // 404 is scoped to THIS key's project. It used to fall through to the
+          // bare `throw` below, which killed the run outright — so a single
+          // project without the model silenced every other key and the run
+          // degraded to an evidence inventory. Model availability being
+          // per-project makes "try the next key" the correct first response.
+          modelGone = true;
+          modelDeadOn.add(keyHash(keys[ki]));
+          if (o + 1 < tryOrder.length) {
+            onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'model-unavailable' });
+            continue;
+          }
         } else if ((isTransient(e.status) || isKeyError(e)) && o + 1 < tryOrder.length) {
           onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
           continue;
         }
-        if (!(isTransient(e.status) || isKeyError(e))) throw e;
+        if (!(isTransient(e.status) || isKeyError(e) || modelGone)) throw e;
       }
+    }
+    // Every key reports the model unavailable: the id is dead for this whole
+    // key set, so hand the caller a typed error and let withModelFallback walk
+    // the ladder. 404s burn no quota, so this is always worth attempting.
+    if (modelDeadOn.size && modelDeadOn.size >= keys.length) {
+      throw Object.assign(firstErr || new Error('model unavailable'), {
+        status: 404, code: 'MODEL_UNAVAILABLE', modelUnavailable: true,
+      });
     }
     // If we skipped blocked keys and none were available, wait for earliest unblock
     if (!hadAvailable) {
@@ -331,16 +400,29 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
     // long one) proves waiting is futile.
     if (!round429 || round429.status !== 429) throw firstErr;
     const hinted = retryDelayMs(round429, 0);
-    const msgBilling = /billing|check your plan/i.test(round429.message || '');
-    if (msgBilling && hinted === 0) {
-      throw Object.assign(new Error('Billing quota exceeded — no amount of waiting will refill the per-project daily/plan limit. Add a billed project or wait until reset.'), {
-        status: 429, code: 'RPD_EXHAUSTED', retryAfter: 0,
+    const rawMsg = String(round429.message || '');
+    const msgBilling = /billing|check your plan/i.test(rawMsg);
+    // Google's daily-cap message names the metric: "Quota exceeded for quota
+    // metric 'Generate Content API requests per day'". Retry-After for that is
+    // sometimes SHORT, so the hours-based test below misses it and the run falls
+    // into the wait-and-retry loop, burning the whole mode budget to fail on a
+    // limit that cannot refill before midnight.
+    //
+    // This test is only safe because it is day-specific: the per-minute message
+    // says "requests per minute", which does NOT match. Without this, the
+    // original message was overwritten below and withModelFallback could never
+    // see that a model swap was the right move — so a spent daily bucket ended
+    // the run instead of continuing on Flash-Lite (500 req/day).
+    const msgDaily = /\bper day\b|daily limit/i.test(rawMsg);
+    if (msgDaily || (msgBilling && hinted === 0)) {
+      throw Object.assign(new Error('Daily quota (requests per day) exhausted for this model — waiting will not refill it before midnight PT. Continuing on a model with a separate daily allowance.'), {
+        status: 429, code: 'RPD_EXHAUSTED', dailyCap: true, retryAfter: hinted,
       });
     }
     if (hinted > 120000) {
       // RPD/day quota — Retry-After is hours, not seconds. Waiting won't help.
       throw Object.assign(new Error('Daily quota (RPD) exhausted — try again after midnight PT, or use a billed project. Partial results will be assembled from gathered evidence.'), {
-        status: 429, code: 'RPD_EXHAUSTED', retryAfter: hinted,
+        status: 429, code: 'RPD_EXHAUSTED', dailyCap: true, retryAfter: hinted,
       });
     }
     // Anti-hammer escalation: constant short rounds extend server throttles

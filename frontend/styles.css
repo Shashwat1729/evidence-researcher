@@ -32,6 +32,15 @@
   --r: 12px;
   --r-sm: 9px;
   --side-w: 272px;
+  /* Native select popups. The browser paints the open list itself, so these
+     must be stated — nothing here can be safely inherited (see the select
+     rules near the bottom). Light values are checked for >= 4.5:1 against
+     --sel-bg; the selected row uses --acc, which clears 8:1 on white. */
+  --sel-bg: #fffefb;
+  --sel-fg: #1c1b18;
+  --sel-hover-bg: #e7ebf7;
+  --sel-sel-bg: #2748b8;
+  --sel-sel-fg: #ffffff;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -40,6 +49,13 @@
   --acc: #8fa9ff; --acc-hover: #a9bcff; --on-acc: #10131c; --soft: #232a42;
   --ok: #6cc38f; --ok-bg: #1c2b22; --good: #4f8f69; --warn: #e0b25c; --warn-bg: #2d2617; --bad: #ea8a7d; --bad-bg: #2f1f1c;
   --shadow: 0 8px 24px rgba(0, 0, 0, .35); --shadow-lg: 0 30px 80px rgba(0, 0, 0, .6);
+  /* Dark popup surface is one step lighter than --surf so the open list reads
+     as its own layer against the control. Verified >= 4.5:1 on --sel-fg. */
+  --sel-bg: #26261f;
+  --sel-fg: #f3f2ed;
+  --sel-hover-bg: #3a3933;
+  --sel-sel-bg: #8fa9ff;
+  --sel-sel-fg: #10131c;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -49,6 +65,11 @@
     --acc: #8fa9ff; --acc-hover: #a9bcff; --on-acc: #10131c; --soft: #232a42;
     --ok: #6cc38f; --ok-bg: #1c2b22; --good: #4f8f69; --warn: #e0b25c; --warn-bg: #2d2617; --bad: #ea8a7d; --bad-bg: #2f1f1c;
     --shadow: 0 8px 24px rgba(0, 0, 0, .35); --shadow-lg: 0 30px 80px rgba(0, 0, 0, .6);
+    --sel-bg: #26261f;
+    --sel-fg: #f3f2ed;
+    --sel-hover-bg: #3a3933;
+    --sel-sel-bg: #8fa9ff;
+    --sel-sel-fg: #10131c;
   }
 }
 
@@ -170,9 +191,28 @@ main:focus { outline: none }
 .depth label:hover span { color: var(--ink) }
 .depth input:checked + span { background: var(--surf); border-color: var(--line2); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .08) }
 .depth input:focus-visible + span { outline: 2px solid var(--acc); outline-offset: 1px }
-.pill-select, .pill-btn { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: transparent; color: var(--ink2); font-size: 13px; cursor: pointer; white-space: nowrap }
+/* Native select popups — every colour stated explicitly.
+   The bug this fixes: the control had `background: transparent` and the
+   <option> elements had none, so Chrome/Edge painted the OPEN list with the
+   platform canvas while the option text kept the theme ink colour. In dark
+   theme that is light text on a light list — invisible until the hover
+   highlight changed the background, which is exactly the reported symptom
+   ("only visible when hovered"). A native popup is drawn by the browser, not
+   the page, so inherited/transparent values resolve against the OS default
+   rather than the theme. Fixed values + an explicit selected row (the platform
+   highlight is not themeable) is the only reliable approach. */
+select, .select { color-scheme: light; background-color: var(--sel-bg); color: var(--sel-fg) }
+:root[data-theme="dark"] select, :root[data-theme="dark"] .select { color-scheme: dark }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) select, :root:not([data-theme="light"]) .select { color-scheme: dark }
+}
+select option, select optgroup { background-color: var(--sel-bg); color: var(--sel-fg); font-weight: 400 }
+select option:hover, select option:active { background-color: var(--sel-hover-bg); color: var(--sel-fg) }
+select option:checked { background-color: var(--sel-sel-bg); color: var(--sel-sel-fg); font-weight: 600 }
+select option:disabled { color: var(--mut) }
+.pill-select, .pill-btn { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surf); color: var(--ink2); font-size: 13px; cursor: pointer; white-space: nowrap }
 .pill-select:hover, .pill-btn:hover { border-color: var(--line2); color: var(--ink) }
-.pill-select select { border: 0; background: transparent; font-weight: 600; font-size: 13px; color: var(--ink); cursor: pointer; padding: 0 2px }
+.pill-select select { border: 0; background-color: transparent; font-weight: 600; font-size: 13px; color: var(--ink); cursor: pointer; padding: 0 2px }
 .pill-select select:focus { outline: none }
 .pill-select:focus-within { outline: 2px solid var(--acc); outline-offset: 1px }
 .opt-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--acc); color: var(--on-acc); font: 600 11px/18px var(--sans); text-align: center }
@@ -260,6 +300,17 @@ main:focus { outline: none }
 .tab-body { min-width: 0 }
 .tab-body:focus-visible { outline-offset: 6px; border-radius: 4px }
 .report, .evidence, .method { display: flex; flex-direction: column; gap: 26px; max-width: 720px }
+/* Figures: report images (freely-licensed Wikimedia media).
+   The credit line is part of the component, not decoration — the licence
+   permits redistribution only with author and licence visible, so it is styled
+   as a first-class element and never hidden. */
+.fig { margin: 22px 0 4px; display: flex; flex-direction: column; gap: 8px }
+.fig img { display: block; width: 100%; height: auto; max-height: 520px; object-fit: cover; object-position: center; border-radius: 10px; border: 1px solid var(--line); background: var(--sunk) }
+.fig a:hover img { border-color: var(--line2) }
+.fig figcaption { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; line-height: 1.45 }
+.fig-cap { color: var(--ink2) }
+.fig-credit { color: var(--mut); font-family: var(--mono); font-size: 11.5px }
+.fig-credit a { color: var(--acc) }
 .bottom-line { padding: 20px 22px; border-radius: var(--r); background: var(--soft); display: flex; flex-direction: column; gap: 8px }
 .bottom-line p { margin: 0; font-family: var(--serif); font-size: 20px; line-height: 1.55 }
 .bottom-line p + p { margin-top: 8px }

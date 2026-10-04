@@ -86,7 +86,7 @@ describe('sectional synthesis (standard mode)', () => {
     assert.ok(!result.report.synthesisFallback);
   });
 
-  it('falls back to evidence inventory when sections AND single call fail', async () => {
+  it('still delivers a full report when sections AND single call fail', async () => {
     const result = await runResearch({ ...task }, {
       key: 'k', emit: () => {},
       deps: baseDeps({
@@ -95,7 +95,15 @@ describe('sectional synthesis (standard mode)', () => {
     });
     assert.equal(result.report.synthesisFallback, true);
     assert.ok(result.report.findings.length >= 1, 'claims-derived findings keep the run useful');
-    assert.ok(result.report.executiveSummary.includes('unavailable'));
+    // Honest, and honest ONCE — a report, not an error message. See
+    // tests/synthesis.test.js for the full disclosure-once contract.
+    assert.match(result.report.executiveSummary, /quota/i);
+    assert.ok(!result.report.executiveSummary.includes('unavailable'));
+    // The deliverable is still a report: appendix + uncertainty are populated
+    // even on the degraded path (they used to ship empty).
+    assert.ok((result.report.appendix || []).length >= 1, 'evidence appendix present');
+    assert.ok((result.report.uncertainty || []).length >= 1, 'uncertainty present');
+    assert.ok(result.claims.length >= 1, 'extracted claims survived the write-up failure');
   });
 
   it('uses template frontmatter when assembly fails but sections exist', async () => {
