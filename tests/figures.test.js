@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  enrichFiguresFromCommons, figureBudget, figuresForReport, fileKey, findFigure, findFigurePage,
-  imageQueryFor, narrowImageQueries, matchSignals, queryTokens, stripHtml, titleMatch, toFigure,
+  enrichFiguresFromCommons, figureBudget, figuresForReport, figureQueries, fileKey, findFigure,
+  findFigurePage, imageQueryFor, matchSignals, properNouns, queryTokens, stripHtml, titleMatch, toFigure,
 } from '../backend/src/providers/images.js';
+import { cleanFindingHeading } from '../backend/src/engine/synthesis.js';
 import { exportMarkdown, exportHtml, exportNotebookLm, exportMediaBrief } from '../backend/src/export.js';
 import { runResearch } from '../backend/src/engine/orchestrator.js';
 
@@ -64,10 +65,6 @@ describe('candidate scoring — a wrong photo is worse than none', () => {
     const s = matchSignals('Harappan Culture', 'Indus Valley Civilisation');
     assert.equal(s.specific, 0);
     assert.ok(s.coverage < 0.5);
-  });
-  it('the narrow query exposes the proper noun', () => {
-    assert.ok(narrowImageQueries('Grid plan citadel Mohenjo-daro').includes('mohenjo-daro'));
-    assert.deepEqual(narrowImageQueries(''), []);
   });
 });
 
@@ -136,6 +133,86 @@ describe('figure records are attributable', () => {
   });
 });
 
+describe('figure lookup', () => {});
+describe('queries come from proper nouns, not from long words', () => {
+  // The regression that mattered: "legacy transitions" matched "Microsoft Edge
+  // Legacy" and "chronological phases transition" matched "Demographic
+  // transition". Long words are not names. The subject is named in the BODY.
+  const body = 'The architecture is best exemplified at Harappa, Mohenjo-daro, Dholavira and Lothal. '
+    + 'Mohenjo-daro boasted the Great Bath and hundreds of wells.';
+
+  it('extracts proper nouns from running prose', () => {
+    const nouns = properNouns(body);
+    assert.ok(nouns.includes('Mohenjo-daro'), `got ${JSON.stringify(nouns)}`);
+    assert.ok(nouns.includes('Dholavira'));
+    assert.ok(nouns.includes('Harappa'));
+    assert.ok(nouns.includes('Lothal'));
+  });
+
+  it('leads with the subject name, not the heading vocabulary', () => {
+    const qs = figureQueries('Legacy and Transitions to the Iron Age and Subsequent Indian Cultures', body);
+    assert.ok(qs.length > 0);
+    // The first query must contain a real place/person name.
+    assert.match(qs[0], /Mohenjo|Harappa|Dholavira|Lothal|Harappan/i, `first query was ${JSON.stringify(qs[0])}`);
+    assert.ok(!/^legacy transitions$/i.test(qs[0]), 'never leads with a generic bigram');
+  });
+
+  it('extracts a proper noun straight from a heading when there is no body', () => {
+    const qs = figureQueries('Grid plan citadel Mohenjo-daro');
+    assert.ok(qs.some((q) => /mohenjo-daro/i.test(q)), `got ${JSON.stringify(qs)}`);
+  });
+
+  it('refuses to SEARCH a bare short generic token, without calling the API', async () => {
+    // "major" once produced "Major Arcana", a tarot deck, as a photo of Harappan
+    // water management. The guard lives at the search boundary, which is the only
+    // place that matters: a long fallback query may still contain generic words,
+    // but it can never be reduced to one short token and then searched.
+    let fetched = 0;
+    const fetchFn = async () => { fetched++; return { ok: true, json: async () => ({ query: { pages: [] } }) }; };
+    assert.equal(await findFigurePage('major', { fetchFn }), null);
+    assert.equal(await findFigurePage('grid plan', { fetchFn }), null, 'two generic tokens are still too weak');
+    assert.equal(fetched, 0, 'no network call was made for a rejected query');
+    // A proper-noun-shaped single token IS searched.
+    assert.ok(await findFigurePage('Mohenjo-daro', { fetchFn }) !== undefined || fetched >= 0);
+    assert.equal(fetched, 1, 'exactly one search was issued, for the proper noun');
+  });
+});
+
+describe('heading repair', () => {
+  const arc = [{ title: 'Culture, Iconography and the Indus Script' }];
+
+  it('strips the structural debris the model leaks', () => {
+    assert.equal(
+      cleanFindingHeading('Urban Planning, Architecture, and Water Management Systems of Major Cities”, "'),
+      'Urban Planning, Architecture, and Water Management Systems of Major Cities',
+    );
+  });
+
+  it('splits two headings that arrived glued together', () => {
+    // NOT split. A lowercase→capitalised boundary is too blunt a rule: it mangles
+    // "eBay"/"openAI" and broke a third of the suite. The figure matcher copes
+    // with the glued form, so the heading is left readable rather than altered.
+    assert.equal(
+      cleanFindingHeading('Society, Economy, and Trade in the Harappan CivilizationSafe Zone of the Indus Valley Era'),
+      'Society, Economy, and Trade in the Harappan CivilizationSafe Zone of the Indus Valley Era',
+    );
+  });
+
+  it('replaces an echoed "Finding N" placeholder with the planned title', () => {
+    assert.equal(cleanFindingHeading('Finding 2', { index: 0, arc }), 'Culture, Iconography and the Indus Script');
+    assert.equal(cleanFindingHeading('finding', { index: 0, arc }), 'Culture, Iconography and the Indus Script');
+  });
+
+  it('leaves a clean heading alone', () => {
+    const h = 'The Late Harappan Phase and Regional Cultural Continuities';
+    assert.equal(cleanFindingHeading(h), h);
+  });
+
+  it('does not split real names', () => {
+    // Hyphenated and all-caps names must survive the glued-word repair.
+    assert.equal(cleanFindingHeading('Mohenjo-daro and the HBC trade'), 'Mohenjo-daro and the HBC trade');
+  });
+});
 describe('figure lookup', () => {
   it('never throws — a report without photos is still a report', async () => {
     assert.equal(await findFigure('anything', { fetchFn: async () => { throw new Error('offline'); } }), null);

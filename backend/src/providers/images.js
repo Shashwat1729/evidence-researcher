@@ -319,32 +319,52 @@ export async function enrichFiguresFromCommons(figures, { fetchFn = fetch, timeo
     .filter(Boolean);
 }
 
+/** Capitalised, non-sentence-initial words: the proper nouns in a passage.
+ *  These are the only reliable search terms for a report section: headings are
+ *  full of generic vocabulary ("Society, Economy, and Trade in the Harappan
+ *  Civilization..."), while the body names the actual subject. */
+export function properNouns(text) {
+  const counts = new Map();
+  // Not sentence-initial, so "The" and "Water" at the start are excluded.
+  const re = /(?:^|[.!?;:]\s+|\s)([A-Z][a-zA-Z]{3,}(?:-[A-Z]?[a-z]+)*)/g;
+  let m;
+  while ((m = re.exec(String(text || '')))) {
+    const w = m[1];
+    const lower = w.toLowerCase();
+    if (GENERIC.has(lower) || STOP.has(lower)) continue;
+    // Sentence-initial position yields the section's first word only.
+    counts.set(w, (counts.get(w) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => (b[1] - a[1]) || (b[0].length - a[0].length)).map(([w]) => w);
+}
+
 /**
- * Narrow query: only the IDENTIFYING tokens of the heading, longest first
- * (long tokens are proper-noun-like: "harappan", "civilization", "indus").
+ * Queries to try, best first, built from PROPER NOUNS rather than from the
+ * heading's generic vocabulary.
  *
- * Two real disasters came from the previous version, which used generic-filtered
- * tokens in heading order:
- *   • "Urban Planning, Architecture, and Water Management Systems of Major Cities"
- *     reduced to the single token "major" -> Wikipedia's top hit was
- *     "Major Arcana", a TAROT DECK, and it was published under a water-management
- *     heading.
- *   • "The Late Harappan Phase and Regional Cultural Continuities" searched as
- *     "late harappan regional cultural" and matched nothing, so the section got
- *     no image at all even though "harappan" is a perfect query.
- *
- * So: never search a bare short generic word, and try progressively shorter
- * proper-noun queries. Both "harappan" and "mohenjo-daro" were verified to
- * return exactly the right article.
+ * Why this replaced the length heuristic: searching "legacy transitions" found
+ * "Microsoft Edge Legacy", and "chronological phases transition" found
+ * "Demographic transition" — long words, but not names. Meanwhile "Harappan"
+ * and "Mohenjo-daro" were verified to return exactly the right articles. Word
+ * length is a poor proxy for specificity; capitalisation in running prose is a
+ * much better one.
  */
-export function narrowImageQueries(heading) {
-  const long = queryTokens(heading).filter((t) => t.length >= 6);
+export function figureQueries(heading, body = '') {
   const out = [];
-  if (long.length >= 3) out.push(long.slice(0, 3).join(' '));
-  if (long.length >= 2) out.push(long.slice(0, 2).join(' '));
-  // A single token is only trustworthy when it is proper-noun shaped (>= 6 chars).
-  if (long.length === 1) out.push(long[0]);
-  return out;
+  const nouns = [...properNouns(body)];
+  for (const n of properNouns(heading)) if (!nouns.includes(n)) nouns.push(n);
+  if (nouns.length >= 2) out.push(nouns.slice(0, 2).join(' '));
+  // Single-token searches only for proper-noun-shaped names (>= 6 chars), since
+  // one word matches everywhere ("major" -> "Major Arcana").
+  const first = nouns[0];
+  if (first && first.length >= 6) out.push(first);
+  if (nouns.length >= 3) out.push(nouns.slice(0, 3).join(' '));
+  // Last resort: the cleaned heading, which at least carries the whole subject.
+  const rich = imageQueryFor(heading, body);
+  if (rich) out.push(rich);
+  const fromBody = imageQueryFor(null, body);
+  if (fromBody) out.push(fromBody);
+  return [...new Set(out.filter(Boolean))].slice(0, 4);
 }
 
 /** Per-mode budget. Quick stays lean; deeper modes get several per section. */
@@ -377,14 +397,8 @@ export async function figuresForReport({ findings = [], plan = null, mode = 'sta
   let index = 0;
   for (const f of list) {
     if (out.length >= total) break;
-    // Query forms to try, most specific first: the proper-noun-biased narrow
-    // queries, then the full cleaned heading, then the opening clause of the
-    // body for headings that name nothing at all.
-    const queries = [
-      ...narrowImageQueries(f.heading),
-      imageQueryFor(f.heading, f.body),
-      imageQueryFor(null, f.body),
-    ].filter(Boolean);
+    // Proper-noun-led queries, best first.
+    const queries = figureQueries(f.heading, f.body);
     for (const q of queries) {
       if (out.length >= total) break;
       const key = q.toLowerCase();

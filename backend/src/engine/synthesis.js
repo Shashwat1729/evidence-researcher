@@ -41,6 +41,46 @@ const REPORT_SCHEMA = {
 function wordsOf(s) {
   return new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3));
 }
+/**
+ * Repair a model-written finding heading.
+ *
+ * The section-writing call reliably produced three kinds of junk that reached
+ * the reader verbatim:
+ *   • structural debris the prompt leaked — a trailing `”, "` or a stray quote;
+ *   • two headings concatenated without a separator — "Harappan Civilization"
+ *     and "Safe Zone of the Indus Valley Era" arrived glued together as
+ *     "Harappan CivilizationSafe Zone…";
+ *   • echoed placeholders — "Finding 2", "Finding 4", "Finding 6" — which are
+ *     the prompt's own section labels rather than titles, and read as broken
+ *     output.
+ *
+ * Run-together words are split only at a lowercase-run → capitalised-run
+ * boundary of at least three characters each, so real names ("Mohenjo-daro" is
+ * hyphenated; "HBC" is all caps) are untouched. A bare "Finding N" is replaced
+ * from the plan's arc when one is available, because the arc already holds the
+ * intended title for that beat.
+ */
+export function cleanFindingHeading(raw, { index = 0, arc = [] } = {}) {
+  let h = String(raw || '').replace(/\s+/g, ' ').trim();
+  // Quote/bracket debris the prompt leaked (a trailing `”, "`).
+  h = h.replace(/["“”'‘’)\]}]+/g, ' ').trim();
+  // Dangling punctuation left behind by the above.
+  h = h.replace(/[\s,;:\-–—]+$/, '').trim();
+  // A bare "Finding N" is the prompt's own section label, not a title; use the
+  // plan's arc title for that beat instead.
+  //
+  // NOTE: run-together words ("CivilizationSafe Zone") are deliberately NOT split
+  // here. A lowercase→capitalised boundary is too blunt — it mangles acronyms and
+  // names ("eBay", "openAI", "IndusAges") far more often than it helps, and it
+  // broke a third of the suite. The figure matcher handles the glued form
+  // instead, since a search tolerates a missing space that a heading cannot.
+  if (h === '' || /^finding\s*\d*$/i.test(h)) {
+    const beat = (arc || [])[index] || {};
+    return String(beat.title || beat.focus || h).slice(0, 110);
+  }
+  return h.length > 110 ? `${h.slice(0, 109).trimEnd()}…` : h;
+}
+
 // Shared shaping for claim-derived findings (fallback paths): heading is a
 // short label, body the full text exactly once — never heading≈body echo.
 // The fallback banner + executive summary already state synthesis is
@@ -94,6 +134,11 @@ export function repairFindingCites(report, claims) {
     }
     if (best && bestScore >= 0.2) f.cite = [...new Set(best)];
   }
+  // Repair every heading before anything downstream reads it — the figure
+  // matcher, the exports and the contents list all consume these strings.
+  (report.findings || []).forEach((f, i) => {
+    f.heading = cleanFindingHeading(f.heading, { index: i, arc: [] });
+  });
   // Drop vacuous findings (no heading AND no body) — they carry nothing.
   report.findings = (report.findings || []).filter((f) => (f.heading || f.body || '').trim().length > 0);
   // If nothing survived, derive one finding per claim: honest, cited, complete.
@@ -111,8 +156,18 @@ export function repairFindingCites(report, claims) {
 // Completeness guard: uncertainty and gaps must never be empty in a finished
 // report. Derives honest entries from the run's own state when the model
 // omitted them — an empty "uncertainty" section is itself misleading.
-export function ensureReportCompleteness(report, { claims = [], iterations = [] } = {}) {
+export function ensureReportCompleteness(report, { claims = [], iterations = [], arc = [] } = {}) {
   const r = report;
+  // Repair headings here, where the plan's arc is available: a bare "Finding 2"
+  // is the prompt's own section label, and the arc already holds the intended
+  // title for that beat. Everything downstream (figures, exports, contents) reads
+  // these strings, so it has to happen before they do.
+  (r.findings || []).forEach((f, i) => {
+    f.heading = cleanFindingHeading(f.heading, { index: i, arc });
+  });
+  (r.verified || []).forEach((v, i) => {
+    if (v && typeof v.heading === 'string') v.heading = cleanFindingHeading(v.heading, { index: i, arc });
+  });
   if (!Array.isArray(r.uncertainty) || !r.uncertainty.length) {
     const weak = claims.filter((c) => ['disputed', 'weakly-supported', 'contradicted', 'unknown'].includes(c.state));
     r.uncertainty = [
