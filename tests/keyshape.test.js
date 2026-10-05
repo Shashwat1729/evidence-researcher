@@ -8,7 +8,7 @@ import {
 import { mergeModels, validateKey } from '../backend/src/routes.js';
 import { getKeys, isModelNotFound, modelLadder, withModelFallback } from '../backend/src/gemini.js';
 import {
-  MODEL_ID_SHAPE, clearModelCache, compareModels, discoverModels, discoverModelsCached, parseModelEntry, selectResearchModels, titleizeModel,
+  MODEL_ID_SHAPE, UNUSABLE_PATTERN, clearModelCache, compareModels, discoverModels, discoverModelsCached, parseModelEntry, selectResearchModels, titleizeModel,
 } from '../backend/src/models.js';
 import { isKnownModel, canonicalizeModel, MODEL_FALLBACK_LADDER, AVAILABLE_MODELS } from '../backend/src/config.js';
 
@@ -346,6 +346,42 @@ describe('live model discovery', () => {
     assert.equal(titleizeModel('gemini-3.8-flash-lite'), 'Gemini 3.8 Flash Lite');
     assert.ok(MODEL_ID_SHAPE.test('gemini-4.0-flash'));
     assert.ok(compareModels('gemini-3.8-flash', 'gemini-3.5-flash') < 0);
+  });
+
+  // The frontend mirrors the module's UNUSABLE filter and id shape, because the
+  // express server does not serve backend/src and Pages needs a local fallback.
+  // That duplication is exactly what caused the original key bug, so it is
+  // pinned here rather than left to a comment.
+  it('FRONTEND/BACKEND model filters cannot drift apart', () => {
+    // Verbatim literal comparison. Re-parsing regex literals out of the source
+    // and re-constructing them is how a drift test itself goes wrong, so this
+    // compares the text of the two literals instead.
+    const src = readFileSync(new URL('../frontend/app.js', import.meta.url), 'utf8');
+    const grab = (name) => {
+      const m = src.match(new RegExp(`const ${name} = (/.*?/[a-z]*);`));
+      assert.ok(m, `frontend declares ${name}`);
+      return m[1];
+    };
+    assert.equal(grab('UNUSABLE'), String(UNUSABLE_PATTERN),
+      'frontend UNUSABLE literal must match backend/src/models.js UNUSABLE_PATTERN exactly');
+    assert.equal(grab('SHAPE'), String(MODEL_ID_SHAPE),
+      'frontend SHAPE literal must match backend/src/models.js MODEL_ID_SHAPE exactly');
+
+    // And the shared filter behaves: usable in, unusable out.
+    const usable = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview'];
+    const unusableIds = [
+      'gemini-embedding-001', 'text-embedding-004', 'gemini-2.5-flash-image',
+      'gemini-2.5-flash-preview-tts', 'gemini-3.8-live-extended-thinking',
+      'gemini-omni-flash', 'gemma-3-27b-it',
+    ];
+    for (const id of usable) {
+      assert.equal(UNUSABLE_PATTERN.test(id), false, `${id} is not filtered out`);
+      assert.ok(parseModelEntry({ name: `models/${id}`, supportedGenerationMethods: ['generateContent'] }), `backend accepts ${id}`);
+    }
+    for (const id of unusableIds) {
+      assert.ok(UNUSABLE_PATTERN.test(id) || !MODEL_ID_SHAPE.test(id), `${id} is filtered out`);
+      assert.equal(parseModelEntry({ name: `models/${id}`, supportedGenerationMethods: ['generateContent'] }), null, `backend rejects ${id}`);
+    }
   });
 
   it('the cache wrapper fetches the key ARRAY, not its own cache key', async () => {

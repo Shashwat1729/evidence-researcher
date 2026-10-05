@@ -237,10 +237,21 @@ export async function findFigurePage(query, { fetchFn = fetch, timeoutMs = 7000,
   return page;
 }
 
-/** Back-compatible single-figure lookup (tests and one-off callers). */
+/**
+ * Single-figure lookup that is SAFE TO RENDER.
+ *
+ * This previously returned a raw toFigure() record with no licence attached —
+ * nothing called it except tests, but it was exported, and the next caller would
+ * have shipped an image credited "Unknown / see source", which free-licensed
+ * media does not permit. It now routes through enrichFiguresFromCommons, so
+ * there is exactly one way to obtain a figure and that way attributes it. If the
+ * licence cannot be resolved it returns null, exactly like the batch path.
+ */
 export async function findFigure(query, opts = {}) {
   const page = await findFigurePage(query, opts);
-  return page ? toFigure(page, query) : null;
+  if (!page) return null;
+  const [attributed] = await enrichFiguresFromCommons([toFigure(page, query)], opts);
+  return attributed || null;
 }
 
 /**

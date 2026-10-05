@@ -27,8 +27,13 @@ export const MODELS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta
  * realtime/robotics/computer-use return the wrong shape, and image models
  * return pixels instead of a report. Everything else is fair game — including
  * previews and ids newer than anything hardcoded here.
+ *
+ * EXPORTED so the frontend's static-mode fallback can be pinned to it by a test
+ * (tests/keyshape.test.js compares the two literals verbatim). The express
+ * server does not serve backend/src, so the browser cannot import this module on
+ * every host — which is precisely how duplicated filters drift apart.
  */
-const UNUSABLE = /(embedding|tts|transcribe|translat|native-audio|audio|image|vision|live|realtime|robotics|computer-use|omni|deep-research)/i;
+export const UNUSABLE_PATTERN = /(embedding|tts|transcribe|translat|native-audio|audio|image|vision|live|realtime|robotics|computer-use|omni|deep-research)/i;
 
 /** Any plausible Gemini generation id. This is the gate that replaced the
  *  curated allow-list — see config.js isKnownModel(). */
@@ -103,7 +108,7 @@ export function parseModelEntry(raw) {
   if (!MODEL_ID_SHAPE.test(id)) return null;
   const methods = Array.isArray(raw?.supportedGenerationMethods) ? raw.supportedGenerationMethods : [];
   if (methods.length && !methods.includes('generateContent')) return null;
-  if (UNUSABLE.test(id)) return null;
+  if (UNUSABLE_PATTERN.test(id)) return null;
   return {
     id,
     label: String(raw?.displayName || '').trim() || titleizeModel(id),

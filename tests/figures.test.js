@@ -214,10 +214,20 @@ describe('heading repair', () => {
   });
 });
 describe('figure lookup', () => {
-  it('never throws — a report without photos is still a report', async () => {
+  it('never throws, and never returns an unattributed figure', async () => {
+    // findFigure is the single-figure entry point. It must obey the SAME licence
+    // gate as the batch path: returning a raw record here is how an image ends
+    // up on screen credited "Unknown / see source".
     assert.equal(await findFigure('anything', { fetchFn: async () => { throw new Error('offline'); } }), null);
     assert.equal(await findFigure('x', { fetchFn: async () => ({ ok: false, status: 500 }) }), null);
     assert.equal(await findFigure('', { fetchFn: async () => ({ ok: true }) }), null);
+
+    // Search succeeds, licence lookup fails -> null, NOT an unattributed figure.
+    const searchOnly = async (url) => (String(url).includes('prop=imageinfo')
+      ? { ok: false, status: 500 }
+      : { ok: true, status: 200, json: async () => ({ query: { pages: [page()] } }) });
+    assert.equal(await findFigure('Drainage system', { fetchFn: searchOnly }), null,
+      'no licence means no figure, not a figure without a credit');
   });
   it('keeps only candidates with a real lexical anchor, whatever the rank', async () => {
     const pages = [
