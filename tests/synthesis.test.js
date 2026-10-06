@@ -103,6 +103,57 @@ describe('ensureReportCompleteness', () => {
   });
 });
 
+describe('bodyless findings are repaired, not rendered as empty sections', () => {
+  const claims = [
+    { id: 'c1', text: 'Harappan cities used covered drains and soak pits throughout the urban grid.', state: 'supported', supporting: ['s1'], contradicting: [], confidenceWhy: 'excavation report' },
+    { id: 'c2', text: 'Water was stored in massive stone-cut reservoirs at Dholavira.', state: 'supported', supporting: ['s2'], contradicting: [], confidenceWhy: 'site report' },
+  ];
+  const sources = [
+    { id: 's1', title: 'Excavation report', url: 'https://a.example/x', tier: 1, verified: true, meta: {}, domain: 'a.example' },
+    { id: 's2', title: 'Dholavira report', url: 'https://b.example/y', tier: 2, verified: true, meta: {}, domain: 'b.example' },
+  ];
+
+  it('rebuilds a finding whose body the model omitted', () => {
+    // Observed live: the model returned {heading} with no `body` key at all, so
+    // the report rendered two empty headings while 14 claims went unused.
+    const r = ensureReportCompleteness(
+      { findings: [{ heading: 'Water management and covered drains', cite: [] }], uncertainty: [], gaps: [] },
+      { claims, sources },
+    );
+    assert.equal(r.findings.length, 1);
+    assert.ok((r.findings[0].body || '').length > 40, `body was rebuilt (len ${(r.findings[0].body || '').length})`);
+    assert.match(r.findings[0].body, /drain|soak/i, 'rebuilt from the matching claim, not generic filler');
+    assert.equal(r.findings[0].heading, 'Water management and covered drains', 'keeps the model title');
+    assert.ok((r.findings[0].cite || []).length > 0, 'rebuilt finding carries the claim citations');
+  });
+
+  it('never emits a finding with an empty body', () => {
+    const r = ensureReportCompleteness(
+      { findings: [{ heading: 'Something entirely unrelated to drains or reservoirs' }, { heading: '' }], uncertainty: [], gaps: [] },
+      { claims, sources },
+    );
+    for (const f of r.findings) {
+      assert.ok((f.body || '').trim().length > 0, `finding ${JSON.stringify(f.heading)} has a body`);
+    }
+  });
+
+  it('falls back to a claim-derived report when every finding is unusable', () => {
+    const r = ensureReportCompleteness(
+      { findings: [{ heading: 'Totally off-topic heading with no overlap' }], uncertainty: [], gaps: [] },
+      { claims, sources },
+    );
+    assert.ok(r.findings.length > 0, 'the run still delivers findings');
+    for (const f of r.findings) assert.ok((f.body || '').trim().length > 0, 'and every one has prose');
+  });
+
+  it('leaves a healthy finding untouched', () => {
+    const good = { heading: 'Origins', body: 'A full paragraph of prose that the model actually wrote.', cite: ['s1'] };
+    const r = ensureReportCompleteness({ findings: [good], uncertainty: [], gaps: [] }, { claims, sources });
+    assert.equal(r.findings[0].body, good.body, 'not overwritten');
+    assert.deepEqual(r.findings[0].cite, ['s1'], 'citations untouched');
+  });
+});
+
 describe('templateReport honesty', () => {
   it('flags fallback, cites only real ids, and discloses the limitation ONCE', () => {
     const sources = [

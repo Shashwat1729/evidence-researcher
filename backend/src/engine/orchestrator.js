@@ -996,7 +996,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   }
   // completeness: uncertainty and gaps must never be empty — derive honest
   // entries from run state when the model omitted them
-  ensureReportCompleteness(report, { claims, iterations, arc: plan.arc });
+  ensureReportCompleteness(report, { claims, iterations, arc: plan.arc, sources });
   // appendix: deterministic claim-by-claim evidence ledger (zero model cost)
   report.appendix = buildAppendix({ claims, sources });
   // ---- FIGURES ----
@@ -1030,7 +1030,7 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       // Same post-processing as the normal path: the inventory used to ship
       // without its evidence appendix or the guaranteed uncertainty/gaps.
       try {
-        ensureReportCompleteness(report, { claims, iterations, arc: plan.arc });
+        ensureReportCompleteness(report, { claims, iterations, arc: plan.arc, sources });
         report.appendix = buildAppendix({ claims, sources });
       } catch { /* inventory is still valid without the extras */ }
       ev('warning', 'Quota ran out during the write-up — the report below is built from the evidence gathered so far (open the Sources tab for the raw material).');

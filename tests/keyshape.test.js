@@ -6,7 +6,7 @@ import {
   maxKeys, normalizeKeys, splitKeyInput,
 } from '../backend/src/keys.js';
 import { mergeModels, validateKey } from '../backend/src/routes.js';
-import { getKeys, isModelNotFound, modelLadder, withModelFallback } from '../backend/src/gemini.js';
+import { getKeys, isModelNotFound, modelLadder, resetModelCooldown, withModelFallback } from '../backend/src/gemini.js';
 import {
   MODEL_ID_SHAPE, UNUSABLE_PATTERN, clearModelCache, compareModels, discoverModels, discoverModelsCached, parseModelEntry, selectResearchModels, titleizeModel,
 } from '../backend/src/models.js';
@@ -232,7 +232,7 @@ describe('model availability is per-project, not per-key-set', () => {
     assert.match(tried[tried.length - 1], /lite/, 'final rung is a Flash-Lite model (500 req/day)');
   });
 
-  it('the per-MINUTE message never triggers a model swap', async () => {
+  it('a per-MINUTE message never triggers a model swap', async () => {
     // "requests per minute" must not match a day-specific pattern, or every
     // brief rate-limit would abandon the requested model.
     let calls = 0;
@@ -244,6 +244,93 @@ describe('model availability is per-project, not per-key-set', () => {
       /per minute/,
     );
     assert.equal(calls, 1, 'a per-minute limit fails fast without swapping models');
+  });
+
+  // 5xx is SERVER-side. Measured live 2026-10-05: gemini-flash-latest returned
+  // 503 on 7 of 8 keys while 3.5-flash, 3.1-flash-lite and flash-lite-latest
+  // all answered 200. Rotating keys against a 503 is pure waste.
+  it('an overloaded model (5xx) walks the ladder rather than burning every key', async () => {
+    // Measured live 2026-10-05: gemini-flash-latest returned 503 on 7 of 8 keys
+    // while 3.5-flash, 3.1-flash-lite and flash-lite-latest all answered 200.
+    // Rotating keys against a 503 is pure waste.
+    resetModelCooldown();
+    try {
+      const tried = [];
+      const reasons = [];
+      const out = await withModelFallback('gemini-flash-latest', (e) => reasons.push(e.reason), async (m) => {
+        tried.push(m);
+        if (m === 'gemini-flash-latest') throw Object.assign(new Error('overloaded'), { status: 503, code: 'MODEL_UNAVAILABLE', modelUnavailable: true, overloaded: true });
+        return 'ok:' + m;
+      });
+      assert.match(out, /^ok:/, 'recovered on another model');
+      assert.equal(tried.length, 2, 'exactly one wasted call, not one per key');
+      assert.deepEqual(reasons, ['overloaded'], 'the reason names the overload, not a generic unavailability');
+      assert.match(tried[1], /3\.5-flash|3\.1-flash-lite|flash-lite/, 'moved to a model that is up');
+    } finally {
+      resetModelCooldown();
+    }
+  });
+
+  it('an overloaded model is remembered, not re-probed on every call', async () => {
+    // Without a cooldown the ladder is rebuilt per call, so an overloaded model
+    // is re-tested ~20 times a run, spending a request each time to learn nothing.
+    resetModelCooldown();
+    const first = await withModelFallback('gemini-flash-latest', null, async (m) => {
+      if (m === 'gemini-flash-latest') throw Object.assign(new Error('overloaded'), { status: 503, code: 'MODEL_UNAVAILABLE', overloaded: true });
+      return m;
+    });
+    assert.match(first, /3\.5-flash|3\.1-flash-lite|flash-lite/, 'moved off the overloaded model');
+
+    const after = modelLadder('gemini-flash-latest');
+    assert.notEqual(after[0], 'gemini-flash-latest', 'the overloaded model is no longer tried first');
+    assert.equal(after[after.length - 1], 'gemini-flash-latest', 'it is demoted to the end, not dropped');
+
+    // And the cooldown is not a black hole: clearing it restores the order.
+    resetModelCooldown();
+    assert.equal(modelLadder('gemini-flash-latest')[0], 'gemini-flash-latest');
+  });
+
+  it('ignores the cooldown when every model is cooled down', async () => {
+    resetModelCooldown();
+    // Exhaust every rung so they all land in cooldown, then confirm the ladder
+    // is still complete — trying something beats failing.
+    await assert.rejects(
+      withModelFallback('gemini-flash-latest', null, async (m) => {
+        throw Object.assign(new Error('overloaded'), { status: 503, code: 'MODEL_UNAVAILABLE', overloaded: true });
+      }),
+      /overloaded/,
+    );
+    const l = modelLadder('gemini-flash-latest');
+    assert.equal(l.length, new Set(l).size, 'still deduplicated');
+    assert.equal(l.length, 4, 'all four rungs remain reachable');
+    resetModelCooldown();
+  });
+
+  it('a 503 aborts the key loop immediately instead of rotating keys', async () => {
+    // The low-level post() is internal and uses global fetch (no injection
+    // point), so stub the global and drive it through the public generate().
+    const { generate } = await import('../backend/src/gemini.js');
+    const realFetch = globalThis.fetch;
+    let attempts = 0;
+    globalThis.fetch = async () => {
+      attempts++;
+      return { ok: false, status: 503, json: async () => ({ error: { message: 'Service Unavailable' } }) };
+    };
+    try {
+      await assert.rejects(
+        generate({ key: [AQ, AQ2, `AIza${'e'.repeat(37)}`], model: 'gemini-flash-latest', prompt: 'hi', timeoutMs: 2000 }),
+        (e) => e.status === 503 && e.code === 'MODEL_UNAVAILABLE',
+        'surfaces a typed, ladder-worthy error',
+      );
+      // One attempt per LADDER RUNG, not one per key per rung. With 3 keys and a
+      // 4-rung ladder the old code would have made 12 calls (3 keys × 4 models);
+      // key rotation cannot fix an overloaded server.
+      const rungs = modelLadder('gemini-flash-latest').length;
+      assert.equal(attempts, rungs, `${attempts} calls: exactly one per ladder rung (would be 12 with key rotation)`);
+      assert.ok(attempts < 3 * rungs, 'strictly fewer calls than rotating keys across the ladder');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

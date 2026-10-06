@@ -145,9 +145,20 @@ All in `.env` (never committed — see `.gitignore` + `.dockerignore`):
 Quota note, measured on a live free-tier project: limits are **per project, not
 per key**, and they are very uneven per model — full Flash models allow 20
 requests/day while Flash-Lite allows 500/day and search grounding 1500/day. Extra
-keys only help when each comes from a **different** Cloud project. When a model's
-daily cap is spent the run continues on the next model in the fallback ladder
-rather than failing.
+keys only help when each comes from a **different** Cloud project.
+
+The run degrades rather than failing, on three distinct signals:
+
+| Signal | Scope | Response |
+|---|---|---|
+| Daily cap spent (`requests per day`) | per model | Continue on the next model — each has its own budget |
+| Model 404 / "no longer available" | per project | Rotate keys, then walk the ladder if every key 404s |
+| `5xx` (provider overloaded) | **server-side** | Abandon the model at once and walk the ladder |
+
+That last row matters: rotating keys cannot fix an overloaded server, so a `503`
+costs **one** call and moves on instead of one call per key per model. Observed
+live — `gemini-flash-latest` returning `503` on 7 of 8 keys while `3.5-flash`,
+`3.1-flash-lite` and `flash-lite-latest` all answered `200`.
 
 ## Deployment
 

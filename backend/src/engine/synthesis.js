@@ -81,6 +81,27 @@ export function cleanFindingHeading(raw, { index = 0, arc = [] } = {}) {
   return h.length > 110 ? `${h.slice(0, 109).trimEnd()}…` : h;
 }
 
+// Best unused claim for a given heading, by token overlap. Used to repair a
+// finding the model returned with a title but no prose.
+function bestClaimFor(heading, claims, used) {
+  const h = new Set(String(heading || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3));
+  let best = null;
+  let bestScore = 0;
+  for (const c of claims || []) {
+    if (!c?.text || used.has(c.id ?? c)) continue;
+    const words = String(c.text).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3);
+    if (!words.length || !h.size) continue;
+    const set = new Set(words);
+    const inter = [...h].filter((w) => set.has(w)).length;
+    const score = inter / Math.sqrt(h.size * set.size);
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  // Require a real signal: with no lexical overlap the claim could be about
+  // anything, and attaching it to an unrelated heading is worse than a section
+  // the run admits it could not write.
+  return bestScore >= 0.12 ? best : null;
+}
+
 // Shared shaping for claim-derived findings (fallback paths): heading is a
 // short label, body the full text exactly once — never heading≈body echo.
 // The fallback banner + executive summary already state synthesis is
@@ -156,7 +177,7 @@ export function repairFindingCites(report, claims) {
 // Completeness guard: uncertainty and gaps must never be empty in a finished
 // report. Derives honest entries from the run's own state when the model
 // omitted them — an empty "uncertainty" section is itself misleading.
-export function ensureReportCompleteness(report, { claims = [], iterations = [], arc = [] } = {}) {
+export function ensureReportCompleteness(report, { claims = [], iterations = [], arc = [], sources = [] } = {}) {
   const r = report;
   // Repair headings here, where the plan's arc is available: a bare "Finding 2"
   // is the prompt's own section label, and the arc already holds the intended
@@ -168,6 +189,36 @@ export function ensureReportCompleteness(report, { claims = [], iterations = [],
   (r.verified || []).forEach((v, i) => {
     if (v && typeof v.heading === 'string') v.heading = cleanFindingHeading(v.heading, { index: i, arc });
   });
+  // A finding with a heading but NO BODY is a broken section, not a finding: it
+  // renders as an empty heading and carries no evidence. A live run returned
+  // exactly that — 2 findings, both with `body: undefined`, while 14 claims sat
+  // unused, and nothing objected. So each bodyless finding is either rebuilt
+  // from the claims most similar to its heading, or dropped. Dropping the last
+  // one lets the claim-derived path below take over and deliver a real report.
+  const usedClaims = new Set();
+  r.findings = (r.findings || []).map((f) => {
+    if (String(f?.body || '').trim()) return f;
+    const match = bestClaimFor(String(f?.heading || ''), claims, usedClaims);
+    if (!match) return null;
+    usedClaims.add(match.id ?? match);
+    return {
+      ...f,
+      ...claimDerivedFinding(match, sources),
+      // Keep the model's own heading; it is the better title.
+      heading: String(f.heading || '').trim() || undefined,
+      cite: [...new Set([...(f.cite || []), ...(match.supporting || []), ...(match.contradicting || [])])],
+    };
+  }).filter(Boolean);
+  // If the repair left nothing, deliver a claim-derived report rather than an
+  // empty one. The claims are real, extracted and cited, so a report built from
+  // them is honest even when the model's prose did not survive.
+  if (!r.findings.length && (claims || []).length) {
+    const byId = new Map((sources || []).map((s) => [s.id, s]));
+    r.findings = claims.slice(0, 10).map((c) => ({
+      ...claimDerivedFinding(c, byId),
+      cite: [...new Set([...(c.supporting || []), ...(c.contradicting || [])])],
+    }));
+  }
   if (!Array.isArray(r.uncertainty) || !r.uncertainty.length) {
     const weak = claims.filter((c) => ['disputed', 'weakly-supported', 'contradicted', 'unknown'].includes(c.state));
     r.uncertainty = [

@@ -14,11 +14,34 @@ export function isModelNotFound(err) {
   return err?.status === 404 && /not[ _-]found|no longer available|not supported/i.test(err?.message || '');
 }
 
+/**
+ * Models that answered 5xx, held in a short cooldown.
+ *
+ * A 503 is usually a transient overload of ONE model, and the ladder is rebuilt
+ * for every call — so without this the same overloaded model is re-probed on
+ * each of the ~20 calls a run makes, spending a request and a second each time
+ * to learn nothing new. Demoting it for a couple of minutes costs one probe and
+ * then gets out of the way. Cooldown is advisory: if every rung is cooled it is
+ * ignored, because trying something is better than failing.
+ */
+const modelCooldownUntil = new Map();
+const OVERLOAD_COOLDOWN_MS = 120_000;
+function noteOverloaded(model) {
+  if (model) modelCooldownUntil.set(model, Date.now() + OVERLOAD_COOLDOWN_MS);
+}
+export function resetModelCooldown() { modelCooldownUntil.clear(); }
+function isCooledDown(model) { return (modelCooldownUntil.get(model) || 0) > Date.now(); }
+
 /** Full recovery order for one call: what was asked for, then the default,
- *  then the verified ladder. Deduped, empties dropped. Pure — exported so the
- *  tests can assert the walk instead of a single hardcoded retry. */
+ *  then the verified ladder. Deduped, empties dropped. Cooled-down (recently
+ *  overloaded) models sink to the end rather than being dropped, so a run still
+ *  has somewhere to go. Pure apart from the cooldown map — exported so tests
+ *  can assert the walk instead of a single hardcoded retry. */
 export function modelLadder(model) {
-  return [...new Set([model, MODEL_CONFIG.research, ...MODEL_FALLBACK_LADDER].filter(Boolean))];
+  const full = [...new Set([model, MODEL_CONFIG.research, ...MODEL_FALLBACK_LADDER].filter(Boolean))];
+  const cool = full.filter((m) => isCooledDown(m));
+  if (!cool.length || cool.length === full.length) return full;
+  return [...full.filter((m) => !isCooledDown(m)), ...cool];
 }
 
 /**
@@ -58,8 +81,11 @@ export async function withModelFallback(model, onKeyEvent, fn) {
     // code/dailyCap explicitly when it has already proven a daily cap.
     const dailyCap = e?.code === 'RPD_EXHAUSTED' || e?.dailyCap === true || /\bper day\b|\bdaily limit\b/i.test(String(e?.message || ''));
       const unavailable = isModelNotFound(e) || e?.code === 'MODEL_UNAVAILABLE';
-      if ((!dailyCap && !unavailable) || i + 1 >= ladder.length) throw e;
-      onKeyEvent?.({ type: 'model-fallback', from: m, to: ladder[i + 1], reason: dailyCap ? 'daily-cap' : 'unavailable' });
+    if ((!dailyCap && !unavailable) || i + 1 >= ladder.length) throw e;
+      // A 5xx means this model is overloaded right now. Demote it so the rest of
+      // the run stops paying to re-probe it on every call.
+      if (e?.overloaded || isServerSide(e?.status)) noteOverloaded(m);
+    onKeyEvent?.({ type: 'model-fallback', from: m, to: ladder[i + 1], reason: dailyCap ? 'daily-cap' : (e?.overloaded ? 'overloaded' : 'unavailable') });
     }
   }
   throw lastErr;
@@ -225,7 +251,11 @@ const isKeyError = (err) =>
   err?.status === 401 || err?.status === 403 ||
   (err?.status === 400 && /api key|key not valid|API_KEY_INVALID/i.test(err?.message || ''));
 
-const isTransient = (status) => status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+const isTransient = (status) => status === 429 || isServerSide(status);
+/** 5xx: the provider is overloaded or broken. NOT key-specific — no amount of
+ *  key rotation fixes it, so these must fail the MODEL (and walk the ladder)
+ *  rather than the key. */
+function isServerSide(status) { return status === 500 || status === 502 || status === 503 || status === 504; }
 
 /** Round wait with anti-hammer escalation: honor the server's exact
  *  Retry-After for the first couple of rounds, then escalate (30s, 60s, 120s
@@ -358,6 +388,21 @@ async function post(urlFor, body, { timeoutMs = 90_000, retries = 2, keys = [], 
             onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: 'model-unavailable' });
             continue;
           }
+        } else if (isServerSide(e.status)) {
+          // 5xx is SERVER-side, not key-side. Rotating keys cannot fix an
+          // overloaded model — eight keys against a 503 is eight wasted calls,
+          // and it was doing exactly that: a live probe showed
+          // gemini-flash-latest returning 503 on 7 of 8 keys while 3.5-flash,
+          // 3.1-flash-lite and flash-lite-latest all answered 200. The old
+          // "transient -> try every key -> wait -> retry" path ground synthesis
+          // for 7+ minutes on a model that was never going to answer.
+          //
+          // So fail the MODEL fast and let withModelFallback walk the ladder.
+          // Per-key 429 and per-project 404 still rotate keys, because those
+          // really are scoped to a key or a project.
+          throw Object.assign(e, {
+            code: 'MODEL_UNAVAILABLE', modelUnavailable: true, overloaded: true,
+          });
         } else if ((isTransient(e.status) || isKeyError(e)) && o + 1 < tryOrder.length) {
           onKeyEvent?.({ type: 'rotated', keyIndex: tryOrder[o + 1], reason: e.status === 429 ? 'rate-limit' : 'key-error' });
           continue;
@@ -477,10 +522,15 @@ async function attemptKey(target, body, timeoutMs, retries) {
         err.code = data?.error?.status || '';
         err.data = data;
         // 429 is per-key quota: don't sleep within this key's retries, just
-        // let the outer rotation try the next key immediately. Sleep only for
-        // 5xx (true transients) or as a last resort before giving up.
+        // let the outer rotation try the next key immediately.
+        // 5xx is NOT retried here either: it is server-side, so the cheap and
+        // effective response is to walk the model ladder rather than repeat the
+        // same call against a different key. A single retry would still cost
+        // (retries + 1) calls per key across the whole pool before the ladder
+        // was ever reached.
         if (attempt < retries && isTransient(res.status)) {
           if (res.status === 429) throw err; // rotate immediately, no sleep here
+          if (isServerSide(res.status)) throw Object.assign(err, { code: 'MODEL_UNAVAILABLE', modelUnavailable: true, overloaded: true });
           await sleep(750 * (attempt + 1));
           continue;
         }

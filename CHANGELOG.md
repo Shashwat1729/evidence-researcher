@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-05 - provider overload is not a key problem
+
+Quota reset, which made the difference between a quota wall and an overload wall
+visible. A live probe of all eight keys:
+
+```
+gemini-flash-latest      TIMEOUT ERR503 TIMEOUT ERR503 ERR503 ERR503  OK  ERR503
+gemini-3.5-flash         OK OK OK OK OK OK OK OK
+gemini-3.1-flash-lite    OK OK OK OK OK OK OK OK
+gemini-flash-lite-latest OK OK OK OK OK OK OK OK
+```
+
+`gemini-flash-latest` — the default for search and writing — was answering
+**503 Service Unavailable**, while every other model on the ladder answered 200
+on all eight keys. Two bugs followed from that:
+
+- **5xx was treated as key-scoped.** The old path rotated keys on any transient
+  status, so one call against an overloaded model cost eight attempts (times
+  retries) before giving up. Rotating keys cannot fix an overloaded *server*.
+  A 5xx now fails the model immediately and walks the ladder: one wasted call
+  instead of eight. Per-key `429` and per-project `404` still rotate keys,
+  because those really are scoped to a key or a project.
+- **The overloaded model was re-probed on every call.** The ladder is rebuilt
+  per call, so the same dead model was tested ~20 times a run, each time costing
+  a request and about a second to learn nothing. An overloaded model is now
+  demoted for two minutes — moved to the end of the ladder, not dropped — and the
+  cooldown is ignored when every rung is cooled, because trying something beats
+  failing. Every model move is still announced, so a substituted model is never
+  silent.
+
+Net effect on the observed failure: synthesis ground for 7+ minutes on a model
+that was never going to answer. It now moves once, then leaves it alone.
+
 ## 2026-10-04 (later) - figures, Pages, evidence metrics
 
 Found by real end-to-end runs, not by unit tests.
