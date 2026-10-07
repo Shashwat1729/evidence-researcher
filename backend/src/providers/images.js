@@ -133,6 +133,30 @@ export function titleMatch(query, title) {
   return coverage * 0.7 + jaccard * 0.3;
 }
 
+/**
+ * Turn a Commons file name into a readable caption.
+ *
+ * Commons file names are descriptive but run long: "Female figurines 3. Mature
+ * Harappan period, Indus civilization (detail), Female figurine, Terracotta,
+ * 2700-2000. From a series of figurines of Mature Harappan period: Mohenjo-daro,
+ * Harappa, Dholavira..." — which rendered as a 250-character caption in the
+ * report. The leading clause identifies the object; the rest is catalogue
+ * metadata that belongs in the alt text and the source link, not under the
+ * picture. Keep the first clause, cap it, and never lose the attribution.
+ */
+export function tidyCaption(name, fallback = '') {
+  let s = String(name || '')
+    .replace(/\.(jpe?g|png|webp|gif|tiff?)$/i, '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return String(fallback || '').slice(0, 88);
+  // Cut at the first catalogue separator: the object identity comes first.
+  const head = s.split(/,\s|\s\|\s|;\s/)[0].trim();
+  s = head.length >= 24 ? head : s;
+  return s.length > 88 ? `${s.slice(0, 87).trimEnd()}…` : s;
+}
+
 /** SVGs are near-always logos, maps or diagrams we cannot render well; skip. */
 function usableThumb(page) {
   const src = String(page?.thumbnail?.source || '');
@@ -171,7 +195,7 @@ export function toFigure(page, query) {
     height: Number(page?.thumbnail?.height) || 0,
     file: String(page?.pageimage || title || ''),
     // File name without the extension makes a far better caption than a hash.
-    caption: title.replace(/\.(jpe?g|png|webp)$/i, '').replace(/_/g, ' ').slice(0, 160) || String(query || '').slice(0, 160),
+    caption: tidyCaption(title, query),
     alt: title.replace(/_/g, ' ').slice(0, 300),
     author: '',
     license: '',

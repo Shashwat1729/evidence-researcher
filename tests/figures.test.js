@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   enrichFiguresFromCommons, figureBudget, figuresForReport, figureQueries, fileKey, findFigure,
-  findFigurePage, imageQueryFor, matchSignals, properNouns, queryTokens, stripHtml, titleMatch, toFigure,
+  findFigurePage, imageQueryFor, matchSignals, properNouns, queryTokens, stripHtml, tidyCaption, titleMatch, toFigure,
 } from '../backend/src/providers/images.js';
 import { cleanFindingHeading } from '../backend/src/engine/synthesis.js';
 import { exportMarkdown, exportHtml, exportNotebookLm, exportMediaBrief } from '../backend/src/export.js';
@@ -213,6 +213,28 @@ describe('heading repair', () => {
     assert.equal(cleanFindingHeading('Mohenjo-daro and the HBC trade'), 'Mohenjo-daro and the HBC trade');
   });
 });
+describe('captions are readable, not raw file names', () => {
+  it('keeps the object identity and drops the catalogue tail', () => {
+    const raw = 'Female figurines 3. Mature Harappan period, Indus civilization (detail), Female figurine, Terracotta, 2700-2000. From a series of figurines of Mature Harappan period: Mohenjo-daro, Harappa, Dholavira and Kalibangan';
+    const cap = tidyCaption(raw);
+    assert.ok(cap.length <= 88, `caption is ${cap.length} chars`);
+    assert.match(cap, /Female figurines 3\. Mature Harappan period/);
+    assert.ok(!cap.includes('Kalibangan'), 'the trailing catalogue list is gone');
+  });
+  it('keeps short captions intact and strips the extension', () => {
+    assert.equal(tidyCaption('Mohenjodaro_Sindh.jpeg'), 'Mohenjodaro Sindh');
+    assert.equal(tidyCaption('Great_Bath_of_Mohenjo-daro.png'), 'Great Bath of Mohenjo-daro');
+  });
+  it('caps a very long single-clause name rather than emitting it whole', () => {
+    const cap = tidyCaption('a'.repeat(300));
+    assert.equal(cap.length, 88);
+    assert.ok(cap.endsWith('…'));
+  });
+  it('falls back when there is no usable name', () => {
+    assert.equal(tidyCaption('', 'Mohenjo-daro'), 'Mohenjo-daro');
+  });
+});
+
 describe('figure lookup', () => {
   it('never throws, and never returns an unattributed figure', async () => {
     // findFigure is the single-figure entry point. It must obey the SAME licence
