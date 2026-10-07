@@ -58,16 +58,20 @@ const staticDir = path.join(ROOT, 'frontend');
 const indexHtml = path.join(staticDir, 'index.html');
 if (existsSync(staticDir)) app.use(express.static(staticDir));
 
-// Serve the shared engine modules the browser imports directly.
+// Serve the shared engine modules the browser loads directly.
 //
-// frontend/app.js already tries to `import('../backend/src/export.js')` to
-// render Markdown/HTML/media-brief/NotebookLM exports in-page, and
-// `import('../backend/src/config.js')` / `models.js` for model discovery. The
-// static Pages build stages backend/src so those imports resolve — but the
-// express host served ONLY frontend/, so on every Docker/VPS/npm-start
-// deployment the import 404'd, export fell through to window.open(), and the
-// click opened a tab instead of downloading the file. Nothing here is secret
-// (the same tree is published on Pages); keys arrive in request headers.
+// frontend/app.js renders Markdown/HTML/media-brief/NotebookLM exports in-page
+// by dynamically loading backend/src/export.js, and loads config.js / models.js
+// for model discovery. The static Pages build stages backend/src so those
+// resolve — but the express host served ONLY frontend/, so on every
+// Docker/VPS/npm-start deployment the load 404'd, export fell through to
+// window.open(), and the click opened a tab instead of downloading the file.
+// Nothing here is secret (the same tree is published on Pages); keys arrive in
+// request headers.
+//
+// (Wording note: do not write a loadable-looking call expression in this
+// comment. The static-build import checker scans raw text and cannot tell a
+// comment from code — it failed CI on an earlier phrasing of this note.)
 const sharedSrcDir = path.join(ROOT, 'backend', 'src');
 if (existsSync(sharedSrcDir)) app.use('/backend/src', express.static(sharedSrcDir, { extensions: ['js'] }));
   if (existsSync(indexHtml)) {
