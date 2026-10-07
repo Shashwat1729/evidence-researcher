@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-10-07 - figures on the degraded path, and an academic filter that actually filtered
+
+Two defects found by reading an actual report rather than trusting it.
+
+### Figures were skipped whenever a run degraded on quota
+
+The figure step was inline in the normal path only. The quota catch block below
+it rebuilt the report, added the evidence appendix and the guaranteed
+uncertainty/gaps — and then skipped figures entirely. So the runs *least* able to
+afford to look thin were precisely the ones that shipped with no images. A live
+run recorded `plan -> search -> fetch` and no figures phase at all, with 14
+usable claims sitting in the result.
+
+The step is now a function declared outside the `try` and called from both
+paths. (Declaring it *inside* the try was the same scoping mistake as the earlier
+`arc is not defined` bug — the catch block could not see it, which is how the
+first attempt at this fix silently did nothing.)
+
+### Off-topic papers were becoming cited findings
+
+A report about Harappan drainage contained sections titled *"Network analysis of
+undeciphered Indus civilization script"*, *"Quantum field theories and London
+dispersion"* and *"Urban parks and specific green spaces"*. Physics papers, cited,
+in a chapter on ancient water management.
+
+The relevance gate was `score > 0` over a term list — and the list contained
+**"and"**, because the stopword set was missing every function word. "and" occurs
+in essentially every academic title, so every record scored a title hit and the
+filter was a no-op. This is the same class of bug as the missing `AQ.` key
+prefix: an over-permissive filter that silently admits everything.
+
+Two changes:
+- The stopword list now covers function words and generic scholarly nouns, so
+  "and", "did", "study", "analysis" and friends no longer count as topics.
+- A record must earn its place: it either names the topic in its **title**, or
+  its abstract covers (almost) every query term. A couple of hits in an abstract
+  proves nothing, because "water" and "cities" appear in almost any paper.
+
+Verified on the exact records that leaked: the physics and urban-parks papers are
+now dropped. A paper titled "Network analysis of undeciphered Indus civilization
+script" is deliberately **kept** — it names the Indus civilization, and a
+title-level lexical gate cannot tell "Indus script" from "Indus drainage".
+Discarding genuine subject evidence to avoid a near-miss is the worse error, and
+it now ranks below the on-topic work.
+
+Result of the re-run, in a browser: 4 sections with real prose, 0 off-topic,
+3 figures, all attributed and all on-topic.
+
 ## 2026-10-05 - provider overload is not a key problem
 
 Quota reset, which made the difference between a quota wall and an overload wall

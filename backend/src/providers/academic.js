@@ -116,8 +116,30 @@ export function heuristicBookVariants(question) {
 
 /** Dynamic relevance score 0..1: key-term overlap with title (×2) + snippet/authors.
  *  Fully query-driven — no topic lists. Zero-overlap records rank last so a
- *  conversational query ("tell about X") doesn't surface unrelated books. */
-const REL_STOPWORDS = new Set(['tell', 'about', 'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'how', 'when', 'where', 'why', 'who', 'which', 'explain', 'describe', 'discuss', 'me', 'please', 'give', 'find', 'books', 'book']);
+ *  conversational query ("tell about X") doesn't surface unrelated books.
+ *
+ *  The stopword list must contain every function word, not just the obvious
+ *  ones. "and" was missing, and because it occurs in practically every academic
+ *  title, EVERY record scored a title hit — which made the whole relevance gate
+ *  a no-op and let physics papers into a report about Harappan drainage. Same
+ *  class of bug as a missing key-format prefix: an over-permissive filter. */
+const REL_STOPWORDS = new Set([
+  // conversational scaffolding
+  'tell', 'about', 'what', 'which', 'who', 'whom', 'whose', 'why', 'where', 'when', 'how',
+  'explain', 'describe', 'discuss', 'me', 'please', 'give', 'find', 'show', 'list', 'want', 'need',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'do', 'does', 'did', 'done', 'doing',
+  'has', 'have', 'had', 'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+  'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'from', 'with', 'without', 'into', 'onto',
+  'over', 'under', 'above', 'below', 'between', 'through', 'during', 'after', 'before', 'and', 'or',
+  'but', 'not', 'no', 'nor', 'so', 'if', 'then', 'than', 'as', 'that', 'this', 'these', 'those',
+  'there', 'their', 'they', 'them', 'we', 'our', 'you', 'your', 'it', 'its', 'he', 'she', 'his',
+  'her', 'any', 'all', 'some', 'most', 'more', 'much', 'many', 'such', 'other', 'others', 'own',
+  'also', 'very', 'just', 'only', 'both', 'each', 'every', 'via', 'using', 'used', 'use', 'based',
+  // domain-generic nouns that appear in every scholarly title and match nothing
+  'books', 'book', 'study', 'studies', 'paper', 'papers', 'research', 'article', 'journal',
+  'overview', 'introduction', 'summary', 'review', 'analysis', 'part', 'role', 'system', 'systems',
+  'evidence', 'finding', 'findings', 'section', 'context', 'case',
+]);
 export function queryTerms(query) {
   return [...new Set(
     String(query || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
@@ -138,12 +160,57 @@ export function bookRelevance(query, r, extraTerms = []) {
   }
   return hit / (terms.length * 2);
 }
-/** Sort by relevance; drop zero-overlap records unless that would empty the list. */
+/**
+ * Where a record's term hits actually landed. The split matters: a title hit is
+ * evidence the work is ON the topic, a snippet hit is only evidence the word
+ * appears somewhere in the abstract.
+ */
+export function termHits(query, r, extraTerms = []) {
+  const terms = [...new Set([...queryTerms(query), ...(Array.isArray(extraTerms) ? extraTerms : [])])];
+  const title = String(r.title || '').toLowerCase();
+  const rest = `${r.snippet || ''} ${(r.meta?.authors || []).join(' ')}`.toLowerCase();
+  let titleHits = 0;
+  let total = 0;
+  for (const t of terms) {
+    if (title.includes(t)) { titleHits++; total += 2; }
+    else if (rest.includes(t)) { total += 1; }
+  }
+  return { titleHits, total, terms: terms.length };
+}
+
+/**
+ * Sort by relevance, and DROP records that are not actually on the topic.
+ *
+ * The old filter was `score > 0`, which is far too weak for a multi-term query:
+ * one common word in an abstract was enough. A live run on "How did the Harappan
+ * cities manage water and sanitation?" surfaced physics papers — "Quantum field
+ * theories and London dispersion", "Urban parks and green spaces" — because
+ * "water" appears in almost any arXiv abstract, and those papers then became
+ * cited findings in the report. A report that looks evidence-backed but is not
+ * about the question is worse than a short one.
+ *
+ * So a record must earn its place: it either names the topic in its TITLE, or it
+ * accumulates at least two independent hits. When nothing qualifies the
+ * provider contributes nothing — an empty result is honest, and the run's own
+ * relevance gating handles the shortfall.
+ */
 export function rankByRelevance(query, records, extraTerms = []) {
-  const scored = records.map((r, i) => ({ r, i, s: bookRelevance(query, r, extraTerms) }));
+  const scored = records.map((r, i) => {
+    const s = bookRelevance(query, r, extraTerms);
+    const h = termHits(query, r, extraTerms);
+    // A title hit is enough. Snippet-only evidence must be SUBSTANTIAL: an
+    // abstract is a long text that will contain common words like "water" or
+    // "cities" by accident, so a couple of hits proves nothing. Requiring hits on
+    // (almost) every query term is what separates a genuinely on-topic paper
+    // whose title happens to be generic from one that merely mentions the words.
+    return { r, i, s, onTopic: h.titleHits >= 1 || h.total >= Math.max(2, h.terms) };
+  });
   scored.sort((a, b) => b.s - a.s || a.i - b.i);
-  const filtered = scored.filter((x) => x.s > 0);
-  return (filtered.length ? filtered : scored).map((x) => x.r);
+  const kept = scored.filter((x) => x.onTopic);
+  // Preserve provider order when the query had nothing to match against at all
+  // (no usable terms) — there is no signal to judge by, so do not discard.
+  if (!termHits(query, records[0] || {}, extraTerms).terms) return scored.map((x) => x.r);
+  return kept.map((x) => x.r);
 }
 
 export async function searchBooks(query, limit = 8, opts = {}) {

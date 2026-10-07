@@ -523,7 +523,36 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   let iterations = [];
   let report = null;
   let verification = [];
-  let _fromQuotaFallback = false;
+let _fromQuotaFallback = false;
+  // ---- FIGURES ----
+  // Freely-licensed images matched per section, so the report reads like a
+  // chapter rather than a wall of text. Quota-free and best-effort: a failed
+  // image lookup must never affect the report, so failures degrade to none.
+  //
+  // Declared OUTSIDE the try below and called from both the normal path and the
+  // quota catch, because it was previously inline in the normal path only — so
+  // every run that degraded on quota shipped with no images at all, the runs
+  // least able to afford to look thin. (Declaring it inside the try is the same
+  // mistake as scoping `arc` inside a function that needed it elsewhere.)
+  //
+  // Only for un-scripted runs. Injecting deps means the caller is driving the
+  // pipeline itself (tests, eval harness) and expects no hidden network calls,
+  // so a scripted run gets no figures unless it asks via deps.figures.
+  const wantsFigures = Object.keys(deps).length === 0 || typeof deps.figures === 'function';
+  const attachFigures = async () => {
+    if (!wantsFigures || !(report.findings || []).length) return;
+    currentPhase = 'figures';
+    try {
+      const figures = await phase('figures', () => D.figures({ findings: report.findings || [], plan, mode: task.mode }));
+      if (figures?.length) {
+        report.figures = figures;
+        const credited = figures.filter((f) => f.author && f.license).length;
+        ev('progress', `${figures.length} figure(s) matched (${credited} fully credited — Wikimedia, free licence)`);
+      }
+    } catch (e) {
+      ev('progress', `Figures unavailable (${(e.message || '').slice(0, 60)}) — report delivered without images`);
+    }
+  };
   try {
 
   // fetch top candidates: prefer low-tier (authoritative) + diverse domains.
@@ -994,33 +1023,13 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   for (const f of report.findings || []) {
     f.cite = (f.cite || []).filter((id) => validIds.has(id));
   }
+
   // completeness: uncertainty and gaps must never be empty — derive honest
   // entries from run state when the model omitted them
   ensureReportCompleteness(report, { claims, iterations, arc: plan.arc, sources });
   // appendix: deterministic claim-by-claim evidence ledger (zero model cost)
   report.appendix = buildAppendix({ claims, sources });
-  // ---- FIGURES ----
-  // Freely-licensed images matched per section, so the report reads like a
-  // chapter rather than a wall of text. Quota-free and best-effort: a failed
-  // image lookup must never affect the report, so failures degrade to none.
-  //
-  // Only for un-scripted runs. Injecting deps means the caller is driving the
-  // pipeline itself (tests, eval harness) and expects no hidden network calls,
-  // so a scripted run gets no figures unless it asks for them via deps.figures.
-  const wantsFigures = Object.keys(deps).length === 0 || typeof deps.figures === 'function';
-  if (wantsFigures && (report.findings || []).length) {
-    currentPhase = 'figures';
-    try {
-      const figures = await phase('figures', () => D.figures({ findings: report.findings || [], plan, mode: task.mode }));
-      if (figures?.length) {
-        report.figures = figures;
-        const credited = figures.filter((f) => f.author && f.license).length;
-        ev('progress', `${figures.length} figure(s) matched (${credited} fully credited — Wikimedia, free licence)`);
-      }
-    } catch (e) {
-      ev('progress', `Figures unavailable (${(e.message || '').slice(0, 60)}) — report delivered without images`);
-    }
-  }
+  await attachFigures();
 
   // Close quota-aware try started after sources — handle mid-run quota hits gracefully.
   } catch (e) {
@@ -1028,11 +1037,14 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
       _fromQuotaFallback = true;
       report = templateReport({ task, plan, claims, sources, contradictions, provenance, gaps });
       // Same post-processing as the normal path: the inventory used to ship
-      // without its evidence appendix or the guaranteed uncertainty/gaps.
+      // without its evidence appendix, the guaranteed uncertainty/gaps, or any
+      // figures — the three things that make a degraded report still worth
+      // reading.
       try {
         ensureReportCompleteness(report, { claims, iterations, arc: plan.arc, sources });
         report.appendix = buildAppendix({ claims, sources });
       } catch { /* inventory is still valid without the extras */ }
+      await attachFigures();
       ev('warning', 'Quota ran out during the write-up — the report below is built from the evidence gathered so far (open the Sources tab for the raw material).');
     } else {
       throw e;
