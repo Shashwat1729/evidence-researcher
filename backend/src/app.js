@@ -54,11 +54,32 @@ export function createApp({ runFn = runResearch, store = null } = {}) {
 
   // Static frontend when present (local/Docker). On Vercel the CDN serves
   // `frontend/` directly, so this is skipped if the directory is absent.
-  const staticDir = path.join(ROOT, 'frontend');
-  const indexHtml = path.join(staticDir, 'index.html');
-  if (existsSync(staticDir)) app.use(express.static(staticDir));
+const staticDir = path.join(ROOT, 'frontend');
+const indexHtml = path.join(staticDir, 'index.html');
+if (existsSync(staticDir)) app.use(express.static(staticDir));
+
+// Serve the shared engine modules the browser imports directly.
+//
+// frontend/app.js already tries to `import('../backend/src/export.js')` to
+// render Markdown/HTML/media-brief/NotebookLM exports in-page, and
+// `import('../backend/src/config.js')` / `models.js` for model discovery. The
+// static Pages build stages backend/src so those imports resolve — but the
+// express host served ONLY frontend/, so on every Docker/VPS/npm-start
+// deployment the import 404'd, export fell through to window.open(), and the
+// click opened a tab instead of downloading the file. Nothing here is secret
+// (the same tree is published on Pages); keys arrive in request headers.
+const sharedSrcDir = path.join(ROOT, 'backend', 'src');
+if (existsSync(sharedSrcDir)) app.use('/backend/src', express.static(sharedSrcDir, { extensions: ['js'] }));
   if (existsSync(indexHtml)) {
-    app.get('*', (_req, res) => res.sendFile(indexHtml));
+    // SPA catch-all. Must NOT answer asset requests: returning index.html with a
+// 200 for a missing /backend/src/*.js makes the browser report "Failed to fetch
+// dynamically imported module" (a MIME error) instead of a plain 404, and the
+// response gets CACHED — so fixing the route later still leaves broken tabs
+// until a hard reload. Unknown .js/.css/.json now fail honestly.
+app.get('*', (req, res, next) => {
+  if (/\.(?:js|mjs|css|json|map|svg|png|jpe?g|webp|ico|woff2?)$/i.test(req.path)) return next();
+  res.sendFile(indexHtml);
+});
   }
   return app;
 }

@@ -1052,6 +1052,20 @@ function drawGraph() {
 }
 
 // ---------- export ----------
+/** Trigger a real file download for a blob. Used by both the client-rendered
+ *  path and the server fallback, so neither can end up as a new tab. */
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick rather than a fixed 5s: Firefox and Safari abort
+  // an in-flight download if the URL disappears first.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
 $$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async () => {
   $('#exportMenu').open = false;
   if (!current) return;
@@ -1059,9 +1073,12 @@ $$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async ()
   const ext = fmt === 'html' ? 'html' : fmt === 'json' ? 'json' : 'md';
   const suffix = fmt === 'brief' ? '-media-brief' : fmt === 'notebooklm' ? '-notebooklm' : '';
   const name = `research-${String(current.id || 'report').replace(/[^\w-]/g, '').slice(0, 40)}${suffix}.${ext}`;
-  // Client-side render first (works for every result, including ones the
-  // server never saved); fall back to the server export if the shared
-  // module is not reachable from this host.
+  const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
+  // Render in the browser first: it works for every result, including ones the
+  // server never saved. If the shared module is not reachable on this host, fall
+  // back to the server — but fetch the bytes and DOWNLOAD them. The previous
+  // window.open() opened a tab instead of saving a file, which is what "export
+  // does not download" looked like.
   try {
     let text;
     if (fmt === 'json') text = JSON.stringify(current, null, 2);
@@ -1072,15 +1089,19 @@ $$('#exportMenu [data-exp]').forEach((b) => b.addEventListener('click', async ()
       else if (fmt === 'notebooklm') text = mod.exportNotebookLm(current);
       else text = mod.exportMarkdown(current);
     }
-    const type = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/markdown';
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
-    a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  } catch {
-    if (staticMode) { showNotice('Export failed in this browser — try the raw data export.', 'error'); return; }
-    window.open(`/api/export/${encodeURIComponent(current.id)}?format=${fmt}`, '_blank', 'noopener');
+    downloadBlob(new Blob([text], { type: `${type};charset=utf-8` }), name);
+  } catch (e) {
+    if (staticMode) {
+      showNotice('Export failed in this browser — try the raw data export.', 'error');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/export/${encodeURIComponent(current.id)}?format=${encodeURIComponent(fmt)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      downloadBlob(await res.blob(), name);
+    } catch {
+      showNotice(`Export failed${e?.message ? ` (${e.message})` : ''} — could not render or fetch this report.`, 'error');
+    }
   }
 }));
 $('#printBtn').addEventListener('click', () => {
