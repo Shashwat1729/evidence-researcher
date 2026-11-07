@@ -5,6 +5,7 @@
 
 import { generateJson } from '../gemini.js';
 import { fingerprint, jaccardSets } from './dedup.js';
+import { wrapUntrusted } from '../trust.js';
 
 /** Heuristic pass: group sources sharing distinctive quoted strings. */
 export function heuristicGroups(sources) {
@@ -58,7 +59,7 @@ export async function analyzeProvenance({ key, model, sources, onKeyEvent }) {
   // Whole source descriptions only — never slice JSON mid-object.
   for (const g of groups.slice(0, 6)) {
     const ids = new Set(g.map((s) => s.id));
-    const all = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: (s.passages || []).map((p) => p.text).join(' ').slice(0, 800) }));
+    const all = g.map((s) => ({ id: s.id, title: s.title, url: s.url, excerpt: wrapUntrusted((s.passages || []).map((p) => p.text).join(' ').slice(0, 800)) }));
     const desc = [];
     let used = 0;
     for (const d of all) {
@@ -78,10 +79,13 @@ Return JSON: {"verdict": "independent|derived|unclear", "root": "<source id of l
       });
       const verdict = data.verdict || 'unclear';
       // Integrity: only link a root that is actually in this group — a
-      // hallucinated id must never enter the relation graph.
+      // hallucinated id must never enter the relation graph. Only link
+      // sources the model actually saw (desc), never unseen tail members
+      // dropped by the 6k budget.
       if (verdict === 'derived' && data.root && ids.has(data.root)) {
+        const seenIds = new Set(desc.map((d) => d.id));
         for (const s of g) {
-          if (s.id !== data.root) relations.push({ from: s.id, to: data.root, kind: 'derived_from', evidence: data.explanation || 'textual overlap' });
+          if (s.id !== data.root && seenIds.has(s.id)) relations.push({ from: s.id, to: data.root, kind: 'derived_from', evidence: data.explanation || 'textual overlap' });
         }
       }
       g.verdict = verdict;

@@ -16,7 +16,9 @@ export function splitEnrichment(text, count) {
   }
   if (cur.trim()) segs.push(cur.trim());
   if (!segs.length) return [t];
-  // No padding: callers guard on truthiness, so missing sections stay absent
-  // rather than becoming empty passages.
-  return segs.slice(0, count);
+  // Positional misattribution guard: if sections don't match the URL count
+  // exactly, one omitted/extra section would shift every later passage onto
+  // the wrong source. Discard all rather than misattribute.
+  if (segs.length !== count) return [];
+  return segs;
 }
