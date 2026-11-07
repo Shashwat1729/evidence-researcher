@@ -171,7 +171,39 @@ export function isPublicHttpUrl(raw) {
     if (/^::ffff:/.test(h)) return false;
   }
   if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/i.test(h)) return false; // integer-encoded IPs
+  // Octal/hex octets (0177.0.0.1, 0x7f.0.0.1) bypass the dotted-decimal guard
+  // above because Node's URL parser keeps them verbatim.
+  if (/^0[0-7]+\.|^0x[0-9a-f]/i.test(h)) return false;
+  // Hostnames that are IP-like but with leading zeros / mixed bases.
+  const parts = h.split('.');
+  if (parts.length === 4 && parts.every((p) => /^[0-9xXa-fA-F]+$/.test(p)) && !parts.every((p) => /^\d+$/.test(p) && String(Number(p)) === p)) return false;
   return true;
+}
+
+// DNS-rebinding guard (server only): resolve the hostname and reject if any
+// address is private, so an attacker domain can't resolve to 169.254/10/
+// 192.168 at fetch time while passing the literal-hostname check above.
+// Browser-safe (no node:dns) and fail-open only when DNS itself errors — but
+// a resolved private IP is always a hard block.
+async function isResolvedPublic(url) {
+  if (IS_BROWSER) return true;
+  let host;
+  try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return false; }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(':')) return true; // literal already checked
+  try {
+    const { default: dns } = await import('node:dns/promises');
+    const addrs = new Set();
+    try { for (const a of await dns.lookup(host, { all: true })) addrs.add(a.address); } catch { /* no A */ }
+    try { for (const a of await dns.resolve6(host).catch(() => [])) addrs.add(a); } catch { /* no AAAA */ }
+    for (const a of addrs) {
+      const ip = String(a).toLowerCase();
+      if (ipv4Private(ip)) return false;
+      if (ip === '::1' || ip === '::' || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip)) return false;
+      const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+      if (mapped && ipv4Private(mapped[1])) return false;
+    }
+    return true;
+  } catch { return true; }
 }
 const IS_BROWSER = typeof window !== 'undefined';
 const MAX_REDIRECTS = 5;
@@ -180,6 +212,9 @@ const MAX_REDIRECTS = 5;
 export async function fetchPage(url, { timeoutMs = FETCH_TIMEOUT } = {}) {
   if (!isPublicHttpUrl(url)) {
     return { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: 'blocked: not a public http(s) address' };
+  }
+  if (!(await isResolvedPublic(url))) {
+    return { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: 'blocked: hostname resolves to a non-public address' };
   }
   if (!(await allowedByRobots(url))) {
     return { url, ok: false, status: 0, title: '', author: '', publishedDate: '', text: '', reason: 'blocked by robots.txt (crawl not permitted)' };
@@ -212,6 +247,7 @@ async function fetchFollowingSafely(url, signal) {
     if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
     const next = new URL(loc, current).toString();
     if (!isPublicHttpUrl(next)) throw new Error('redirect to a non-public address blocked');
+    if (!(await isResolvedPublic(next))) throw new Error('redirect to a non-public address blocked');
     current = next;
   }
 }
@@ -237,8 +273,30 @@ async function attemptFetch(url, timeoutMs) {
     if (!res.ok) { result.reason = `HTTP ${res.status}`; return result; }
     const ctype = res.headers.get('content-type') || '';
     if (!/html|text/i.test(ctype)) { result.reason = `unsupported content-type ${ctype}`; return result; }
-    const ab = await res.arrayBuffer();
-    if (ab.byteLength > MAX_BYTES) { result.reason = 'page too large'; return result; }
+    // Streamed size cap: a declared Content-Length above the cap fails fast
+    // without buffering; otherwise accumulate up to the cap then abort.
+    const clen = Number(res.headers.get('content-length') || 0);
+    if (Number.isFinite(clen) && clen > MAX_BYTES) { result.reason = 'page too large'; return result; }
+    let ab;
+    try {
+      const reader = res.body.getReader();
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BYTES) { try { await reader.cancel(); } catch { /* ignore */ } result.reason = 'page too large'; return result; }
+        chunks.push(value);
+      }
+      ab = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { ab.set(c, off); off += c.byteLength; }
+      ab = ab.buffer;
+    } catch {
+      ab = await res.arrayBuffer();
+      if (ab.byteLength > MAX_BYTES) { result.reason = 'page too large'; return result; }
+    }
     const finalUrl = res.url || url;
     const html = decodeBody(ab, ctype);
     const title = (html.match(/<title[^>]*>([\s\S]{1,300})<\/title>/i) || [])[1] || '';

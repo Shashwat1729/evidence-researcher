@@ -31,7 +31,14 @@ export async function searchGoogleCse(query, { perPage = 5 } = {}) {
   if (!q) return [];
   const n = Math.max(1, Math.min(10, perPage));
   const url = `${CSE_ENDPOINT}?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(q)}&num=${n}`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  // No-timeout hang: a stalled CSE call blocked the orchestrator's extraJobs
+  // await indefinitely. Bound it like every other network call.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
+  } finally { clearTimeout(timer); }
   if (!res.ok) {
     // 429/403 are quota/billing — surface as soft failure, not throw (engine is resilient)
     if (res.status === 429 || res.status === 403) return [];

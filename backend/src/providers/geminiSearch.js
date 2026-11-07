@@ -16,7 +16,11 @@ function snippetForChunk(text, supports, idx, fallbackTitle = '') {
     .map((s) => text.slice(s.segment?.startIndex || 0, s.segment?.endIndex || text.length))
     .join(' ')
     .trim();
-  const out = (segs || text || fallback).trim();
+  // A chunk with no overlapping support segment gets NO snippet (title
+  // fallback only wraps the title itself). Returning the full model text as
+  // every chunk's snippet made all sources share identical excerpts,
+  // poisoning dedup/provenance and misattributing evidence.
+  const out = (segs || fallback).trim();
   return out.slice(0, 700);
 }
 
