@@ -60,6 +60,49 @@ answers the question.
 Return JSON: {"claims": [{"text": "...", "state": "...", "supporting": ["id"], "contradicting": ["id"], "confidenceWhy": "..."}], "contradictions": [{"claimId": "...", "against": "...", "sources": ["id"], "severity": "high|medium|low"}], "gaps": ["..."], "sufficient": false, "reason": "..."}`;
 }
 
+// HiSS-style decomposition (Zeng et al., 2208.10060): compound claims such as
+// "Harappans traded X via Y route" hide several verifiable sub-facts. Verifying
+// leaves then aggregating is strictly more accurate than scoring the compound
+// whole. Deterministic splitter (no extra model calls): splits on strong
+// coordinators, filters trivial fragments, caps at 4 leaves.
+/** Split a claim text into atomic sub-claims (pure). */
+export function decomposeClaim(text, maxLeaves = 4) {
+  const t = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!t || t.length <= 80) return [t].filter(Boolean);
+  const parts = t
+    .split(/\s*[;—]\s*|\s+(?:and|while|whereas)\s+(?=[A-Z0-9])|\s+which\s+(?=[a-z])/)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 25);
+  if (parts.length <= 1) return [t];
+  return parts.slice(0, maxLeaves);
+}
+
+/** Attach decomposition tree to claims (pure). */
+export function attachDecomposition(claims) {
+  return (claims || []).map((c) => ({
+    ...c,
+    subClaims: decomposeClaim(c.text).map((sub, i) => ({
+      id: `${c.id}.s${i + 1}`,
+      text: sub,
+      // Leaves inherit the parent's links (safest offline approximation);
+      // verification refines them downstream.
+      supporting: [...(c.supporting || [])],
+      contradicting: [...(c.contradicting || [])],
+    })),
+  }));
+}
+
+/** Aggregate leaf verdicts into a parent state (pure). Any contradicted leaf
+ *  caps the parent at disputed; any unsupported leaf caps at plausible. */
+export function aggregateSubClaims(leafStates) {
+  const set = new Set(leafStates || []);
+  if (set.has('contradicted')) return 'disputed';
+  if (set.has('unsupported')) return 'plausible';
+  if (set.has('unknown')) return 'supported';
+  if (set.size === 1) return leafStates[0];
+  return 'supported';
+}
+
 /** Fit whole source records into a char budget (best-first; sources arrive
  *  tier-sorted). Never slices mid-record — the old `.slice(0, 12000)` cut
  *  JSON mid-object and silently dropped the tail. Smaller prompts also burn
@@ -89,7 +132,7 @@ export async function extractClaims({ key, model, question, sources, onKeyEvent,
 
 export function normalizeClaims(data, sources) {
   const validIds = new Set(sources.map((s) => s.id));
-  return (data.claims || []).slice(0, 30).map((c, i) => ({
+  const claims = (data.claims || []).slice(0, 30).map((c, i) => ({
     // Counter + random suffix: Date.now() alone collides when two iterations
     // run in the same millisecond, producing duplicate claim ids.
     id: `claim_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}_${i}`,
@@ -100,6 +143,7 @@ export function normalizeClaims(data, sources) {
     contradicting: (c.contradicting || []).filter((id) => validIds.has(id)),
     confidenceWhy: String(c.confidenceWhy || ''),
   })).filter((c) => c.text);
+  return attachDecomposition(claims);
 }
 
 // Merged extract + skeptical review in ONE model call (quick mode).

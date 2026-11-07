@@ -13,7 +13,7 @@ Use before deploying a public instance.
 - [ ] Health check wired: `GET /api/health`
 - [ ] OpenAPI docs at `GET /api/openapi.json` (for integrations)
 - [ ] Validate keys without burning quota: `npm run keys`
-- [ ] Run tests: `npm test` (65 tests, includes SSE + export + quota)
+- [ ] Run tests: `npm test` (404 tests, includes SSE + export + quota)
 - [ ] Verify no secrets in repo: `git ls-files | xargs grep -l "AIzaSy" || echo clean`
 - [ ] Frontend `localStorage` clear works (Privacy: user can clear history)
 - [ ] Print/PDF works (Final Report → Print)

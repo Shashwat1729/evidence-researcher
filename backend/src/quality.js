@@ -68,6 +68,14 @@ export function evidenceQuality({ report = {}, claims = [], sources = [], proven
 
   const inspected = sources.filter((s) => s?.verified).length;
 
+  // ~ALCE recall: share of claim-supporting sources that findings actually
+  // cite. Precision alone hides cherry-picking (cite few, support fewer);
+  // recall catches it. Denominator: distinct sources that support/contradict
+  // at least one claim.
+  const claimEvidenceIds = usedByClaims;
+  const findingsCitedClaimEvidence = [...claimEvidenceIds].filter((id) => citedIds.has(id)).length;
+  const citationRecall = claimEvidenceIds.size ? findingsCitedClaimEvidence / claimEvidenceIds.size : null;
+
   const metrics = {
     // ~Auto-AIS: share of findings that carry at least one citation.
     attributableFindingRate: findings.length ? citedFindings / findings.length : null,
@@ -86,6 +94,11 @@ export function evidenceQuality({ report = {}, claims = [], sources = [], proven
     citationPrecision: citedIds.size ? loadBearing / citedIds.size : null,
     citationsTotal: citedIds.size,
     decorativeCitations: decorative,
+
+    // ~ALCE recall: of claim-linked evidence, how much findings actually cite.
+    citationRecall,
+    claimEvidenceTotal: claimEvidenceIds.size,
+    claimEvidenceCited: findingsCitedClaimEvidence,
 
     // Claims whose support spans >= 2 independent provenance groups.
     independenceAdjustedRate: provenanceKnown ? independentClaims / provenanceKnown : null,

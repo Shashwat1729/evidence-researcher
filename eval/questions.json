@@ -14,6 +14,10 @@
     { "id": "adversarial-1", "level": "adversarial", "question": "Did Napoleon really say 'history is a set of lies agreed upon'? Trace the actual provenance of this quote." },
     { "id": "provenance-1", "level": "provenance", "question": "Is it true that Einstein failed math in school? How many independent sources actually support this?" },
     { "id": "contradiction-1", "level": "contradiction", "question": "Was leaded gasoline the main driver of the 20th-century violent crime wave? What do critics of the lead-crime hypothesis argue?" },
-    { "id": "books-1", "level": "books", "question": "What are the most important monographs on the economic history of the Great Depression, and what primary sources do they rely on?" }
+    { "id": "books-1", "level": "books", "question": "What are the most important monographs on the economic history of the Great Depression, and what primary sources do they rely on?" },
+    { "id": "taxonomy-1", "level": "taxonomy", "question": "What are the main schools of thought on the causes of the Late Bronze Age collapse, and how do they organize the evidence?" },
+    { "id": "cutoff-1", "level": "cutoff", "question": "What are the most recent (post-2024) scholarly findings on Stonehenge's construction timeline, and how are they sourced?" },
+    { "id": "contradiction-pair-1", "level": "contradiction", "question": "Did caffeine improve or impair athletic performance in peer-reviewed studies? Present both sides with equal rigor." },
+    { "id": "provenance-trap-1", "level": "provenance", "question": "How many truly independent sources support the claim that the Wright brothers' 1903 flight was witnessed by multiple observers? Trace copies to origins." }
   ]
 }

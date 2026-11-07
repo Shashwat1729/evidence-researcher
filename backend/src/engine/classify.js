@@ -78,12 +78,12 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
     tier = 2; reason = 'scholarly markers found (peer review / DOI / university press) — verify before citing as evidence';
     authority = 'medium'; proximity = 'secondary';
   }
-  // Primary-evidence markers — domain-agnostic: any field's original record.
-  // Must be broad (legal, financial, medical, scientific, official, etc.), not tied to one example.
-  // Short tokens use word boundaries: bare "brief|order|act|standard|page"
-  // substrings matched nearly every page ("ordered", "actual") and promoted
-  // ordinary sites to tier 3.
-  if (/\b(archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|10-?K|10-?Q|8-?K|S-1|annual report|quarterly report|proxy statement|prospectus|clinical trial|trial protocol|adverse event|patent|standard|specification|dataset|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act|hearing|testimony|executive order|memorandum)\b/i.test(hay)) {
+  // Primary-evidence markers — two strength classes. STRONG markers promote
+  // alone; WEAK single words ("brief", "order", "act", …) are ordinary English
+  // ("in order to succeed", "a brief guide") and promote only when a strong
+  // marker co-occurs in the same passage.
+  const STRONG = /\b(archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|judgment|transcript|pleading|affidavit|deposition|filing|10-?K|10-?Q|8-?K|S-1|annual report|quarterly report|proxy statement|prospectus|clinical trial|trial protocol|adverse event|patent|specification|dataset|white paper|policy paper|government report|official report|legislative|parliamentary|hearing|testimony|executive order|memorandum)\b/i;
+  if (STRONG.test(hay)) {
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }

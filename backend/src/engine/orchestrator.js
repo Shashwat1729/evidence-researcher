@@ -17,9 +17,12 @@ import { sleep } from '../util.js';
 import { pool } from './pool.js';
 import { searchAcademic, searchBooks, expandBookQueries, bookRelevance, queryTerms } from '../providers/academic.js';
 import { searchGoogleCse, isCseEnabled } from '../providers/googleCustomSearch.js';
+import { searchTavily, isTavilyEnabled } from '../providers/tavily.js';
+import { searchExaPublications, isExaEnabled } from '../providers/exa.js';
 import { fetchPage } from '../providers/fetcher.js';
 import { classifySource } from './classify.js';
 import { deduplicate, canonicalize } from './dedup.js';
+import { rrfFuse, mmrDiversify } from '../fusion.js';
 import { extractClaims, extractClaimsWithReview } from './claims.js';
 import { analyzeProvenance, heuristicGroups } from './provenance.js';
 import { findContradictionsAndGaps } from './contradictions.js';
@@ -38,6 +41,9 @@ export const defaultDeps = {
     geminiSearchProvider.search(q.q || q, { key, model: model || MODEL_CONFIG.research, onUsage, onKeyEvent, rateWaitBudgetMs }),
   academic: (question, extraTerms) => searchAcademic(question, { extraTerms }),
   books: (question, limit, opts) => searchBooks(question, limit, opts),
+  // Optional 2nd/3rd lanes (no-op without env keys; fakes injectable in tests).
+  tavily: (question) => searchTavily(question, { perPage: 10 }),
+  exa: (question) => searchExaPublications(question, { perPage: 8 }),
   expandBooks: (args) => expandBookQueries(args.topic, args),
   fetch: (url) => fetchPage(url),
   claims: (args) => extractClaims(args),
@@ -337,6 +343,28 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
         .catch((e) => ev('warning', 'Custom Search unavailable', { error: String(e.message).slice(0, 120) })),
     );
   }
+  // Tavily 2nd lane (optional, keyed): fused with grounding via RRF at COLLECT.
+  // Best-effort: off without TAVILY_API_KEY, never fatal when it fails.
+  if (isTavilyEnabled() && alive()) {
+    ev('progress', 'Searching second web lane (Tavily)…');
+    extraJobs.push(
+      D.tavily(topic)
+        .then((t) => { allResults.push(...t.map((r) => ({ ...r, category: 'general' }))); return t.length; })
+        .then((n) => ev('progress', `${n} second-lane results`))
+        .catch((e) => ev('warning', 'Second web lane unavailable', { error: String(e.message).slice(0, 120) })),
+    );
+  }
+  // Exa publication lane (optional, keyed, Deep+ only): academic retrieval
+  // without delegating synthesis. Never `type: deep` — audit stays ours.
+  if (isExaEnabled() && (task.mode === 'deep' || task.mode === 'exhaustive') && alive()) {
+    ev('progress', 'Searching publication lane (Exa)…');
+    extraJobs.push(
+      D.exa(topic)
+        .then((x) => { allResults.push(...x.map((r) => ({ ...r, category: 'scholarly' }))); return x.length; })
+        .then((n) => ev('progress', `${n} publication-lane records`))
+        .catch((e) => ev('warning', 'Publication lane unavailable', { error: String(e.message).slice(0, 120) })),
+    );
+  }
   if (budget.books && alive()) {
     ev('progress', 'Discovering books and monographs…');
     // Book variants preferably come from the planner (zero extra calls).
@@ -511,8 +539,29 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     const enriched = results.map((r) => ({ ...r, text: r.snippet || '', _a: analyzeRecord(r) }));
     const { unique, duplicates } = deduplicate(enriched);
     if (duplicates.length) ev('progress', `Deduplicated ${duplicates.length} copy/track-variant URL(s)`);
-    unique.sort((x, y) => (x._a.cls.tier - y._a.cls.tier) || (y._a.rel - x._a.rel));
-    return unique.slice(0, budget.maxSources).map((r) => toSourceRecord(r, r._a));
+    // Multi-lane RRF: lanes (by provider) rank internally; fusion orders
+    // across lanes. Within-tier order then follows fused rank — a source two
+    // lanes agree on outranks one only a single lane returned.
+    const lanesBy = new Map();
+    for (const r of enriched) {
+      const lane = String(r.via || r.category || 'web');
+      if (!lanesBy.has(lane)) lanesBy.set(lane, []);
+      lanesBy.get(lane).push({ url: r.url, canonicalUrl: canonicalize(r.url) });
+    }
+    const fusedOrder = rrfFuse([...lanesBy.values()]);
+    const fusedRank = new Map(fusedOrder.map((u, i) => [u, i]));
+    unique.sort((x, y) => {
+      const t = (x._a.cls.tier - y._a.cls.tier);
+      if (t !== 0) return t;
+      const fx = fusedRank.get(canonicalize(x.url)) ?? Number.MAX_SAFE_INTEGER;
+      const fy = fusedRank.get(canonicalize(y.url)) ?? Number.MAX_SAFE_INTEGER;
+      if (fx !== fy) return fx - fy;
+      return (y._a.rel - x._a.rel);
+    });
+    // MMR domain diversification within the maxSources window: tier-1/2
+    // clusters from one domain are capped so other evidence keeps slots.
+    const diversified = mmrDiversify(unique, Math.max(budget.maxSources, unique.length));
+    return diversified.slice(0, budget.maxSources).map((r) => toSourceRecord(r, r._a));
   };
 
   let sources = toSources(allResults);

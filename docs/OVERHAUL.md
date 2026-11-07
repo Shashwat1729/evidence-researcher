@@ -1,6 +1,7 @@
 # Evidence Researcher — Architecture v2 (production overhaul)
 
-Status: implemented v2.0 (2026-11-07). This document supersedes the v1
+Status: implemented v2.0 (2026-11-07), wave 2 complete (fusion, Tavily/Exa lanes,
+citation recall, HiSS, compression cards, eval 18, 404 tests). This document supersedes the v1
 sketch in `docs/architecture.md`. It records (1) the full defect register
 found by a line-by-line audit, (2) the corrected architecture, and (3) the
 2025–2026 SOTA techniques adopted or rejected, with reasons.
@@ -96,10 +97,16 @@ Adopted by design already: citation-integrity filter (ALCE-style),
 claim support rate (FActScore-style), zero-call quality metrics,
 tier-by-evidence, stance-disclosure, extractive pinning.
 
-Next wave (specified, not yet built): Tavily second lane + RRF fusion;
-citation recall metric; HiSS sub-claim decomposition; compression cards
-before synthesis; eval +4 items (taxonomy, post-cutoff, contradiction pair,
-provenance trap); Exa publication lane on Deep+.
+Adopted in wave 2 (built 2026-11-07): Tavily second lane (`providers/tavily.js`,
+keyed, fused via RRF in `fusion.js` + CONST MMR at COLLECT); Exa publication
+lane (`providers/exa.js`, Deep+ only, `type: auto` + highlights, never `deep`
+synthesis); citation recall (`quality.js`, ALCE-style); HiSS decomposition
+(`claims.js` decompose/attach/aggregate); compression cards (`synthesis.js`
+`buildCompressionCards`); eval 14→18 (taxonomy, post-cutoff, contradiction
+pair, provenance trap); registry `availableLanes()`; regression suite
+`tests/overhaul.test.js` (17 tests: trust breakout, pool abort, SSRF literals,
+cache coalescing, classify over-promotion, enrich discard, HiSS, cards,
+recall, fusion). 404 tests total, lint 107/107.
 
 Rejected: SearXNG as primary, Exa `deep` synthesis (delegates audit away),
 domain-only ranking boosts, GAIA/BrowseComp as primary score, DualSpec

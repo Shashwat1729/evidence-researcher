@@ -390,6 +390,21 @@ export function partitionBeats(arc, groups) {
   return out.filter((grp) => grp.length);
 }
 
+// Compression cards (LangChain Open Deep Research lesson): distill findings
+// into dense claim cards before synthesis. Feeding raw claim lists into the
+// report writer invites omission and misattribution; cards give one atomic
+// line per claim with state + evidence. Pure, zero model calls.
+export function buildCompressionCards(claims = []) {
+  return (claims || []).map((c) => ({
+    id: c.id,
+    text: String(c.text || '').slice(0, 300),
+    state: c.state,
+    sup: (c.supporting || []).length,
+    con: (c.contradicting || []).length,
+    subs: Array.isArray(c.subClaims) ? c.subClaims.length : 0,
+  }));
+}
+
 // Pure, exported for unit tests: the exact prompt contract.
 export function buildSynthesisPrompt({ task, plan, claims, sources, contradictions, provenance, stats, documentary, depth }) {
   const d = depth || DEPTH.standard;
@@ -423,7 +438,7 @@ ${documentary ? 'DOCUMENTARY MODE: emphasize chronology, key people, primary evi
 NARRATIVE ARC — the report MUST read as one continuous study following these beats IN ORDER, like a book chapter. Use chronological or logical transitions between sections as appropriate to the subject. Each beat becomes one or more findings; never a disconnected list of assertions:
 ${arcText}
 
-Claims (with states): ${JSON.stringify(claims.map((c) => ({ id: c.id, text: c.text, state: c.state, supporting: c.supporting, contradicting: c.contradicting, why: c.confidenceWhy }))).slice(0, 14000)}
+Claims (compression cards — one line per atomic claim; cite supporting ids for facts): ${JSON.stringify(buildCompressionCards(claims)).slice(0, 14000)}
 Contradictions: ${JSON.stringify(contradictions).slice(0, 4000)}
 Provenance: ${JSON.stringify(provenance).slice(0, 3000)}
 Sources with excerpts (cite ONLY these ids/urls; if a page number cannot be verified write "Page number not verified"; never invent URLs, authors, dates, DOIs, quotes): ${JSON.stringify(srcIndex).slice(0, 20000)}
