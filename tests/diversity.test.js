@@ -27,8 +27,10 @@ describe('enrichment splitter', () => {
     assert.equal(out.length, 2);
     assert.ok(out[0].includes('charter') && out[1].includes('study'));
   });
-  it('falls back to whole text for the first source', () => {
-    assert.deepEqual(splitEnrichment('just some summary', 2), ['just some summary']);
+  it('discards ambiguous splits instead of shifting passages onto wrong sources', () => {
+    // A single unnumbered blob for N>1 URLs cannot be attributed positionally;
+    // returning it for source 1 would misattribute evidence. Empty = absent.
+    assert.deepEqual(splitEnrichment('just some summary', 2), []);
     assert.deepEqual(splitEnrichment('', 2), []);
     assert.deepEqual(splitEnrichment('x', 0), []);
   });

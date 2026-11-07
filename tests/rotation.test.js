@@ -32,9 +32,11 @@ describe('API key rotation', () => {
     if (saved.fallback === undefined) delete process.env.GEMINI_API_KEY_FALLBACK; else process.env.GEMINI_API_KEY_FALLBACK = saved.fallback;
   });
 
-  it('orders keys explicit → primary → fallback, deduped', () => {
-    assert.deepEqual(getKeys('K0'), ['K0', 'KEY_PRIMARY', 'KEY_FALLBACK']);
-    assert.deepEqual(getKeys('KEY_PRIMARY'), ['KEY_PRIMARY', 'KEY_FALLBACK']);
+  it('orders keys: BYOK is exclusive, else primary → fallback, deduped', () => {
+    // BYOK isolation: explicit (client-supplied) keys are used EXCLUSIVELY —
+    // server keys are never appended to a client request (quota/tenant leak).
+    assert.deepEqual(getKeys('K0'), ['K0']);
+    assert.deepEqual(getKeys('KEY_PRIMARY'), ['KEY_PRIMARY']);
     assert.deepEqual(getKeys(''), ['KEY_PRIMARY', 'KEY_FALLBACK']);
   });
 

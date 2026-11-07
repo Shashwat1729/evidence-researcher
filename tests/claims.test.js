@@ -60,7 +60,9 @@ describe('findContradictionsAndGaps fallback honesty', () => {
     globalThis.fetch = async () => { throw new Error('quota dead'); };
     const out = await findContradictionsAndGaps({ key: 'k', model: 'm', question: 'Q?', claims: [{ id: 'c1', text: 'X.', state: 'supported' }], sources: SOURCES, iteration: 3 });
     assert.equal(out.sufficient, false, 'failed review stays provisional even at iteration 3');
-    assert.ok(out.gaps.length >= 1);
+    // Empty gaps: a sentinel sentence here became a nonsense follow-up search
+    // query in the orchestrator ("... Model review unavailable").
+    assert.deepEqual(out.gaps, []);
   });
 });
 
