@@ -88,7 +88,7 @@ describe('post-synthesis verification', () => {
       ],
       sources,
     });
-    const m = sent.match(/Findings: (\[.*?\])\nReturn JSON/s);
+    const m = sent.match(/Findings: (\[.*?\])\n[\s\S]*?Return JSON/s);
     assert.ok(m, 'findings embedded');
     const parsed = JSON.parse(m[1]);
     assert.ok(parsed.length >= 1 && parsed.length <= 3, 'whole items only');

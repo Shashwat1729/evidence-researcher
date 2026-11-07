@@ -19,7 +19,7 @@
 
 const env = (typeof process !== 'undefined' && process.env) || {};
 
-export const MODELS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+export const MODELS_ENDPOINT = (env.GEMINI_API_BASE ? `${env.GEMINI_API_BASE.replace(/\/+$/, '')}/models` : 'https://generativelanguage.googleapis.com/v1beta/models');
 
 /**
  * Catalogue entries this app cannot use for prose research, even though they

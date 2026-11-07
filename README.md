@@ -65,6 +65,31 @@ docker build -t evidence-researcher .
 docker run -p 8787:8787 -e GEMINI_API_KEY=... -v er-data:/data evidence-researcher
 ```
 
+## Agent delivery: REST, MCP, receipts
+
+The same pipeline is consumable three ways for autonomous callers:
+
+- **SSE** — `POST /api/research` streams progress events (human UIs).
+- **Sync JSON** — `POST /api/research` with `{"stream": false}` returns one
+  machine-readable result instead of an SSE stream. Client-supplied
+  `Idempotency-Key` headers deduplicate retries; identical concurrent bodies
+  share one run; disconnects cancel cooperatively.
+- **MCP** — `POST /mcp` (stateless Streamable HTTP) or `npm run mcp` (stdio)
+  exposes one tool, `research`, with a typed input schema. It runs the real
+  pipeline and returns the structured result.
+
+Every sync delivery carries an **Ed25519-signed receipt** (`result.receipt`):
+canonical-JSON envelope with order id, listing id, minor-unit amount,
+`input_sha256`, and `delivery_sha256` (hash of the result *before* the receipt
+was attached — verify by hashing the result object minus `receipt`).
+The public key set to verify with is published at
+`GET /.well-known/receipts.json`; sign with your own key by setting
+`RECEIPT_PRIVATE_KEY_PEM`. `GET /api/service` advertises name, description,
+and price (env-configurable, nothing hard-coded).
+
+**LLM endpoint portability:** set `GEMINI_API_BASE` to point the same key at
+any Gemini-compatible gateway (proxy, relay, Vertex shim) — no code change.
+
 ## How it works
 
 ```
@@ -89,7 +114,7 @@ JSON schemas, and every cited id is integrity-checked against retrieved sources.
 | Frontend | Zero-build HTML/CSS/JS "reading room": runs sidebar, single-box composer, live stage timeline, report-first workspace (Report · Evidence · Sources · Method) where every numbered citation opens its source passage in a side rail (bottom sheet on phones), source filters by type/tier, SVG claim graph, collapsed evidence-quality disclosure, light + dark themes, keyboard tabs, ARIA live regions. Static mode runs everything in-browser. |
 | Exports | Markdown, standalone HTML, raw JSON, a **NotebookLM dossier** (bare URLs a notebook can resolve, every claim's evidence state, figure credits) and a **media brief** (per-section narration, on-screen titles, runtime, citations to display, figure to show). |
 | Persistence | Atomic JSON file store (`DATA_DIR`); browser localStorage history. Swappable for a real DB. |
-| Ops | Structured logs, `/api/health` + `/api/metrics`, CLI, MCP tool stub, GitHub Actions CI + Pages deploy. |
+| Ops | Structured logs, `/api/health` + `/api/metrics`, CLI, MCP server (stdio + stateless HTTP at /mcp), Ed25519 delivery receipts, sync JSON delivery mode, GitHub Actions CI + Pages deploy. |
 
 Methodology rules enforced in code: search-result ≠ evidence · `.edu` ≠ auto-trust ·
 Wikipedia/Reddit = discovery, not proof · books are *discovered* until *inspected* ·
@@ -203,9 +228,9 @@ frontend/{index.html,styles.css,app.js,direct.js}   UI + static-mode runner
 api/index.js           Vercel adapter (same middleware stack)
 eval/                  benchmark questions + audit scorer
 scripts/               CLI (research/live), key validator, lint, Pages builder
-tests/                 230 offline tests (no key/network required)
+tests/                 ~390 offline tests (no key/network required)
 docs/                  architecture, methodology, api, deployment, attribution
-mcp/server.js          MCP `research` tool stub for future search providers
+mcp/server.js          MCP stdio server exposing the real research pipeline
 ```
 
 ## Contributing & license

@@ -4,6 +4,7 @@
 // returns [] when the model is unavailable.
 
 import { generateJson } from '../gemini.js';
+import { UNTRUSTED_BANNER, wrapUntrusted } from '../trust.js';
 
 const VERIFY_SCHEMA = {
   type: 'object',
@@ -33,7 +34,7 @@ export async function verifyFindings({ key, model, findings, sources, onKeyEvent
     excerpts: (f.cite || []).map((id) => {
       const s = byId.get(id);
       const txt = s ? ((s.passages || []).map((p) => p.text).join(' ').slice(0, 600)) : '';
-      return { id, excerpt: txt };
+      return { id, excerpt: wrapUntrusted(txt) };
     }),
   }));
   // Whole findings only (never slice JSON mid-object); best-first order kept.
@@ -49,6 +50,7 @@ export async function verifyFindings({ key, model, findings, sources, onKeyEvent
   const prompt = `You are a strict fact-checker. For each finding below, judge whether its cited excerpts DIRECTLY support the finding text.
 supported: "yes" (excerpts establish it), "partial" (excerpts support part of it), "no" (excerpts missing, irrelevant, or contradicting). Be strict — a plausible-sounding finding with thin excerpts is "partial" at best.
 Findings: ${JSON.stringify(items)}
+${UNTRUSTED_BANNER}
 Return JSON: {"results": [{"n": 0, "supported": "yes|partial|no", "note": "one sentence"}]}`;
   try {
     const { data } = await generateJson({ key, model, prompt, schema: VERIFY_SCHEMA, maxTokens: 3072, thinking: 'low', onKeyEvent });

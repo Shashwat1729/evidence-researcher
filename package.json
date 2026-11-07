@@ -28,6 +28,7 @@
     "evidence-researcher": "./scripts/research.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "express": "^4.21.2"
   },
   "engines": {

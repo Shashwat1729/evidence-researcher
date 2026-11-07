@@ -39,12 +39,16 @@ export const openapiSpec = {
                   hypothesis: { type: 'string', maxLength: 2000 },
                   documentary: { type: 'boolean', default: false },
                   fresh: { type: 'boolean', default: false, description: 'Skip the recent-result cache and force a new run' },
+                  stream: { type: 'boolean', default: true, description: 'false returns one JSON result (with Ed25519 receipt) instead of SSE' },
                 },
               },
             },
           },
         },
-        parameters: [{ name: 'x-gemini-key', in: 'header', description: 'BYOK Gemini API key (overrides server key)', schema: { type: 'string' } }],
+        parameters: [
+          { name: 'x-gemini-key', in: 'header', description: 'BYOK Gemini API key (overrides server key)', schema: { type: 'string' } },
+          { name: 'idempotency-key', in: 'header', description: 'Retries with the same key replay the same result', schema: { type: 'string' } },
+        ],
         responses: {
           '200': { description: 'SSE stream (text/event-stream)', content: { 'text/event-stream': { schema: { type: 'string' } } } },
           '400': { description: 'Bad request' },
@@ -58,6 +62,12 @@ export const openapiSpec = {
       get: {
         summary: 'List recent runs',
         parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }],
+        responses: { '200': { description: 'OK' } },
+      },
+    },
+    '/api/service': {
+      get: {
+        summary: 'Service listing metadata (name, description, price, endpoints)',
         responses: { '200': { description: 'OK' } },
       },
     },

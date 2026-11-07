@@ -66,12 +66,45 @@ cooperatively (no new model/search work starts; in-flight calls drain).
   sourceType, domain, discoveredVia, tier (1–7|null), tierReason, authority,
   proximity (primary|secondary|tertiary|unknown), independence,
   accessibility (full|partial|metadata-only|unavailable), passages, verified }`
-- **Claim**: `{ id, text, state, supporting[], contradicting[], confidenceWhy }`
-  with `state ∈ strongly-supported|supported|plausible|disputed|
-  weakly-supported|unsupported|contradicted|unknown`.
-- **Relation**: `{ from, to, kind, evidence }` where `kind ∈ supports|
+- **Claim**: `{ id, text, state, supporting[], contradicting[], confidenceWhy,
+  evidence[], contradicting_evidence[], confidence, confidence_label,
+  confidence_factors[], status, independence, reasoning }`
+  with `state \^^ strongly-supported|supported|plausible|disputed|
+  weakly-supported|unsupported|contradicted|unknown`, `status` in
+  `supported|partially-supported|mixed|contradicted|insufficient-evidence`,
+  and `confidence` computed deterministically from source count/quality,
+  independence, contradiction strength, and copy-detection (never the LLM's
+  self-assessment). `confidence_factors` lists each contributing signal so
+  the number is auditable.
+- **Evidence**: `{ evidence_id, source_id, type (supporting|contradicting),
+  excerpt, location, supports_claim, strength, directness, retrieved_at, notes }`.
+- **Relation**: `{ from, to, kind, evidence }` where `kind \^^ supports|
   contradicts|quotes|cites|summarizes|copies|references|derived_from|discusses`.
 - **ResearchResult**: `{ id, task, plan, report, claims, sources,
-  contradictions, provenance, relations, iterations, stats, stanceDisclosure,
-  completedAt }`. Every `cite`/link id is guaranteed to resolve to a retrieved
-  source (ghost ids are filtered by the engine).
+  contradictions, provenance, relations, iterations, quality, stats,
+  stanceDisclosure, completedAt }`. Every `cite`/link id is guaranteed to
+  resolve to a retrieved source (ghost ids are filtered by the engine).
+
+## Sync delivery, MCP, receipts
+
+### `POST /api/research` with `{"stream": false}`
+Same body as SSE mode; returns the full `ResearchResult` as a single JSON
+response. The result carries `receipt` — an Ed25519-signed delivery receipt:
+`{ v, issuer, kid, order, listing, seller, buyer, amount_minor, currency,
+delivered_at, input_sha256, delivery_sha256, sig }`. `delivery_sha256` is the
+sha256 of the result *before* the receipt was attached (hash the result minus
+`receipt` to verify). `Idempotency-Key` header replays the same result without
+re-running.
+
+### `POST /mcp`, `npm run mcp`
+Stateless Streamable HTTP MCP endpoint (or stdio via `npm run mcp`) exposing
+the `research` tool: `{ question, mode?, stance?, hypothesis? }` → structured
+result. Invalid arguments and research failures return `isError` content.
+
+### `GET /.well-known/receipts.json`
+Public keys for receipt verification: `{ issuer, alg, canonical, keys: [{ kid,
+kty, crv, x }] }`.
+
+### `GET /api/service`
+Service metadata for autonomous discovery: `{ name, description, price_minor,
+currency, endpoints, modes, stances }` (env-configurable).

@@ -12,6 +12,8 @@ import { requestId, securityHeaders, cors } from './middleware/security.js';
 import { validateMiddleware } from './middleware/validate.js';
 import { openapiSpec } from './openapi.js';
 import { logger } from './logger.js';
+import { keysDocument } from './receipt.js';
+import { createResearchMcpServer } from './mcpCore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -51,6 +53,28 @@ export function createApp({ runFn = runResearch, store = null } = {}) {
     store: store || { saveResult, getResult, listResults, deleteResult, findCached, saveCacheEntry },
   }));
   app.use('/api', apiNotFound);
+
+  // Public signing-key document for delivery receipts (see receipt.js).
+  app.get('/.well-known/receipts.json', (_req, res) => res.json(keysDocument()));
+
+  // MCP over Streamable HTTP (stateless): POST /mcp speaks JSON-RPC; the
+  // `research` tool runs the real pipeline. Each request gets a fresh
+  // server+transport pair, mirroring the official stateless example.
+  app.post('/mcp', async (req, res) => {
+    try {
+      const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+      const server = createResearchMcpServer({ runFn });
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      res.on('close', () => { transport.close(); server.close(); });
+    } catch (e) {
+      logger.error('MCP request failed', { error: String(e?.message || e).slice(0, 200) });
+      if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+    }
+  });
+  app.get('/mcp', (_req, res) => res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }));
+  app.delete('/mcp', (_req, res) => res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }));
 
   // Static frontend when present (local/Docker). On Vercel the CDN serves
   // `frontend/` directly, so this is skipped if the directory is absent.
