@@ -91,7 +91,11 @@ export async function withModelFallback(model, onKeyEvent, fn) {
   throw lastErr;
 }
 
-const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// Swappable endpoint: point GEMINI_API_BASE at any Gemini-compatible gateway
+// (proxy, Vertex shim, OpenRouter-style relay) without touching code. The key
+// header contract stays the same, so a different key + base is all it takes.
+const API_BASE = (typeof process !== 'undefined' && process.env?.GEMINI_API_BASE)?.replace(/\/+$/, '')
+  || 'https://generativelanguage.googleapis.com/v1beta';
 
 export function getKey(explicit) {
   return getKeys(explicit)[0] || '';
@@ -114,8 +118,11 @@ export function getKeys(explicit) {
   } else {
     listed = splitKeyInput(explicit);
   }
+  // BYOK isolation: explicit (client-supplied) keys are used EXCLUSIVELY.
+  // Appending server keys mixed quotas/tenants and could exhaust the
+  // operator's budget on a third party's request.
+  if (listed.length) return dedupeKeys(listed).keys.slice(0, maxKeys());
   const list = [
-    ...listed,
     ...splitKeyInput(penv.GEMINI_API_KEYS || ''),
     (penv.GEMINI_API_KEY || '').trim(),
     (penv.GEMINI_API_KEY_FALLBACK || '').trim(),

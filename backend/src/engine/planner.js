@@ -192,7 +192,10 @@ Return JSON: {"domain": "...", "complexity": "low|medium|high", "valid": true, "
       bookVariants: Array.isArray(data.bookVariants) ? data.bookVariants.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 3) : [],
       arc: normalizeArc(data.arc, question, data.domain || 'general-factual'),
     };
-  } catch {
+  } catch (err) {
+    // Cancel and quota must propagate: falling back to a template plan on
+    // 429 hides the real failure and on cancel keeps a dead run alive.
+    if (err?.code === 'CANCELLED' || err?.name === 'AbortError' || err?.code === 'QUOTA_EXHAUSTED' || err?.code === 'RPD_EXHAUSTED' || err?.status === 429) throw err;
     return templatePlan(question);
   }
 }

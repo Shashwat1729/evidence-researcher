@@ -80,13 +80,16 @@ export function classifySource({ url = '', title = '', snippet = '', text = '', 
   }
   // Primary-evidence markers — domain-agnostic: any field's original record.
   // Must be broad (legal, financial, medical, scientific, official, etc.), not tied to one example.
-  // Includes filings (docket/opinion/brief/10-K/patent), legislative (bill/act/resolution/directive),
-  // scientific/medical (dataset/trial/protocol), and historical (archival/manuscript/inscription).
-  if (/archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|10-?K\b|10-?Q\b|8-?K\b|S-1\b|annual report|quarterly report|proxy statement|prospectus|clinical trial|trial protocol|adverse event|patent|standard|specification|dataset|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act\b|hearing|testimony|executive order|memorandum/i.test(hay)) {
+  // Short tokens use word boundaries: bare "brief|order|act|standard|page"
+  // substrings matched nearly every page ("ordered", "actual") and promoted
+  // ordinary sites to tier 3.
+  if (/\b(archaeological report|excavation|chronicle|manuscript|archival|court record|treaty text|inscription|census data|original dataset|docket|opinion|brief|motion|order|judgment|transcript|pleading|affidavit|deposition|filing|10-?K|10-?Q|8-?K|S-1|annual report|quarterly report|proxy statement|prospectus|clinical trial|trial protocol|adverse event|patent|standard|specification|dataset|white paper|policy paper|government report|official report|legislative|parliamentary|resolution|directive|regulation|statute|act|hearing|testimony|executive order|memorandum)\b/i.test(hay)) {
     if (tier > 3) { tier = Math.min(tier, 3); reason += '; primary-evidence markers present — inspect original before tier-1 claim'; }
     proximity = 'primary';
   }
-  if (/museum\.|archive|national library|smithsonian/i.test(uPlus + ' ' + hay) && tier > 3) {
+  // "archive" as a bare substring over-promotes mirrors like archive.today;
+  // require an institutional signal: museum/library domain or /archive/ path.
+  if ((/museum\.|national library|smithsonian/i.test(uPlus + ' ' + hay) || /\/archives?\//i.test(u)) && tier > 3) {
     tier = 3; reason = 'museum/archive/library institutional source';
     authority = 'medium'; proximity = tier === 3 ? proximity : 'secondary';
   }

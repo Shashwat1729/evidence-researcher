@@ -29,9 +29,14 @@ const CATEGORIES = ['general', 'scholarly', 'primary-evidence', 'books', 'altern
 export function normalizeQueries(list, fallbackCategory = 'general') {
   if (!Array.isArray(list)) return [];
   const out = [];
+  const seen = new Set();
   for (const item of list) {
     const q = String(item?.q ?? item ?? '').trim();
     if (!q) continue;
+    // Dedup by lowercased query: duplicate searches burned quota for no gain.
+    const key = q.toLowerCase().replace(/\s+/g, ' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
     const cat = String(item?.category || fallbackCategory).trim().toLowerCase();
     out.push({ q: q.slice(0, 300), category: CATEGORIES.includes(cat) ? cat : 'general' });
   }

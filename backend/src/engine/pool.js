@@ -7,10 +7,18 @@
 export async function pool(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
+  let aborted = false;
   const worker = async () => {
-    while (next < items.length) {
+    while (!aborted && next < items.length) {
       const i = next++;
-      out[i] = await fn(items[i], i);
+      try {
+        out[i] = await fn(items[i], i);
+      } catch (e) {
+        // First rejection aborts the pool: siblings stop picking up new work
+        // instead of continuing to burn quota/network after the run is dead.
+        aborted = true;
+        throw e;
+      }
     }
   };
   // Sanitize: NaN/zero/negative/fractional limits degrade to serial (1),

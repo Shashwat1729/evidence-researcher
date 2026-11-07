@@ -40,7 +40,18 @@ export const academicCache = new LruTtlCache({ max: 300, ttlMs: 20 * 60 * 1000 }
 export async function cached(key, fn, cache = academicCache) {
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const val = await fn();
-  cache.set(key, val);
-  return val;
+  // Singleflight coalescing: concurrent identical callers share ONE fn()
+  // invocation instead of stampeding the upstream API (thundering herd on
+  // OpenAlex/books burns quota and trips rate limits).
+  const inflight = cache._inflight || (cache._inflight = new Map());
+  if (inflight.has(key)) return inflight.get(key);
+  const p = (async () => {
+    try {
+      const val = await fn();
+      cache.set(key, val);
+      return val;
+    } finally { inflight.delete(key); }
+  })();
+  inflight.set(key, p);
+  return p;
 }

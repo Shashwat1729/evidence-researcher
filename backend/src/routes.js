@@ -15,6 +15,7 @@ import { exportMarkdown, exportHtml, exportNotebookLm, exportMediaBrief } from '
 import { keyKind, looksLikeKey, maskKey, maxKeys, normalizeKeys } from './keys.js';
 import { DISCOVERY_MAX_KEYS, discoverModelsCached, modelCacheTtlMs } from './models.js';
 import * as defaultStore from './store.js';
+import { signReceipt } from './receipt.js';
 export { exportMarkdown, exportHtml };
 export { maskKey };
 
@@ -63,7 +64,8 @@ export async function validateKey(k, { fetchFn = fetch, timeoutMs = 8000 } = {})
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetchFn('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
+    const modelsUrl = `${(process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '')}/models?pageSize=1`;
+    const resp = await fetchFn(modelsUrl, {
       headers: { 'x-goog-api-key': key }, signal: ctrl.signal,
     });
     if (resp.ok) return { valid: true, masked, kind };
@@ -184,6 +186,27 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     });
   });
 
+  // Idempotency: a retried external call with the same Idempotency-Key gets
+  // the same stored result instead of burning quota twice. Bounded in-memory
+  // map with TTL; the on-disk result cache remains the durable layer.
+  const idem = new Map(); // key -> { at, result|promise }
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of idem) if (now - v.at > 24 * 3600_000) idem.delete(k);
+  }, 3600_000).unref();
+
+  // Service descriptor for autonomous discovery: pricing and limits are env-
+  // configurable, never hard-coded. GET /api/service.
+  r.get('/service', (_req, res) => res.json({
+    name: process.env.SERVICE_NAME || 'Evidence Researcher',
+    description: 'Evidence-first deep research: claim-level evidence with auditable confidence, active contradiction search, and source-independence (copying) analysis. Machine-readable, traceable, source-cited results.',
+    price_minor: Number(process.env.SERVICE_PRICE_MINOR || 500),
+    currency: (process.env.SERVICE_CURRENCY || 'chf').toLowerCase(),
+    endpoints: { research: 'POST /api/research', sync: 'POST /api/research with {"stream": false}', mcp: '/mcp' },
+    modes: MODES_LIST,
+    stances: STANCES_LIST,
+  }));
+
   // SSE research run. Query/body: question, mode, stance, hypothesis, documentary, model, fresh.
   r.post('/research', researchLimiter, async (req, res) => {
     // Multi-key: x-gemini-key (single) and/or x-gemini-keys (JSON array or
@@ -226,13 +249,66 @@ export function apiRouter({ runFn = runResearch, store = defaultStore } = {}) {
     }
     // Effective keys for this run (user keys first, then server keys).
     const runKeys = getKeys(explicit.length ? explicit : key);
+    // Synchronous delivery mode: same pipeline, one JSON response (no SSE).
+    // Used for programmatic delivery contracts. Carries an Ed25519 receipt.
+    if (req.body?.stream === false) {
+      const idemKey = String(req.headers['idempotency-key'] || '').trim();
+      // Body-hash guards idempotent replay: the same key with a different
+      // body must 409, never silently return another question's result.
+      const inputFp = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary, runKeys.map((k) => maskKey(k)).sort().join(',')]);
+      if (idemKey && idem.has(idemKey)) {
+        const hit = idem.get(idemKey);
+        if (hit.inputFp !== inputFp) {
+          return res.status(409).json({ error: 'Idempotency-Key reused with a different request body.' });
+        }
+        try {
+          const result = await hit.promise;
+          return res.json(result);
+        } catch (e) {
+          return res.status(e.status || 500).json({ error: String(e?.message || e).slice(0, 500) });
+        }
+      }
+      const run = (async () => {
+        const result = await runFn(input, { key: runKeys, emit: () => {} });
+        const priced = Number(process.env.SERVICE_PRICE_MINOR || 500);
+        // The delivery hash covers the result as delivered, BEFORE the receipt
+        // is attached — verify by hashing the result object minus `receipt`.
+        const deliveryPayload = { ...result };
+        result.receipt = signReceipt({
+          order: result.id,
+          listing: process.env.SERVICE_LISTING_ID || 'evidence-researcher',
+          seller: process.env.SERVICE_SELLER_ID || '',
+          buyer: String(req.headers['x-buyer-id'] || ''),
+          amount_minor: priced,
+          currency: process.env.SERVICE_CURRENCY || 'chf',
+          delivered_at: new Date().toISOString(),
+          input,
+          delivery: deliveryPayload,
+        });
+        await store.saveResult(result).catch(() => {});
+        return result;
+      })();
+      if (idemKey) idem.set(idemKey, { at: Date.now(), promise: run, inputFp });
+      try {
+        const result = await run;
+        return res.json(result);
+      } catch (e) {
+        if (idemKey) idem.delete(idemKey);
+        return res.status(e.status || 500).json({ error: String(e?.message || e).slice(0, 500) });
+      }
+    }
+
     const rawCap = Number(process.env.MAX_CONCURRENT_RUNS);
-    const cap = Number.isFinite(rawCap) ? Math.max(0, rawCap) : 8;
+    // 0 = explicit pause (reject all with 503); negative/NaN = invalid → default.
+    const cap = Number.isFinite(rawCap) && rawCap >= 0 ? Math.floor(rawCap) : 8;
     // Singleflight: identical concurrent bodies share ONE run (fresh result,
     // zero extra quota). Joiners get a note + the final result event.
     // `fresh: true` never joins (explicit new work) but still publishes.
-    // Model is part of the key: different models may return different work.
-    const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary, input.model]);
+    // Model AND key-set are part of the key: without the key fingerprint, a
+    // second tenant could join the first tenant's run and receive its result
+    // (cross-tenant leak). Masked fingerprints isolate tenants without
+    // exposing key material.
+    const bk = JSON.stringify([input.question, input.mode, input.stance, input.hypothesis, input.documentary, input.model, runKeys.map((k) => maskKey(k)).sort().join(',')]);
     const shared = input.fresh ? null : inflight.get(bk);
     // SSE preamble shared by owner + joiner paths.
     let heartbeat = null;

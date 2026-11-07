@@ -28,6 +28,8 @@ import { verifyFindings } from './verify.js';
 import { splitEnrichment } from './enrich.js';
 import { figuresForReport } from '../providers/images.js';
 import { evidenceQuality } from '../quality.js';
+import { evidenceForClaim, contradictingEvidenceForClaim } from './evidence.js';
+import { scoreClaimConfidence, claimStatus, independenceFor } from './confidence.js';
 
 export const defaultDeps = {
   plan: (args) => planResearch({ ...args, model: args.model || MODEL_CONFIG.planner }),
@@ -149,7 +151,10 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
     // remaining mode time minus a 60s reserve: the mode deadline is the ONLY
     // time bound, so quota waits ride out refills instead of surrendering to
     // inventory early. Quick's 90s deadline still keeps it fast.
-    if (penv.QUOTA_WAIT_BUDGET_MS) return Math.max(30_000, Number(penv.QUOTA_WAIT_BUDGET_MS));
+    if (penv.QUOTA_WAIT_BUDGET_MS) {
+      const n = Number(penv.QUOTA_WAIT_BUDGET_MS);
+      return Number.isFinite(n) ? Math.max(30_000, n) : Math.max(30_000, deadline - Date.now() - 60_000);
+    }
     return Math.max(30_000, deadline - Date.now() - 60_000);
   };
   const quotaErr = () => Object.assign(
@@ -168,7 +173,8 @@ export async function runResearch(input, { key, emit = () => {}, deps = {}, isCa
   // on thin quota. Pure function of the budget, exported for tests.
   const throwIfStopped = (isSearch = false) => {
     if (isCancelled()) throw cancelledErr();
-    const cap = isSearch ? Math.min(quotaWaitBudget(), searchQuotaCapMs(quotaWaitBudget())) : quotaWaitBudget();
+    const qb = quotaWaitBudget();
+    const cap = isSearch ? Math.min(qb, searchQuotaCapMs(qb)) : qb;
     if ((stats.quotaWaitMs || 0) >= cap) {
       // If we already have sources, signal degraded quota — caller will
       // synthesize a fallback report instead of throwing with no result.
@@ -702,10 +708,12 @@ let _fromQuotaFallback = false;
         claims = merged.claims;
         review = merged.review;
       } catch (e) {
+        if (e?.code === 'CANCELLED' || e?.name === 'AbortError' || isCancelled()) throw e;
         ev('warning', `Analysis failed (${(e.message || '').slice(0, 100)}) — retrying claims only`);
         try {
           claims = await call(() => D.claims({ key, model: models.analysis, question: task.question, sources: sources.slice(0, 12), onKeyEvent: keyEvent, minClaims, maxTokens: analysisTokens }));
-        } catch {
+        } catch (e2) {
+          if (e2?.code === 'CANCELLED' || e2?.name === 'AbortError' || isCancelled()) throw e2;
           claims = heuristicClaims(sources);
           ev('warning', `Claims heuristic: derived ${claims.length} cited claims from source titles (model unavailable)`);
         }
@@ -1005,6 +1013,7 @@ let _fromQuotaFallback = false;
         maxTokens: budget.reportTokens,
       })));
     } catch (e) {
+      if (e?.code === 'CANCELLED' || e?.name === 'AbortError' || isCancelled()) throw e;
       // Quota ran out before the write-up. The gathered evidence is still
       // delivered as a report — say it once, calmly, without dressing it as an
       // error the user has to act on.
@@ -1081,6 +1090,22 @@ const cost = estimateCost(stats.modelCalls, stats.searchCalls, stats.tokensIn, s
   // output is actually evidence-backed. Zero extra model calls - everything is
   // derived from data the run already produced.
   const quality = evidenceQuality({ report, claims, sources, provenance });
+  // Claim-level evidence model: attach first-class evidence objects, a
+  // deterministic/auditable confidence score, a required-vocabulary status,
+  // and an independence summary BEFORE the result is frozen. Pure post-
+  // processing — no extra model calls, and the LLM's subjective confidenceWhy
+  // is retained as `reasoning` context, never as the score.
+  for (const c of claims) {
+    c.evidence = evidenceForClaim(c, sources);
+    c.contradicting_evidence = contradictingEvidenceForClaim(c, sources);
+    const conf = scoreClaimConfidence({ claim: c, sources, relations: provenance.relations || [], provenance, contradictions });
+    c.confidence = conf.score;
+    c.confidence_label = conf.label;
+    c.confidence_factors = conf.factors;
+    c.status = claimStatus(c.state);
+    c.independence = independenceFor(c, provenance, sources);
+    c.reasoning = c.confidenceWhy || '';
+  }
   const result = {
     id: task.id,
     task, plan, report,

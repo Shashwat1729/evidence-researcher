@@ -4,6 +4,7 @@
 
 import { generateJson } from '../gemini.js';
 import { STANCE_GUARDRAIL } from '../config.js';
+import { wrapUntrusted } from '../trust.js';
 
 const REPORT_SCHEMA = {
   type: 'object',
@@ -112,7 +113,12 @@ function bestClaimFor(heading, claims, used) {
 function claimDerivedFinding(c, sourcesById) {
   const t = String(c?.text || '').trim();
   const heading = t.length > 60 ? `${t.slice(0, 60).trimEnd()}…` : t;
-  const map = sourcesById instanceof Map ? sourcesById : new Map();
+  // Build the map internally: callers pass an array in some paths and a Map
+  // in others — the old instanceof check returned an empty map for arrays,
+  // silently dropping all source context from fallback findings.
+  const map = sourcesById instanceof Map
+    ? sourcesById
+    : new Map((Array.isArray(sourcesById) ? sourcesById : []).map((s) => [s.id, s]));
   const ids = [...new Set([...(c.supporting || []), ...(c.contradicting || [])])];
   const supports = ids.map((id) => map.get(id)).filter(Boolean);
   const citeNote = c.confidenceWhy ? ` — ${c.confidenceWhy}` : '';
@@ -396,7 +402,7 @@ export function buildSynthesisPrompt({ task, plan, claims, sources, contradictio
     return {
       id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
       verified: s.verified, accessibility: s.accessibility,
-      excerpts: passages.slice(0, excerptCount).map((t) => t.slice(0, 500)),
+      excerpts: passages.slice(0, excerptCount).map((t) => wrapUntrusted(t.slice(0, 500))),
     };
   });
   const arc = Array.isArray(plan.arc) && plan.arc.length
@@ -452,7 +458,7 @@ export function buildSectionPrompt({ task, plan, claims, sources, beats, minFind
   const srcIndex = sources.map((s) => ({
     id: s.id, title: s.title, url: s.url, tier: s.tier, author: s.author,
     verified: s.verified, accessibility: s.accessibility,
-    excerpts: ((s.passages || []).map((p) => p.text).filter(Boolean)).slice(0, 2).map((t) => t.slice(0, 500)),
+    excerpts: ((s.passages || []).map((p) => p.text).filter(Boolean)).slice(0, 2).map((t) => wrapUntrusted(t.slice(0, 500))),
   }));
   const arcText = beats.map((b, i) => `${i + 1}. ${b.title} — ${b.focus}`).join('\n');
   return `Write one detailed report section as JSON: findings ONLY, for THESE narrative beats (in order):

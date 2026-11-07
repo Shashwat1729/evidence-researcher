@@ -4,6 +4,7 @@
 import { generateJson } from '../gemini.js';
 import { isValidClaimState } from '../schemas.js';
 import { normalizeReview } from './contradictions.js';
+import { wrapEvidenceBlock } from '../trust.js';
 
 const CLAIMS_SCHEMA = {
   type: 'object',
@@ -32,7 +33,7 @@ export function buildClaimsPrompt(question, srcJson, minClaims = 6, withReview =
 Question: ${question}
 
 Sources (use ONLY these ids when linking evidence; never invent source ids):
-${srcJson}
+${wrapEvidenceBlock([{ text: srcJson }])}
 
 Rules:
 - Extract AT LEAST ${minClaims} distinct claims when the evidence supports that many — cover the most important factual assertions for the question's domain (dates/chronology, key entities and places, mechanisms or reasoning, major interpretations, and points of disagreement as appropriate). Fewer is acceptable ONLY if the sources genuinely contain less.
@@ -89,7 +90,9 @@ export async function extractClaims({ key, model, question, sources, onKeyEvent,
 export function normalizeClaims(data, sources) {
   const validIds = new Set(sources.map((s) => s.id));
   return (data.claims || []).slice(0, 30).map((c, i) => ({
-    id: `claim_${Date.now().toString(36)}_${i}`,
+    // Counter + random suffix: Date.now() alone collides when two iterations
+    // run in the same millisecond, producing duplicate claim ids.
+    id: `claim_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}_${i}`,
     text: String(c.text || '').slice(0, 500),
     state: isValidClaimState(c.state) ? c.state : 'unknown',
     // citation integrity: drop links to non-existent sources
